@@ -35,7 +35,9 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_machines import MACHINES_DISABLED
 from switch_core.gateway.hosted_machines import router as machine_router
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.keys import Keyring
+from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.gateway.login_limit_defaults import LOGIN_LIMIT_DEFAULTS
 from tests.switch_core.gateway.test_organization_routes import _app as organization_app
@@ -48,14 +50,27 @@ pytestmark = pytest.mark.no_ambient_tenant
 PASSWORD = "correct horse battery"
 
 
+def _hosted_settings(tenants: list[str] | None) -> HostedControllerSettings:
+    """The real settings model, not a stand-in, so a field added to it (the
+    account list, say) is there with its default rather than missing."""
+    return HostedControllerSettings(
+        # None here means every workspace, said explicitly ("*"): with hosted
+        # agents v2 on, an unset list is nobody.
+        allowed_tenant_ids=(["*"] if process_hosted_v2() else None)
+        if tenants is None
+        else tenants,
+        allowed_user_ids=["*"] if process_hosted_v2() else None,
+        token="t" * 32,
+        agent_api_endpoint="https://switch.example.com/api/agent",
+    )
+
+
 @pytest.fixture
 async def signup_app(session_factory):
     app = FastAPI()
     app.include_router(auth_router)
     app.include_router(machine_router)
-    app.state.hosted_controller_settings = SimpleNamespace(
-        allowed_tenant_ids=[TENANT_ZERO_ID]
-    )
+    app.state.hosted_controller_settings = _hosted_settings([TENANT_ZERO_ID])
     config = SimpleNamespace(
         gateway_signup_open=True,
         gateway_signup_joins_tenant_zero=True,
@@ -272,6 +287,42 @@ async def test_disabled_signup_is_refused(signup_app):
         assert await session.scalar(select(func.count()).select_from(User)) == 0
 
 
+async def test_with_a_warm_pool_a_signup_makes_no_box(signup_app) -> None:
+    """With v2's box provisioning on and a warm pool, a box is taken from
+    the pool, or made, at the person's first start, never at sign-up: the
+    answer still says nothing is wrong."""
+    app = signup_app
+    app.config.hosted_box_provisioning = True
+    app.config.hosted_pool_size = 1
+    response = await _signup(app, email="new.person@example.com")
+    assert response.status_code == 201, response.text
+    assert response.json()["machine"] == {"status": "starting", "reason": None}
+    assert await _machines(app) == []
+
+
+async def test_with_no_warm_pool_a_v2_signup_still_warms_a_machine(
+    signup_app, monkeypatch
+) -> None:
+    """With v2 on and no pool, a sign-up asks for the person's machine as it
+    did before the pool."""
+    from switch_core.gateway import auth_routes
+    from switch_core.gateway.schemas import SignupMachine
+
+    asked: list[str] = []
+
+    async def prewarm(session, factory, user_id, config, settings):  # type: ignore[no-untyped-def]
+        asked.append(user_id)
+        return SignupMachine(status="starting", reason=None)
+
+    monkeypatch.setattr(auth_routes, "_prewarm", prewarm)
+    app = signup_app
+    app.config.hosted_box_provisioning = True
+    app.config.hosted_pool_size = 0
+    response = await _signup(app, email="another.person@example.com")
+    assert response.status_code == 201, response.text
+    assert len(asked) == 1
+
+
 async def test_signup_signs_in_a_tenant_zero_member_with_a_warming_machine(
     signup_app,
 ):
@@ -379,9 +430,7 @@ async def test_signup_succeeds_without_cloud_machines(signup_app, caplog):
 
 async def test_signup_warms_no_machine_outside_the_allowed_workspaces(signup_app):
     app = signup_app
-    app.app.state.hosted_controller_settings = SimpleNamespace(
-        allowed_tenant_ids=["another-tenant"]
-    )
+    app.app.state.hosted_controller_settings = _hosted_settings(["another-tenant"])
     response = await _signup(app)
     assert response.status_code == 201, response.text
     assert response.json()["machine"] == {
@@ -852,6 +901,25 @@ async def test_a_sign_in_warms_the_machine_where_getting_started_on_the_web_is_o
     )
     (machine,) = await _machines(app)
     assert (machine.owner_id, machine.desired_state) == (user.id, "running")
+
+
+async def test_with_a_warm_pool_a_sign_in_takes_no_box(signup_app) -> None:
+    """With v2's box provisioning on and a warm pool, a sign-in where getting
+    started on the web is on starts nothing, as a sign-up doesn't: pool boxes
+    go to people when they first start."""
+    app = signup_app
+    app.config.gateway_onboarding_enabled = True
+    app.config.hosted_box_provisioning = True
+    app.config.hosted_pool_size = 1
+    user = await _plain_user(app, "pool@example.com")
+    await hosted_machines.warm_after_sign_in(
+        app.factory,
+        user.id,
+        TENANT_ZERO_ID,
+        app.config,
+        app.app.state.hosted_controller_settings,
+    )
+    assert await _machines(app) == []
 
 
 async def test_a_sign_in_that_cannot_have_a_machine_still_signs_in(signup_app):

@@ -3,6 +3,7 @@ import type {
   OpenAgentStream,
   ProviderReadiness,
 } from '@switch-console/agent-providers';
+import type { RestartNotice } from '@switch-console/agent-providers/box';
 import { AgentHub } from './agent-hub';
 import {
   AccessTokens,
@@ -14,6 +15,7 @@ import {
   isUpgradeRequired,
   type OpenWebSocket,
 } from './api';
+import type { BoxController, BoxControllerDeps } from './box/controller-box';
 import { consentNeeds, type DefinitionContext, type DevicePolicySource } from './device-policy';
 import { ConfigurationError } from './errors';
 import { HubSocket } from './hub-socket';
@@ -21,10 +23,17 @@ import { errorMessage, type Logger } from './log';
 import { processPendingOperations } from './operations';
 import { isSafeSegment } from './paths';
 import type { ProviderRechecks } from './provider-rechecks';
-import { definitionProblem, reconcile, type ReconcileDeps, startAgent } from './reconcile';
+import { providersFor } from './providers';
+import {
+  type CredentialChange,
+  definitionProblem,
+  reconcile,
+  type ReconcileDeps,
+  startAgent,
+} from './reconcile';
 import { LocalRelay, RELAY_TOKEN_PREFIX } from './relay';
 import { UpstreamForwarder } from './relay-forward';
-import type { AgentRuntime } from './runtime';
+import type { AgentRuntime, GatewayRecord } from './runtime';
 import {
   type AgentCursor,
   type Assignment,
@@ -44,7 +53,11 @@ import {
   type ProviderLocator,
   type ProviderSeed,
   ProviderStatuses,
+  reportFingerprint,
+  type SessionsSent,
   StatusCollector,
+  sessionChangeEntries,
+  sessionsSent,
   statusFingerprint,
 } from './status';
 import type { ControllerStore } from './store';
@@ -116,7 +129,12 @@ export type ControllerDeps = {
    * Builds how agents run here, given the stream each agent's agent host hears
    * its events on and the folder agents with no directory of their own work in.
    */
-  runtime: (openStream: (agentId: string) => OpenAgentStream, workspaces: string) => AgentRuntime;
+  runtime: (
+    openStream: (agentId: string) => OpenAgentStream,
+    workspaces: string,
+    /** Box mode only: posts an agent's restart line through this controller, keyed by its turn. */
+    restartNotice?: (agentId: string) => RestartNotice
+  ) => AgentRuntime;
   /** Tries a provider's own login with a test prompt; absent where agents run as other users. */
   verifyLogin?: (provider: Provider, binaryPath: string) => Promise<ProviderReadiness> | null;
   locator: ProviderLocator;
@@ -160,6 +178,14 @@ export type ControllerDeps = {
   selfUpdate: SelfUpdater | null;
   /** Whether ending with `restarting` starts this controller again: a service, or Switch Console. */
   supervised: boolean;
+  /** Box mode (`--box` on a box image): only the box's providers are offered (`providersFor`). */
+  box: boolean;
+  /**
+   * Box mode only: what a box's controller runs beyond every controller's
+   * (the valve, resting agents, the provider gateway, a split box's
+   * launcher). Read only when `box` is set, and loaded then.
+   */
+  boxDeps?: BoxControllerDeps;
   now: () => number;
   random: () => number;
   timing: ControllerTiming;
@@ -203,11 +229,34 @@ function sameLogin(a: GivenLogin | null, b: GivenLogin | null): boolean {
   );
 }
 
+/**
+ * Box mode only: how the provider gateway fronts an agent's login. The login
+ * it fronts is never written to the agent's file, only its opaque gateway
+ * record; `change` says what that changed, when the gateway decided it.
+ */
+export type FrontLogin = (
+  agentId: string,
+  login: GivenLogin | null,
+  saved: GatewayRecord | null
+) => { fileLogin: GivenLogin | null; record: GatewayRecord | null; change?: CredentialChange };
+
+/**
+ * In box mode, `box` is given and the answer says what changed (`'relay'`,
+ * `'login'`, `'withdrawn'`, or false for nothing), so a login withdrawn
+ * stops at once while a new one waits for the turn; with the provider gateway
+ * on (`box.front`), a login it fronts is never written to the file. Desktop
+ * and v1 give no `box`, and the answer is true or false as it always was.
+ */
 export async function ensureRelayCredentials(
   agentId: string,
   providerLogin: GivenLogin | null,
-  deps: { runtime: AgentRuntime; relay: LocalRelay; log: Logger }
-): Promise<boolean> {
+  deps: {
+    runtime: AgentRuntime;
+    relay: LocalRelay;
+    log: Logger;
+    box?: { front?: FrontLogin };
+  }
+): Promise<CredentialChange> {
   const current = await deps.runtime.readCredentials(agentId);
   const endpoint = deps.relay.endpoint;
   const hub = deps.relay.hubUrl;
@@ -216,7 +265,13 @@ export async function ensureRelayCredentials(
     current.endpoint === endpoint &&
     current.hub === hub &&
     current.token.startsWith(RELAY_TOKEN_PREFIX);
-  const loginCurrent = sameLogin(current?.providerLogin ?? null, providerLogin);
+  const fronted = deps.box?.front
+    ? deps.box.front(agentId, providerLogin, current?.gateway ?? null)
+    : { fileLogin: providerLogin, record: null };
+  const fileLogin = fronted.fileLogin;
+  const record = fronted.record;
+  const fileLoginCurrent = sameLogin(current?.providerLogin ?? null, fileLogin);
+  const loginCurrent = fileLoginCurrent && sameRecord(current?.gateway ?? null, record);
   if (current && relayCurrent && loginCurrent) {
     if (!deps.relay.isRegistered(agentId, current.token))
       deps.relay.register(agentId, current.token);
@@ -224,7 +279,7 @@ export async function ensureRelayCredentials(
   }
   // A login withdrawn or replaced: what the agent host wrote of it goes now,
   // even for an agent that is not started again.
-  if (current?.providerLogin && !loginCurrent)
+  if (current?.providerLogin && !fileLoginCurrent)
     await deps.runtime.forgetProviderLogin(agentId).catch((error: unknown) => {
       deps.log.error('Could not remove a provider login Switch no longer gives an agent', {
         agentId,
@@ -235,18 +290,46 @@ export async function ensureRelayCredentials(
   const token = current && relayCurrent ? current.token : deps.relay.mint(agentId);
   if (current && relayCurrent && !deps.relay.isRegistered(agentId, token))
     deps.relay.register(agentId, token);
-  await deps.runtime.writeCredentials(agentId, { endpoint, token, hub, providerLogin });
+  await deps.runtime.writeCredentials(agentId, {
+    endpoint,
+    token,
+    hub,
+    providerLogin: fileLogin,
+    ...(record ? { gateway: record } : {}),
+  });
   deps.log.info('Wrote the agent’s relay credentials', {
     agentId,
     why: !current
       ? 'it had none'
       : !relayCurrent
         ? 'they named another endpoint, hub or a Switch key'
-        : providerLogin
-          ? `the ${providerLogin.provider} login given to this machine changed`
-          : 'the login given to this machine is no longer used',
+        : record
+          ? 'its login goes through the provider gateway'
+          : providerLogin
+            ? `the ${providerLogin.provider} login given to this machine changed`
+            : 'the login given to this machine is no longer used',
   });
-  return true;
+  if (!deps.box) return true;
+  // A login withdrawn must not stay in use while a turn finishes: only a
+  // login given or changed waits for the turn. A login swapped inside the
+  // gateway changes nothing the running host reads.
+  return !(current && relayCurrent)
+    ? 'relay'
+    : fronted.change !== undefined
+      ? fronted.change
+      : fileLogin
+        ? 'login'
+        : 'withdrawn';
+}
+
+function sameRecord(a: GatewayRecord | null, b: GatewayRecord | null): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.token === b.token &&
+    a.provider === b.provider &&
+    a.kind === b.kind &&
+    a.revision === b.revision
+  );
 }
 
 /** Runs one task at a time, in order; a failed task does not stop the next. */
@@ -293,7 +376,22 @@ export async function runController(
   deps: ControllerDeps,
   signal: AbortSignal
 ): Promise<ControllerExit> {
-  const { store, log, timing } = deps;
+  const { store, timing } = deps;
+  // Box mode only: loaded here, so desktop and v1 never load it.
+  const boxed: BoxController | null = deps.box
+    ? new (await import('./box/controller-box')).BoxController(deps.boxDeps ?? {}, {
+        log: deps.log,
+        now: deps.now,
+        dataDir: deps.dataDir,
+        assignment: () => assignment,
+        report: () => reporter?.request(),
+        reconcileLocally: () => reconcileLocally(),
+        run: (task) => queue.run(task),
+        failed: (what, error) => failed(what, error),
+        stopping: () => stop.signal.aborted,
+      })
+    : null;
+  const log = boxed?.log ?? deps.log;
   const identity = store.identity();
   if (!identity)
     throw new ConfigurationError(
@@ -302,6 +400,17 @@ export async function runController(
   const credential = await deps.secrets.get(CONTROLLER_CREDENTIAL);
   if (!credential) {
     const revokedAt = store.revokedAt();
+    if (boxed && revokedAt) {
+      // An earlier run was revoked and wiped the credential (a box started
+      // again after a pause and resume). End as revoked, as that run did: the
+      // box's entrypoint then keeps this identity aside and enrols afresh with
+      // the code in its Secret, if Switch gave it one.
+      log.warn(
+        'This controller was revoked earlier and its credential wiped; it needs enrolling again with a new code',
+        { controllerId: identity.controllerId, revokedAt }
+      );
+      return 'revoked';
+    }
     throw new ConfigurationError(
       revokedAt
         ? `This controller was revoked at ${revokedAt} and its credential wiped. Enroll it again with a new code.`
@@ -351,29 +460,37 @@ export async function runController(
   let revocation: Promise<void> | null = null;
   let reporter: StatusReporter | null = null;
 
-  const hub = new AgentHub({
+  const hub: AgentHub = new AgentHub({
     log,
     bufferLimit: timing.eventBufferLimit,
     onCursor: (agentId, cursor) =>
       store.saveCursor(agentId, cursor, new Date(deps.now()).toISOString()),
     onChange: () => reporter?.request(),
+    ...boxed?.hubDeps(client, () => hub),
   });
   const workspaces = deps.workspacesFor(identity.server);
   const definitionContext = (): DefinitionContext => ({
     dataDir: deps.dataDir,
     workspaces,
     policy: deps.devicePolicy?.current() ?? null,
+    offered,
   });
-  const runtime = deps.runtime(
-    (agentId) => (streamDeps) => hub.open(agentId, streamDeps),
-    workspaces
-  );
+  const runtime = boxed
+    ? deps.runtime(boxed.openStream(hub), workspaces, boxed.restartNotice(client))
+    : deps.runtime((agentId) => (streamDeps) => hub.open(agentId, streamDeps), workspaces);
+  boxed?.setRuntime(runtime);
+  const hubSocket = (): HubSocket => {
+    if (!boxed) return new HubSocket({ hub, log });
+    const socket = new HubSocket({ hub, log, ...boxed.hubSocketDeps() });
+    boxed.setHubSocket(socket);
+    return socket;
+  };
   // The agents' operations go to Switch on the controller's socket while it takes them.
   const calls = new SocketCalls();
   const relay = new LocalRelay({
     log,
     roomFor: (agentId, sessionId) => hub.roomFor(agentId, sessionId),
-    hub: new HubSocket({ hub, log }),
+    hub: hubSocket(),
     forwarder: new UpstreamForwarder({
       server: identity.server,
       auth: {
@@ -404,6 +521,7 @@ export async function runController(
   const port = await relay.start(store.relayPort());
   store.saveRelayPort(port);
   log.info('Relay listening for this machine’s agents', { endpoint: relay.endpoint });
+  await boxed?.startGateway();
 
   const revoke = (): Promise<void> => {
     revocation ??= (async () => {
@@ -477,7 +595,10 @@ export async function runController(
     void registerSealingKey(client, keys, log).then((registered) => {
       if (!registered) providers.disableGiven();
     });
+  const offered = providersFor(deps.box);
   const providers = new ProviderStatuses({
+    providers: offered,
+    box: deps.box,
     locator: deps.locator,
     runtime,
     sealed,
@@ -486,14 +607,17 @@ export async function runController(
     now: deps.now,
     log,
     onChange: () => reporter?.request(),
+    ...boxed?.providerDeps(),
   });
   providers.seed(deps.providerSeed);
+  boxed?.setProviders(providers);
   const collector = new StatusCollector({
     store,
     runtime,
     providers,
     tools: deps.tools,
     attached: (agentId) => hub.attached(agentId),
+    box: deps.box,
     dataDir: deps.dataDir,
     workspacesDir: workspaces,
     context: definitionContext,
@@ -501,6 +625,7 @@ export async function runController(
     version: deps.version,
     updatedBy: deps.updatedBy,
     now: deps.now,
+    ...boxed?.collectorDeps(hub),
   });
   const reconcileDeps: ReconcileDeps = {
     store,
@@ -510,17 +635,21 @@ export async function runController(
       ensureRelayCredentials(
         agentId,
         isProvider(provider) ? await providers.givenLogin(provider) : null,
-        { runtime, relay, log }
+        { runtime, relay, log, ...(boxed ? { box: { front: boxed.frontLogin() } } : {}) }
       ),
     givenLogin: (provider) => providers.givenLogin(provider),
     forgetAgent: (agentId) => {
+      boxed?.forgetAgent(agentId);
       relay.unregister(agentId);
       hub.forget(agentId);
     },
     binaryPath: (provider) => providers.binaryPath(provider),
     now: deps.now,
     log,
+    box: deps.box,
+    ...boxed?.reconcileDeps(),
   };
+  boxed?.startRest({ hub, client, reconcileDeps });
 
   /** Set while Switch refuses this controller because its owner is suspended. */
   let suspended = false;
@@ -569,7 +698,13 @@ export async function runController(
       syncQueued = false;
       if (stop.signal.aborted) return;
       try {
-        const pulled = await client.assignment(etag);
+        const pulled = await (boxed
+          ? client.assignment(etag).catch((error: unknown) => {
+              boxed.fetchFailed();
+              throw error;
+            })
+          : client.assignment(etag));
+        boxed?.pulled(assignment, pulled.kind === 'changed' ? pulled.assignment : null);
         if (pulled.kind === 'changed') {
           // Still refused for anything else, so it keeps every agent stopped,
           // at the revision it already holds: stopping them at a revision
@@ -581,7 +716,10 @@ export async function runController(
           log.info('Pulled assignment', { revision: assignment.revision, why });
           placeAgents(assignment);
         }
-        if (assignment) await reconcile(assignment, reconcileDeps);
+        if (assignment)
+          await (boxed
+            ? reconcile(assignment, reconcileDeps, { fetched: true })
+            : reconcile(assignment, reconcileDeps));
         reporter?.request();
       } catch (error) {
         failed('Assignment sync', error);
@@ -603,6 +741,8 @@ export async function runController(
           restartAgent: async (entry) => {
             const problem = definitionProblem(entry, definitionContext());
             if (problem) return { reason: 'definition_invalid', detail: problem };
+            // Asked for by its owner: started now, not on its next message.
+            boxed?.restartAsked(entry.agent_id);
             return startAgent(
               {
                 kind: 'start',
@@ -669,6 +809,7 @@ export async function runController(
   reporter = new StatusReporter({
     collect: async () => {
       const collected = await collector.collect(assignment);
+      await boxed?.collected(collected);
       const update = deps.selfUpdate?.status();
       return update ? { ...collected, update } : collected;
     },
@@ -682,6 +823,7 @@ export async function runController(
     },
     seq: () => store.nextStatusSeq(deps.now()),
     minGapMs: timing.statusMinGapMs,
+    ...(boxed ? { box: { log } } : {}),
     failed: (error) => failed('Status report', error),
     onLocalChange: () => void reconcileLocally(),
   });
@@ -698,6 +840,7 @@ export async function runController(
     await reporter?.sendFresh();
     // Agents waiting on a provider can start now.
     void reconcileLocally();
+    boxed?.retryUnchecked();
   });
 
   let localQueued = false;
@@ -778,6 +921,7 @@ export async function runController(
 
   /** A hint that a chat with the agent was created or reopened: a failure costs only the head start. */
   const warmAgent = async (agentId: string, roomId: string): Promise<void> => {
+    if (boxed?.wokeForWarm(agentId)) return;
     try {
       await runtime.warm(agentId, roomId);
     } catch (error) {
@@ -855,11 +999,22 @@ export async function runController(
     announceConsentNeeds();
   });
 
+  if (boxed) {
+    await boxed.startLauncherLink();
+    // After `placeAgents` gave the hub its cursors, before anything is started.
+    boxed.beforeFirstReconcile();
+  }
   await reconcileLocally();
   relay.setReady();
+  boxed?.ready();
   announceConsentNeeds();
 
-  void providers.refreshStale().catch((error: unknown) => failed('Checking providers', error));
+  if (boxed)
+    void providers
+      .refreshStale()
+      .catch((error: unknown) => failed('Checking providers', error))
+      .then(() => boxed.retryUnchecked());
+  else void providers.refreshStale().catch((error: unknown) => failed('Checking providers', error));
 
   const resync = setInterval(() => {
     void sync('periodic resync');
@@ -878,6 +1033,7 @@ export async function runController(
     // the next periodic report to let the update through.
     if (deps.selfUpdate?.status()?.state === 'waiting_idle') offerRelease();
     void restartOutdated();
+    boxed?.poll();
     void deps.devicePolicy
       ?.refresh()
       .catch((error: unknown) => failed('Reading what this device allows its agents', error));
@@ -941,6 +1097,7 @@ export async function runController(
       );
   } finally {
     stopServingRechecks();
+    boxed?.stopping();
     clearInterval(resync);
     clearInterval(poll);
     stopFollowingPolicy?.();
@@ -954,6 +1111,7 @@ export async function runController(
     } finally {
       await runtime.close();
       await relay.close();
+      await boxed?.close();
     }
   }
   if (revocation) return 'revoked';
@@ -972,6 +1130,10 @@ class StatusReporter {
   private inFlight: Promise<void> | null = null;
   private again = false;
   private closed = false;
+  /** Box mode only: where each agent's sessions stood in the last report Switch took. */
+  private lastSentSessions: SessionsSent | null = null;
+  /** Box mode only: a check passed over because a report was on its way, since the last one sent. */
+  private skippedAt: number | null = null;
 
   constructor(
     private readonly deps: {
@@ -979,6 +1141,12 @@ class StatusReporter {
       send: (report: StatusReport) => Promise<void>;
       seq: () => number;
       minGapMs: number;
+      /**
+       * Box mode only: a session waking or parking alone sends a report but is
+       * no reason to reconcile, and each agent whose sessions a report moved is
+       * logged with how long that took.
+       */
+      box?: { log: Logger };
       failed: (error: unknown) => void;
       /** Something observed locally differs from the last look. */
       onLocalChange: () => void;
@@ -1000,13 +1168,19 @@ class StatusReporter {
   }
 
   async requestIfChanged(): Promise<void> {
+    if (this.inFlight && this.deps.box) {
+      // Not looked at: a change seen now waits for the next check.
+      this.skippedAt ??= Date.now();
+      return;
+    }
     if (this.inFlight || this.timer) return;
     try {
-      const fingerprint = statusFingerprint(await this.deps.collect());
+      const collected = await this.deps.collect();
+      const fingerprint = statusFingerprint(collected);
       if (this.lastObservedFingerprint !== null && fingerprint !== this.lastObservedFingerprint)
         this.deps.onLocalChange();
       this.lastObservedFingerprint = fingerprint;
-      if (fingerprint !== this.lastSentFingerprint) this.request();
+      if (this.sentFingerprint(collected) !== this.lastSentFingerprint) this.request();
     } catch (error) {
       this.deps.failed(error);
     }
@@ -1020,11 +1194,13 @@ class StatusReporter {
     }
     this.inFlight = (async () => {
       try {
+        const checkedAt = Date.now();
         const collected = await this.deps.collect();
         const report = statusReportSchema.parse({ ...collected, seq: this.deps.seq() });
         this.lastSentAt = Date.now();
         await this.deps.send(report);
-        this.lastSentFingerprint = statusFingerprint(collected);
+        this.lastSentFingerprint = this.sentFingerprint(collected);
+        this.sent(report, checkedAt);
       } catch (error) {
         this.deps.failed(error);
       }
@@ -1049,11 +1225,13 @@ class StatusReporter {
     let failure: unknown = null;
     this.inFlight = (async () => {
       try {
+        const checkedAt = Date.now();
         const collected = await this.deps.collect();
         const report = statusReportSchema.parse({ ...collected, seq: this.deps.seq() });
         this.lastSentAt = Date.now();
         await this.deps.send(report);
-        this.lastSentFingerprint = statusFingerprint(collected);
+        this.lastSentFingerprint = this.sentFingerprint(collected);
+        this.sent(report, checkedAt);
       } catch (error) {
         failure = error;
       }
@@ -1066,6 +1244,24 @@ class StatusReporter {
     });
     await this.inFlight;
     if (failure !== null) throw failure;
+  }
+
+  /** What decides whether a report differs from the last one sent. */
+  private sentFingerprint(collected: Omit<StatusReport, 'seq'>): string {
+    return this.deps.box ? reportFingerprint(collected) : statusFingerprint(collected);
+  }
+
+  /** Box mode only: logs each agent whose sessions this report moved, and how long that took. */
+  private sent(report: StatusReport, checkedAt: number): void {
+    if (!this.deps.box) return;
+    for (const entry of sessionChangeEntries(this.lastSentSessions, report, {
+      checkedAt,
+      sentAt: Date.now(),
+      skippedAt: this.skippedAt,
+    }))
+      this.deps.box.log.info(entry.message, entry.fields);
+    this.lastSentSessions = sessionsSent(report);
+    this.skippedAt = null;
   }
 
   /** Stops sending, and waits for a report already on its way. */

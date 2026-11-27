@@ -52,6 +52,22 @@ WORKSPACE_ARCHIVED = "workspace_archived"
 # bearer middleware names the same strings.
 AGENT_SUSPENDED = "agent_suspended"
 ACCOUNT_SUSPENDED = "account_suspended"
+# The server runs agent management, but not for this workspace (the hosted
+# config's `management_tenant_ids`).
+WORKSPACE_NOT_ENABLED = "workspace_not_enabled"
+# An operator paused this user, or a workspace admin turned hosted agents off
+# for them in this workspace: their cloud box's controllers
+# get no new credential, token or placement until it's undone.
+HOSTED_PAUSED = "paused_by_switch"
+HOSTED_TURNED_OFF = "turned_off_by_admin"
+# The v1/v2 switch: hosted agents v2 is off on this server, so a v2 box's
+# controller is refused for now. Nothing about it is revoked: a box controller
+# keeps its identity and backs off, and carries on once v2 is on again.
+HOSTED_V2_OFF = "hosted_v2_off"
+# An operator is moving this machine from v1 to a v2 box: no login is given to
+# it until the move is done, so none is sealed to a box before its files and
+# agents are there.
+HOSTED_MIGRATING = "migration_in_progress"
 
 ALL_REASON_CODES = frozenset(
     {
@@ -93,5 +109,10 @@ ALL_REASON_CODES = frozenset(
         WORKSPACE_ARCHIVED,
         AGENT_SUSPENDED,
         ACCOUNT_SUSPENDED,
+        WORKSPACE_NOT_ENABLED,
+        HOSTED_PAUSED,
+        HOSTED_TURNED_OFF,
+        HOSTED_V2_OFF,
+        HOSTED_MIGRATING,
     }
 )

@@ -1,0 +1,72 @@
+{
+  "as": "contract-admin",
+  "expect": "refuse",
+  "from_good": "good/drain-worker-a-placeholder-made-post-pod-drain-room-contract1.json",
+  "group": "",
+  "groups": [
+    "system:masters"
+  ],
+  "message": "the gvisor classes carry the agent pool's toleration",
+  "name": "contract-pod",
+  "namespace": "contract-plain",
+  "object": {
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+      "name": "contract-pod",
+      "namespace": "contract-plain"
+    },
+    "spec": {
+      "containers": [
+        {
+          "image": "registry.example/pause@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "name": "c"
+        }
+      ],
+      "runtimeClassName": "gvisor"
+    }
+  },
+  "operation": "CREATE",
+  "policies": [
+    "switch-gvisor-class-scope"
+  ],
+  "refused_by": "admission",
+  "request": {
+    "body": {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {
+        "name": "contract-pod",
+        "namespace": "contract-plain"
+      },
+      "spec": {
+        "containers": [
+          {
+            "image": "registry.example/pause@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "name": "c"
+          }
+        ],
+        "runtimeClassName": "gvisor"
+      }
+    },
+    "method": "POST",
+    "path": "/api/v1/namespaces/contract-plain/pods"
+  },
+  "resource": "pods",
+  "setup": [
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "labels": {},
+          "name": "contract-plain"
+        }
+      },
+      "path": "/api/v1/namespaces/contract-plain"
+    }
+  ],
+  "subresource": "",
+  "version": "v1",
+  "what": "refused: gvisor a class outside the box namespaces"
+}

@@ -20,22 +20,29 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
     AgentController,
+    AgentControllerEnrollmentCode,
     AgentDefinition,
     CloudMachine,
     MachineWorkspace,
     require_tenant_id,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_machine_store import (
     CloudMachineStore,
+    WorkspaceOnMachine,
     await_reconnect,
     bump_revision,
     idle_sleeping,
+    revoke_box_controllers,
+    workspace_on,
+    workspaces_on,
 )
 from switch_core.gateway.dependencies import current_telemetry
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.keys import Keyring
 from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.observability.hosted import (
@@ -44,9 +51,15 @@ from switch_core.observability.hosted import (
     record_controller_restart,
     record_machine_event,
     record_provisioned,
+    record_start_stage,
     reports_memory,
 )
 from switch_core.telemetry import emit_after_commit
+from switch_core.visibility.box_provision import (
+    provision_times,
+    record_controllers_revoked,
+    revived_at,
+)
 
 # How recent the machine's last status report must be for its silence to count
 # as idle rather than as a machine that stopped reporting.
@@ -63,6 +76,34 @@ class CloudEnrollment(Protocol):
     ) -> str:
         """A new one-time code the machine's controller for the bound workspace
         enrolls with. The caller commits."""
+        ...
+
+    async def machine_enrollment_code_live(
+        self, session: AsyncSession, code: str, now: datetime
+    ) -> bool:
+        """Whether `code` can still enroll: unused and unexpired."""
+        ...
+
+    async def retire_machine_enrollment_code(
+        self, session: AsyncSession, code: str
+    ) -> None:
+        """Make an unused `code` stop working. A code something already
+        enrolled with is left alone: its controller depends on nothing it
+        holds, and that row is the record of what it enrolled. The caller
+        commits."""
+        ...
+
+    async def revoke_machine_controller(
+        self, session: AsyncSession, tenant_id: str, controller_id: str
+    ) -> None:
+        """Revoke a cleaned-up machine's old controller as its row is revived:
+        its credential, open operations and sealed logins go, so nothing of
+        the old box works again. Already revoked is fine. The caller commits."""
+        ...
+
+    def announce_revoked(self, controller_ids: list[str]) -> None:
+        """Tell every process these controllers are revoked, so each drops
+        their streams at once. After the revoking transaction commits."""
         ...
 
 
@@ -111,19 +152,68 @@ async def enrollment_code(
     revision: int,
     keyring: Keyring,
     now: datetime,
+    *,
+    fresh: bool = True,
 ) -> str:
     """The code the machine's controller for the workspace enrolls with at the
-    machine's `revision`: the same one for every retry of a revision, a new one
-    for a new revision. The caller commits."""
+    machine's `revision`: the same one for every retry of a revision while it
+    can still enroll, and a new one for a new revision, or once the stored one
+    has expired or been used (a box whose first start comes after its code's
+    15 minutes gets a fresh one, never a dead one). A new code makes the
+    old unused one stop working, so a box has one live code at a time. Callers
+    hold the machine's lock (`CloudMachineStore.locked`), so two at once can't
+    both mint. The caller commits.
+
+    `fresh=False` is the v1/v2 switch with v2 off: exactly as before v2, the
+    stored code for the revision is reused as it is, and nothing is retired."""
+    if not fresh:
+        if (
+            workspace.enrollment_code_revision == revision
+            and workspace.enrollment_code_encrypted is not None
+        ):
+            return keyring.decrypt(workspace.enrollment_code_encrypted)
+        code = await cloud_enrollment().machine_enrollment_code(session, workspace, now)
+        workspace.enrollment_code_encrypted = keyring.encrypt(code)
+        workspace.enrollment_code_revision = revision
+        return code
+    enrollment = cloud_enrollment()
     if (
         workspace.enrollment_code_revision == revision
         and workspace.enrollment_code_encrypted is not None
     ):
-        return keyring.decrypt(workspace.enrollment_code_encrypted)
-    code = await cloud_enrollment().machine_enrollment_code(session, workspace, now)
+        stored = keyring.decrypt(workspace.enrollment_code_encrypted)
+        if await enrollment.machine_enrollment_code_live(session, stored, now):
+            return stored
+        await enrollment.retire_machine_enrollment_code(session, stored)
+    elif workspace.enrollment_code_encrypted is not None:
+        # A new revision: the previous revision's code, if unused, stops working.
+        await enrollment.retire_machine_enrollment_code(
+            session, keyring.decrypt(workspace.enrollment_code_encrypted)
+        )
+    code = await enrollment.machine_enrollment_code(session, workspace, now)
     workspace.enrollment_code_encrypted = keyring.encrypt(code)
     workspace.enrollment_code_revision = revision
     return code
+
+
+async def retire_workspace_code(
+    session: AsyncSession, workspace: MachineWorkspace, keyring: Keyring
+) -> None:
+    """Stop the workspace's stored enrolment code working, if unused, and
+    forget it, so the next `prepare` mints a fresh one. For a pause or a
+    turn-off: a code from before can't enrol after a resume.
+    The caller commits."""
+    if workspace.enrollment_code_encrypted is None:
+        return
+    try:
+        enrollment = cloud_enrollment()
+    except CloudEnrollmentUnavailable:
+        return
+    await enrollment.retire_machine_enrollment_code(
+        session, keyring.decrypt(workspace.enrollment_code_encrypted)
+    )
+    workspace.enrollment_code_encrypted = None
+    workspace.enrollment_code_revision = None
 
 
 async def machine_of_controller(
@@ -170,14 +260,33 @@ def controller_reports(machine: CloudMachine) -> dict[str, dict[str, Any]]:
     return dict((machine.heartbeat or {}).get("controllers") or {})
 
 
-def workspace_reported(machine: CloudMachine, workspace_id: str) -> bool:
+def workspace_reported(
+    machine: CloudMachine,
+    workspace_id: str,
+    controller: AgentController | None = None,
+) -> bool:
     """Whether the workspace's controller has reported since the machine was
-    last seen starting: its agents can run."""
+    last seen starting: its agents can run.
+
+    A v2 box's controller nearly always reports before the scaler sees the
+    box running, and the ready check makes the box ready on that report
+    (`ready_if_both_signals`). So for a v2 box, a report made at the
+    machine's current revision counts too, under the ready check's own conditions: by
+    `controller`, the workspace's own controller (read with that workspace
+    bound), still live and unrevoked, and only for this workspace."""
     report = controller_reports(machine).get(workspace_id)
+    if report is None or machine.running_observed_at is None:
+        return False
+    if datetime.fromisoformat(report["at"]) > machine.running_observed_at:
+        return True
     return (
-        report is not None
-        and machine.running_observed_at is not None
-        and datetime.fromisoformat(report["at"]) > machine.running_observed_at
+        process_hosted_v2()
+        and machine.backend == "box"
+        and report.get("revision") == machine.revision
+        and controller is not None
+        and report.get("controller_id") == controller.id
+        and controller.revoked_at is None
+        and controller.api_key_id is not None
     )
 
 
@@ -185,6 +294,27 @@ def _reading(free: Any, total: Any) -> dict[str, int] | None:
     if isinstance(free, int) and isinstance(total, int) and total > 0:
         return {"total_bytes": total, "available_bytes": free}
     return None
+
+
+DISK_SCOPES = frozenset({"workspace", "unknown"})
+
+
+def _disk_reading(machine_reading: dict[str, Any], v2: bool) -> dict[str, Any] | None:
+    """The disk figures, with the controller's `scope` (v2 only): "workspace"
+    when they are the agents' own volume, "unknown" otherwise. Unmarked (an
+    older controller) they may be its own small volume. The apps show a disk
+    only for "workspace"."""
+    reading: dict[str, Any] | None = _reading(
+        machine_reading.get("disk_free_bytes"),
+        machine_reading.get("disk_total_bytes"),
+    )
+    scope = machine_reading.get("disk_scope")
+    if reading is not None and v2 and scope is not None:
+        # Anything outside the fixed set is "unknown", as the status schema reads it.
+        reading["scope"] = (
+            scope if isinstance(scope, str) and scope in DISK_SCOPES else "unknown"
+        )
+    return reading
 
 
 def _log_new_login_problems(
@@ -239,6 +369,22 @@ def _restarted(before: Any, started: str | None) -> bool:
     return previous is not None and started is not None and started != previous
 
 
+async def _provisioning_started(
+    session: AsyncSession, machine: CloudMachine
+) -> datetime:
+    """When the machine now becoming ready for the first time was asked for:
+    its row's creation, or for a box revived after a clean-up (same row, new
+    box), its latest revival."""
+    if machine.backend != "box":
+        return machine.created_at
+    revived = await revived_at(session, machine.id)
+    return (
+        revived
+        if revived is not None and revived > machine.created_at
+        else machine.created_at
+    )
+
+
 async def record_controller_status(
     session: AsyncSession,
     controller_id: str,
@@ -262,6 +408,7 @@ async def record_controller_status(
     now = datetime.now(UTC)
     sessions = machine_reading.get("sessions_running")
     reports = controller_reports(machine)
+    v2 = process_hosted_v2()
     before = reports.get(workspace.id)
     in_use = await _providers_in_use(session, controller_id)
     summary = box_summary(
@@ -272,6 +419,7 @@ async def record_controller_status(
             for entry in providers or []
             if isinstance(entry, dict) and entry.get("provider") in in_use
         ],
+        machine.backend,
     )
     _log_new_login_problems(machine.id, before, summary)
     started = None
@@ -287,14 +435,20 @@ async def record_controller_status(
         # Kept so the next report can tell a restart; a controller older
         # than the field sends none, and then nothing is counted.
         "started_at": started,
+        # Which controller reported, at which revision (v2 boxes only), for
+        # `workspace_reported`.
+        **(
+            {"revision": machine.revision, "controller_id": controller_id}
+            if v2 and machine.backend == "box"
+            else {}
+        ),
     }
     if reports_memory(reports, workspace.id, now):
-        record_box_report(machine_reading)
+        record_box_report(machine_reading, machine.backend)
     machine.heartbeat = {
-        "disk": _reading(
-            machine_reading.get("disk_free_bytes"),
-            machine_reading.get("disk_total_bytes"),
-        ),
+        # Keys this function doesn't own (the operator's `box` facts) stay.
+        **((machine.heartbeat or {}) if v2 else {}),
+        "disk": _disk_reading(machine_reading, v2),
         "memory": _reading(
             machine_reading.get("mem_free_bytes"),
             machine_reading.get("mem_total_bytes"),
@@ -304,39 +458,355 @@ async def record_controller_status(
     machine.heartbeat_at = now
     if isinstance(sessions, int) and sessions > 0:
         machine.active_at = now
+    if v2 and machine.backend == "box":
+        # This controller has reported at this revision: the scaler's
+        # `running`, if it comes second, makes the box ready on its own.
+        machine.heartbeat[REPORTED_KEY] = {
+            "revision": machine.revision,
+            "controller_id": controller_id,
+            "tenant_id": workspace.tenant_id,
+            # Its first report at this revision, for the start's stages.
+            "at": _first_report_at(machine.heartbeat, machine.revision, now),
+        }
+        # A box whose start was given up on but that reports in anyway.
+        recover_late_start(machine, now)
+    await ready_if_both_signals(session, machine, now, reported_now=True)
+
+
+# Where the heartbeat keeps the last controller report seen at the machine's
+# revision (hosted agents v2 boxes only): its revision, controller and
+# workspace, and when the first report at that revision came.
+REPORTED_KEY = "reported"
+# A v2 box start's clock, for its current revision: when the person's first
+# request that needs the box came (`note_start_click`), and its case.
+START_KEY = "start"
+# When the person's first request for this machine came, ever (cleared when
+# the row is revived): a box already ready then is a first start of 0 s.
+FIRST_CLICK_KEY = "first_click"
+
+
+def _first_report_at(heartbeat: Any, revision: int, now: datetime) -> str:
+    previous = (heartbeat or {}).get(REPORTED_KEY)
     if (
+        isinstance(previous, dict)
+        and previous.get("revision") == revision
+        and isinstance(previous.get("at"), str)
+    ):
+        return str(previous["at"])
+    return now.isoformat()
+
+
+def note_start_click(machine: CloudMachine, now: datetime) -> None:
+    """Start the clock for a v2 box's start: the person's first request that
+    needs the box (opening hosted agents, placing an agent, a message waking
+    it, or the owner's Start), once per revision. A box already ready needs no
+    start; if that's the person's very first request, it's a first start of
+    0 s. The caller holds the machine's lock and commits. Nothing with v2 off,
+    or for a v1 machine."""
+    if not process_hosted_v2() or machine.backend != "box":
+        return
+    heartbeat = dict(machine.heartbeat or {})
+    first_click = FIRST_CLICK_KEY not in heartbeat
+    heartbeat.setdefault(FIRST_CLICK_KEY, now.isoformat())
+    started = heartbeat.get(START_KEY)
+    if machine.state == "ready" and machine.desired_state == "running":
+        if first_click:
+            record_start_stage("first_start", "total", 0.0)
+    elif not (
+        isinstance(started, dict) and started.get("revision") == machine.revision
+    ):
+        heartbeat[START_KEY] = {
+            "revision": machine.revision,
+            "case": "first_start" if machine.first_ready_at is None else "wake",
+            "clicked_at": now.isoformat(),
+        }
+    machine.heartbeat = heartbeat
+
+
+# The box scaler's word that a starting box is waiting for room in the cluster
+# (its pod Pending and unschedulable), at this revision, kept until any other
+# observation of the box replaces it.
+ROOM_KEY = "waiting_for_room"
+
+
+def note_waiting_for_room(machine: CloudMachine, waiting: bool, now: datetime) -> None:
+    """Keep, or clear, the box scaler's `waiting_for_room` for a v2 box at its
+    current revision. The caller holds the machine's lock and commits."""
+    if machine.backend != "box":
+        return
+    heartbeat = dict(machine.heartbeat or {})
+    marked = heartbeat.get(ROOM_KEY)
+    if waiting:
+        if isinstance(marked, dict) and marked.get("revision") == machine.revision:
+            return
+        heartbeat[ROOM_KEY] = {"revision": machine.revision, "since": now.isoformat()}
+    elif ROOM_KEY in heartbeat:
+        del heartbeat[ROOM_KEY]
+    else:
+        return
+    machine.heartbeat = heartbeat
+
+
+def _waiting_for_room(machine: CloudMachine) -> bool:
+    marked = (machine.heartbeat or {}).get(ROOM_KEY)
+    return isinstance(marked, dict) and marked.get("revision") == machine.revision
+
+
+def start_summary(machine: CloudMachine, state: str) -> dict | None:
+    """What the owner's summary says about a v2 box still starting, for the
+    Console's "still starting" hint: None unless it's a box wanted running
+    whose state, as the workspace sees it, is `queued` or `provisioning`.
+    `kind` is `first` until the box has ever been ready, then `wake`; `since`
+    is when the first request that needed this start came in, at the current
+    revision (`note_start_click`'s marker), or None when there's no marker for
+    it. Core doesn't say "slow": the Console works that out from `since`.
+    `waiting_for_room` is true while the box scaler says the box is waiting
+    for room in the cluster (its own, longer, limit), at this revision."""
+    if (
+        machine.backend != "box"
+        or machine.desired_state != "running"
+        or state not in ("queued", "provisioning")
+    ):
+        return None
+    marker = (machine.heartbeat or {}).get(START_KEY)
+    since = (
+        marker.get("clicked_at")
+        if isinstance(marker, dict)
+        and marker.get("revision") == machine.revision
+        and _when(marker.get("clicked_at")) is not None
+        else None
+    )
+    return {
+        "kind": "first" if machine.first_ready_at is None else "wake",
+        "since": since,
+        "waiting_for_room": _waiting_for_room(machine),
+    }
+
+
+def start_segments(
+    clock: datetime, marks: list[tuple[str, datetime | None]]
+) -> list[tuple[str, float]]:
+    """Each stage's own seconds, in order from `clock`: a stage that happened
+    before the one before it (or before the clock) counts 0, and a stage with
+    no time recorded is left out, its time counted in the next. So the stages
+    always add up to the clock to the last stage."""
+    out: list[tuple[str, float]] = []
+    cursor = clock
+    for stage, at in marks:
+        if at is None:
+            continue
+        end = max(at, cursor)
+        out.append((stage, (end - cursor).total_seconds()))
+        cursor = end
+    return out
+
+
+async def _record_start_timings(
+    session: AsyncSession, machine: CloudMachine, now: datetime, new_machine: bool
+) -> None:
+    """A v2 box just became ready: its start's stages, by case and stage only
+    (`record_start_stage`). Timed from the start clock when the person's
+    request came first; a first start is also timed from its box request
+    (`since_box_request`), which may predate the click."""
+    heartbeat = machine.heartbeat or {}
+    started = heartbeat.get(START_KEY)
+    if not (isinstance(started, dict) and started.get("revision") == machine.revision):
+        started = None
+    case = (
+        str(started["case"])
+        if started is not None
+        else ("first_start" if new_machine else "wake")
+    )
+    requested = claimed = provisioned = None
+    if case == "first_start":
+        requested, claimed, provisioned = await provision_times(
+            session, machine.id, await revived_at(session, machine.id)
+        )
+        if requested is not None:
+            record_start_stage(
+                case, "since_box_request", (now - requested).total_seconds()
+            )
+    if started is None:
+        return  # the clock never started: nobody was waiting
+    clock = _when(started.get("clicked_at"))
+    if clock is None:
+        return
+    reported = heartbeat.get(REPORTED_KEY)
+    reported_at = (
+        _when(reported.get("at"))
+        if isinstance(reported, dict) and reported.get("revision") == machine.revision
+        else None
+    )
+    marks: list[tuple[str, datetime | None]] = []
+    if case == "first_start":
+        marks += [
+            ("box_requested", requested),
+            ("box_claimed", claimed),
+            ("box_provisioned", provisioned),
+        ]
+    marks += [
+        ("box_running", machine.running_observed_at),
+        ("controller_reported", reported_at),
+        ("ready", now),
+    ]
+    for stage, seconds in start_segments(clock, marks):
+        record_start_stage(case, stage, seconds)
+    record_start_stage(case, "total", max((now - clock).total_seconds(), 0.0))
+
+
+def _when(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+# A v2 box start Core or the box scaler gave up on: in `error` with one of
+# these codes, while still wanted running. Not `box_not_made` (Core already
+# stopped it) and not `box_missing` (its own path).
+GIVEN_UP = frozenset({"machine_needs_attention", "machine_connect_timeout", "no_room"})
+# How long after giving up a box that comes up anyway is still taken as the
+# person's start (`recover_late_start`); after that the sweep stops it.
+LATE_GRACE = timedelta(minutes=15)
+
+
+def given_up(machine: CloudMachine) -> bool:
+    """Whether this is a v2 box start that was given up on but not stopped:
+    its box may still come up, and nothing else would ever stop it."""
+    return (
+        machine.backend == "box"
+        and machine.state == "error"
+        and machine.desired_state == "running"
+        and machine.error_code in GIVEN_UP
+    )
+
+
+def recover_late_start(machine: CloudMachine, now: datetime) -> bool:
+    """A given-up box that comes up within `LATE_GRACE` (the scaler's
+    `running`, or a report from its controller) is the person's start after
+    all: back to `provisioning`, error cleared, so the usual both-signals rule
+    makes it ready. Hosted agents v2 only. Returns whether it did; the caller
+    holds the machine's lock and commits."""
+    if not (process_hosted_v2() and given_up(machine)):
+        return False
+    if now - machine.updated_at > LATE_GRACE:
+        return False
+    logger.info(
+        "Cloud machine %s: its box came up after the start was given up (%s); "
+        "taken as its start.",
+        machine.id,
+        machine.error_code,
+    )
+    machine.state = "provisioning"
+    machine.error = None
+    machine.error_code = None
+    machine.updated_at = now
+    return True
+
+
+async def ready_if_both_signals(
+    session: AsyncSession,
+    machine: CloudMachine,
+    now: datetime,
+    *,
+    reported_now: bool,
+    factory: async_sessionmaker[AsyncSession] | None = None,
+) -> bool:
+    """Make a machine ready once both signals are in for it at its current
+    revision: the scaler's `running` (`running_observed_at`, cleared by every
+    revision bump) and a status report from its controller. The one place the
+    decision is made, whichever signal comes second, so the two orders can't
+    drift. Returns whether it became ready; the caller holds the machine's
+    lock and commits.
+
+    `reported_now` is the report path: an authenticated report from the
+    machine's own controller is being recorded. Otherwise (the scaler's
+    `running`; hosted agents v2 boxes only, since with v2 off only a report
+    makes a machine ready, as before v2) the report must already be in:
+    recorded at this revision, by the controller that is still that
+    workspace's controller on this machine, and not revoked since (read with
+    that workspace bound, through `factory`)."""
+    if not (
         machine.state == "provisioning"
         and machine.desired_state == "running"
         and machine.running_observed_at is not None
     ):
-        machine.state = "ready"
-        machine.error = None
-        machine.error_code = None
-        machine.updated_at = now
-        # New until it has first been ready, however many revisions that took
-        # (a retry after a failed start included). Only the first is timed,
-        # since nothing records when a later start began.
-        new_machine = machine.first_ready_at is None
-        if new_machine:
-            machine.first_ready_at = now
-        emit_after_commit(
-            session,
-            current_telemetry(),
-            "cloud_machine_ready",
-            {
-                "new_machine": new_machine,
-                "provisioning_seconds": (
-                    max((now - machine.created_at).total_seconds(), 0.0)
-                    if new_machine
-                    else None
-                ),
-            },
+        return False
+    if not reported_now and not (
+        process_hosted_v2()
+        and machine.backend == "box"
+        and factory is not None
+        and await _reported_by_live_controller(factory, machine)
+    ):
+        return False
+    machine.state = "ready"
+    machine.error = None
+    machine.error_code = None
+    machine.updated_at = now
+    # New until it has first been ready, however many revisions that took
+    # (a retry after a failed start included). Only the first is timed,
+    # since nothing records when a later start began.
+    new_machine = machine.first_ready_at is None
+    provisioning_seconds = None
+    if new_machine:
+        machine.first_ready_at = now
+        # Clamped: the start is the database's clock, so a fast first
+        # report can read a hair negative.
+        asked_for = await _provisioning_started(session, machine)
+        provisioning_seconds = max((now - asked_for).total_seconds(), 0.0)
+    emit_after_commit(
+        session,
+        current_telemetry(),
+        "cloud_machine_ready",
+        {
+            "new_machine": new_machine,
+            "provisioning_seconds": provisioning_seconds,
+        },
+    )
+    record_machine_event(
+        session, "ready", "new" if new_machine else "restart", machine.backend
+    )
+    if provisioning_seconds is not None:
+        record_provisioned(provisioning_seconds, machine.backend)
+    if process_hosted_v2() and machine.backend == "box":
+        await _record_start_timings(session, machine, now, new_machine)
+    return True
+
+
+async def _reported_by_live_controller(
+    factory: async_sessionmaker[AsyncSession], machine: CloudMachine
+) -> bool:
+    """Whether the report the heartbeat recorded is one at the machine's
+    current revision, by the controller still serving that workspace on this
+    machine, and unrevoked."""
+    reported = (machine.heartbeat or {}).get(REPORTED_KEY)
+    if not isinstance(reported, dict) or reported.get("revision") != machine.revision:
+        return False
+    controller_id = reported.get("controller_id")
+    tenant_id = reported.get("tenant_id")
+    if not isinstance(controller_id, str) or not isinstance(tenant_id, str):
+        return False
+    async with tenant_session(factory, tenant_id) as scoped:
+        row = await workspace_on(scoped, machine.id)
+        controller = (
+            None
+            if row is None or row.controller_id != controller_id
+            else await scoped.scalar(
+                select(AgentController).where(
+                    AgentController.tenant_id == tenant_id,
+                    AgentController.id == controller_id,
+                )
+            )
         )
-        record_machine_event(session, "ready", "new" if new_machine else "restart")
-        if new_machine:
-            # Clamped like the telemetry above: `created_at` is the
-            # database's clock, so a fast first report can read a hair negative.
-            record_provisioned(max((now - machine.created_at).total_seconds(), 0.0))
+        await scoped.commit()
+    return (
+        controller is not None
+        and controller.revoked_at is None
+        and controller.api_key_id is not None
+    )
 
 
 async def wake_controller_machine(
@@ -353,17 +823,80 @@ async def wake_controller_machine(
     found = await machine_of_controller(session, controller_id)
     if found is None:
         return None
-    machine, _workspace = found
+    machine, workspace = found
+    if not process_hosted_v2():
+        # The v1/v2 switch: with v2 off, exactly as before v2, and a v2 box
+        # never wakes (it stays stopped, its data kept).
+        if machine.backend == "box":
+            return machine
+        store = CloudMachineStore()
+        if idle_sleeping(machine):
+            store.start(machine, now)
+            emit_after_commit(
+                session,
+                current_telemetry(),
+                "cloud_machine_woken",
+                {"trigger": trigger},
+            )
+            record_machine_event(session, "woken", trigger, machine.backend)
+        elif machine.desired_state == "running":
+            machine.active_at = now
+        return machine
+    # Paused, or turned off in this controller's workspace: a
+    # message or a placement never wakes the box for it.
+    from switch_core.visibility.hosted_access import block_reason_in
+
+    if (
+        await block_reason_in(session, machine.owner_id, workspace.tenant_id)
+        is not None
+    ):
+        return machine
+    if machine.desired_state in ("retained", "deleted"):
+        # Retained or on its way out: only its owner's claim or Retry brings
+        # it back, never a message or a placement, whatever stop reason it
+        # was left with (a turn-off's included).
+        return machine
     store = CloudMachineStore()
-    if idle_sleeping(machine):
+    # A box stopped as `turned_off` for another workspace (its only one then,
+    # since joined by this one) wakes for this one: that workspace's controller
+    # stays revoked and refused, so only this workspace's agents come back.
+    if idle_sleeping(machine) or machine.stop_reason == "turned_off":
         store.start(machine, now)
+        note_start_click(machine, now)
         emit_after_commit(
             session, current_telemetry(), "cloud_machine_woken", {"trigger": trigger}
         )
-        record_machine_event(session, "woken", trigger)
+        record_machine_event(session, "woken", trigger, machine.backend)
     elif machine.desired_state == "running":
         machine.active_at = now
     return machine
+
+
+async def wake_lifted_machine(
+    session: AsyncSession, controller_id: str, now: datetime
+) -> CloudMachine | None:
+    """For a message to an agent whose controller is revoked: its hosted
+    box, woken as `wake_controller_machine` wakes one, but only when that
+    revoke was an operator's pause or an admin's turn-off (`revoked_by`).
+    `wake_controller_machine` still refuses while the block holds, so this
+    wakes a box only once it's lifted, and it then enrols a new controller
+    with a fresh one-time code; the revoked one stays revoked. None for any
+    other revoke (the owner's removal, a replaced or revived controller, or a
+    path added later), or a controller on no cloud machine. The caller holds
+    no other machine lock, and commits. With hosted agents v2 off, always None."""
+    if not process_hosted_v2():
+        return None
+    controller = await session.get(
+        AgentController, controller_id, populate_existing=True
+    )
+    if (
+        controller is None
+        or controller.tenant_id != require_tenant_id()
+        or controller.revoked_at is None
+        or controller.revoked_by not in ("pause", "turn_off")
+    ):
+        return None
+    return await wake_controller_machine(session, controller_id, now, "message")
 
 
 def controller_machine_idle(
@@ -383,3 +916,105 @@ def controller_machine_idle(
         )
         and now - machine.active_at >= idle_after
     )
+
+
+async def clear_spent_codes(
+    session_factory: async_sessionmaker[AsyncSession],
+    machine_id: str,
+    now: datetime,
+) -> int:
+    """Forget each of the machine's stored enrolment codes that can no longer
+    enrol: expired, used, or retired (the encrypted copy lives only as long as
+    the code). Each workspace on its own session
+    with it bound, its row locked so a `prepare` minting at the same moment
+    can't be undone. Returns how many were cleared; commits each."""
+    cleared = 0
+    # The machine's workspaces through the store's own lookup, then each one's
+    # row read with that workspace bound (`tenant_session`).
+    for served in await workspaces_on(session_factory, machine_id):
+        tenant_id = served.tenant_id
+        async with tenant_session(session_factory, tenant_id) as session:
+            workspace = await session.scalar(
+                select(MachineWorkspace)
+                .where(
+                    MachineWorkspace.tenant_id == tenant_id,
+                    MachineWorkspace.machine_id == machine_id,
+                    MachineWorkspace.enrollment_code_encrypted.is_not(None),
+                )
+                .with_for_update()
+            )
+            if workspace is None:
+                continue
+            live = await session.scalar(
+                select(AgentControllerEnrollmentCode.id)
+                .where(
+                    AgentControllerEnrollmentCode.tenant_id == tenant_id,
+                    AgentControllerEnrollmentCode.machine_workspace_id == workspace.id,
+                    AgentControllerEnrollmentCode.api_key_id.is_not(None),
+                    AgentControllerEnrollmentCode.used_at.is_(None),
+                    AgentControllerEnrollmentCode.expires_at > now,
+                )
+                .limit(1)
+            )
+            if live is None:
+                workspace.enrollment_code_encrypted = None
+                workspace.enrollment_code_revision = None
+                cleared += 1
+            await session.commit()
+    return cleared
+
+
+async def revoke_machine_controller(
+    session: AsyncSession, tenant_id: str, controller_id: str
+) -> None:
+    """The revoke `CloudMachineStore.claim` takes to revive a machine.
+    Raises `CloudEnrollmentUnavailable` without agent management, so a row
+    whose old controller can't be revoked isn't revived."""
+    await cloud_enrollment().revoke_machine_controller(
+        session, tenant_id, controller_id
+    )
+
+
+async def forget_missing_box(
+    factory: async_sessionmaker[AsyncSession],
+    machine: CloudMachine,
+    workspaces: list[WorkspaceOnMachine],
+    by: Literal["re_ask", "retry"],
+) -> None:
+    """A box the box scaler found missing takes its controller identity with
+    it, as a revived box's does: each workspace controller is revoked and
+    its stored code forgotten, so the new box gets a fresh code to enrol
+    with. Without it `prepare` hands the new box no code (the old controller
+    is still live), and it could never connect. For Core's one re-ask
+    (`hosted_controller._box_missing`) and the owner's Retry.
+
+    A `hosted.box_controllers_revoked` entry (the machine, the reason and how
+    many controllers) is written and committed first, so no revoke is ever
+    unrecorded; then each workspace commits its own revoke. The caller's own
+    transaction commits after: if it fails, the revokes stand, which fails
+    safe (the next report finds a revoked controller and the machine goes to
+    error, for the owner's Retry)."""
+    await record_controllers_revoked(
+        factory,
+        machine,
+        by=by,
+        controllers=sum(1 for w in workspaces if w.controller_id is not None),
+    )
+    try:
+        enrollment: CloudEnrollment | None = cloud_enrollment()
+    except CloudEnrollmentUnavailable:
+        # Without agent management no controller could have enrolled.
+        enrollment = None
+    if enrollment is not None:
+        revoked = await revoke_box_controllers(
+            factory, machine, workspaces, enrollment.revoke_machine_controller
+        )
+        # Every process drops the old streams at once.
+        enrollment.announce_revoked(revoked)
+    for workspace in workspaces:
+        async with tenant_session(factory, workspace.tenant_id) as scoped:
+            row = await workspace_on(scoped, machine.id)
+            if row is not None:
+                row.enrollment_code_encrypted = None
+                row.enrollment_code_revision = None
+            await scoped.commit()

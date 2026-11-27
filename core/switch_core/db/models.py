@@ -249,6 +249,12 @@ class TenantMember(Base):
     )
     user_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), primary_key=True)
     role: Mapped[str] = mapped_column(Text, nullable=False)
+    # Whether this member may use hosted agents in this workspace (A2): set by
+    # the workspace's admins, on by default so today's access carries over.
+    # The server's own lists still decide who may use hosted agents at all.
+    hosted_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true", default=True
+    )
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -412,6 +418,11 @@ class User(Base):
     # Nullable: OIDC-provisioned users have no local password until one is set.
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+    # When a Switch operator paused this user's hosted agents,
+    # or None. Its own column, so a write to `metadata` can't clear it.
+    hosted_paused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -592,6 +603,72 @@ class ProviderConnection(TenantScoped, Base):
     )
 
 
+class HostedPoolBox(Base):
+    """A hosted agents v2 box made ahead of anyone asking: the warm pool.
+
+    Global, and no person's: it has no owner until a claim turns it into that
+    person's `CloudMachine`, with the same id. Kept apart from
+    `cloud_machines` so a machine row always has an owner, and no
+    tenant-scoped query can ever see a pool box. Its state only moves forward:
+    `requested` → `waiting` → `claimed` | `retiring` → `gone`, with `claimed` →
+    `retiring` for a claim that failed before its owner was written. Touched
+    only by `visibility.box_provision` and the hosted controller, provisioner
+    and reaper routes.
+    """
+
+    __tablename__ = "hosted_pool_boxes"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('requested', 'waiting', 'claimed', 'retiring', 'gone')",
+            name="ck_hosted_pool_box_state",
+        ),
+        CheckConstraint(
+            "retire_reason IS NULL OR retire_reason IN "
+            "('image', 'age', 'size', 'make_failed', 'failed_before_owner')",
+            name="ck_hosted_pool_box_retire_reason",
+        ),
+        Index("ix_hosted_pool_boxes_state", "state", "requested_at"),
+    )
+
+    # Becomes the machine id at claim, so the namespace's `machine-id`
+    # annotation is already right.
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    # The operator's template revision it was made at: a claim takes only a
+    # box made at the current one.
+    template_revision: Mapped[str | None] = mapped_column(Text)
+    # The namespace Core handed out for it (`agents-box-<keyed id>`), fixed
+    # when the pool action was first claimed.
+    namespace: Mapped[str | None] = mapped_column(Text)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retire_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class HostedOperatorReport(Base):
+    """What the hosted agents v2 box operator last said about itself when it
+    polled for work: its template revision and its capabilities
+    (`box_keyed_names`, `pool`, `bind`). One row (`id = "operator"`), global:
+    every Core process reads the same answer. Refill and the pool's freshness
+    check read it; a claim decides from the claiming operator's own words."""
+
+    __tablename__ = "hosted_operator_reports"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    template_revision: Mapped[str | None] = mapped_column(Text)
+    capabilities: Mapped[list] = mapped_column(JSONB, nullable=False)
+    seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # From the same report: the operator's live boxes (box map entries not in
+    # `box-removals`) and the ceiling it refuses new boxes at. None from an
+    # operator that doesn't send them.
+    boxes_live: Mapped[int | None] = mapped_column(Integer)
+    box_ceiling: Mapped[int | None] = mapped_column(Integer)
+
+
 class CloudMachine(Base):
     """One user's Switch Cloud VM, whichever workspaces it serves.
 
@@ -611,8 +688,12 @@ class CloudMachine(Base):
             name="ck_cloud_machine_desired_state",
         ),
         CheckConstraint(
-            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'admin')",
+            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'paused', 'turned_off', 'admin', 'migration', 'suspended')",
             name="ck_cloud_machine_stop_reason",
+        ),
+        CheckConstraint(
+            "backend IN ('vm', 'box')",
+            name="ck_cloud_machine_backend",
         ),
         Index(
             "uq_cloud_machine_owner",
@@ -630,6 +711,12 @@ class CloudMachine(Base):
     )
     stop_reason: Mapped[str | None] = mapped_column(Text)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    # What runs it: `vm`, a v1 EC2 machine the hosted
+    # controller's `serve` manages, or `box`, a cluster box the box
+    # provisioner makes and the scaler runs. Each side acts only on its own rows.
+    backend: Mapped[str] = mapped_column(
+        Text, nullable=False, default="vm", server_default="vm"
+    )
     instance_type: Mapped[str | None] = mapped_column(Text)
     data_volume_id: Mapped[str | None] = mapped_column(Text)
     instance_id: Mapped[str | None] = mapped_column(Text)
@@ -663,6 +750,59 @@ class CloudMachine(Base):
     )
 
 
+class HostedMigration(Base):
+    """One person's move from a v1 machine to a v2 box.
+
+    Global, as `cloud_machines` is: the move is of the person's one machine
+    row, whatever workspaces it serves, and nothing here names a workspace.
+    It keeps the step last finished, so a run carries on from there, and what
+    the v1 machine had (its instance, disk and type), so a rollback can hand
+    the same disk back to the v1 controller. A run holds this row's lock, so
+    two runs for one person can't overlap. No secrets, file names or message
+    content: the audit has who ran each step.
+    """
+
+    __tablename__ = "hosted_migrations"
+    __table_args__ = (
+        CheckConstraint(
+            "step IN ('freezing', 'frozen', 'snapshot', 'flipped', 'holding', "
+            "'held', 'copy_failed', 'copied', 'released', 'done', 'rolled_back', "
+            "'cleaned')",
+            name="ck_hosted_migration_step",
+        ),
+    )
+
+    owner_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    machine_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("cloud_machines.id"), nullable=False
+    )
+    step: Mapped[str] = mapped_column(Text, nullable=False)
+    # The v1 machine as the freeze found it, for a rollback.
+    v1_instance_id: Mapped[str | None] = mapped_column(Text)
+    v1_data_volume_id: Mapped[str | None] = mapped_column(Text)
+    v1_instance_type: Mapped[str | None] = mapped_column(Text)
+    # The safety snapshot of the v1 disk, taken outside Core and recorded here.
+    snapshot_id: Mapped[str | None] = mapped_column(Text)
+    # What the copy job reported: counts and sizes only.
+    files_copied: Mapped[int | None] = mapped_column(Integer)
+    bytes_copied: Mapped[int | None] = mapped_column(BigInteger)
+    symlinks_skipped: Mapped[int | None] = mapped_column(Integer)
+    copy_refused: Mapped[int | None] = mapped_column(Integer)
+    copy_seconds: Mapped[int | None] = mapped_column(Integer)
+    # The volume the copy job made from the snapshot and read from: never the
+    # v1 disk itself. Kept here only, never in the audit.
+    copy_source_volume_id: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class MachineWorkspace(TenantScoped, Base):
     """A workspace on its owner's cloud machine: the agent controller the
     machine runs for this workspace, enrolled with a one-time code minted here.
@@ -693,6 +833,11 @@ class MachineWorkspace(TenantScoped, Base):
     # was issued at, so every retry of that revision hands over the same one.
     enrollment_code_encrypted: Mapped[str | None] = mapped_column(Text)
     enrollment_code_revision: Mapped[int | None] = mapped_column(Integer)
+    # While an operator moves the machine from v1 to a v2 box: the v1
+    # controller the owner's agents stay placed on until the copy is verified.
+    # A controller enrolling meanwhile takes no agents from it; the release
+    # puts it back as `controller_id`, so the next enrolment moves them.
+    moving_from_controller_id: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -4540,6 +4685,36 @@ class UsageMetric(StrEnum):
     OUTPUT_TOKENS = "output_tokens"
     CACHE_READ_TOKENS = "cache_read_tokens"
     CACHE_WRITE_TOKENS = "cache_write_tokens"
+    # Hosted agents. Minutes an agent was awake, per agent,
+    # from its controller's status reports; a budget may cap it.
+    AWAKE_MINUTES = "awake_minutes"
+    # AI calls through a hosted box's gateway, from the count the box reports.
+    # A budget on it is the hosted daily cap, which the gateway enforces; Core
+    # never enforces it (`GATEWAY_ENFORCED_METRICS`), because the count comes
+    # from the box.
+    HOSTED_AI_CALLS = "hosted_ai_calls"
+
+
+# Budgets on these are enforced where the work happens (the gateway), never by
+# `BudgetGuard` from usage a box reports.
+GATEWAY_ENFORCED_METRICS: frozenset[UsageMetric] = frozenset(
+    {UsageMetric.HOSTED_AI_CALLS}
+)
+# What the budgets API lets an admin create today. The hosted daily cap joins
+# it with the cap-from-budget set, once the gateway reads it; until then a
+# budget nothing enforces would only mislead.
+BUDGET_METRICS: tuple[UsageMetric, ...] = tuple(
+    m for m in UsageMetric if m not in GATEWAY_ENFORCED_METRICS
+)
+# What is counted per model; a budget on anything else names no model.
+PER_MODEL_METRICS: frozenset[UsageMetric] = frozenset(
+    {
+        UsageMetric.INPUT_TOKENS,
+        UsageMetric.OUTPUT_TOKENS,
+        UsageMetric.CACHE_READ_TOKENS,
+        UsageMetric.CACHE_WRITE_TOKENS,
+    }
+)
 
 
 class TenantUsage(TenantScoped, Base):
@@ -4588,6 +4763,10 @@ class TenantUsage(TenantScoped, Base):
 # and the gateway's numbers from overflowing.
 MAX_BUDGET_PERIOD_HOURS = 8784
 MAX_BUDGET_AMOUNT = 2**53 - 1
+# The hosted daily AI cap set from a budget: a whole day, at
+# most this many calls. The gateway holds it again to its own floor and ceiling.
+DAILY_CAP_PERIOD_HOURS = 24
+MAX_DAILY_CAP = 1_000_000
 
 
 class UsageBudget(TenantScoped, Base):
@@ -4826,6 +5005,10 @@ class AgentController(TenantScoped, Base):
         CheckConstraint(
             "kind IN ('console', 'daemon', 'ec2')", name="ck_agent_controllers_kind"
         ),
+        CheckConstraint(
+            "revoked_by IS NULL OR revoked_by IN ('pause', 'turn_off')",
+            name="ck_agent_controllers_revoked_by",
+        ),
         Index("ix_agent_controllers_owner_id", "owner_id"),
         Index("ix_agent_controllers_tenant_id", "tenant_id"),
         Index(
@@ -4859,6 +5042,11 @@ class AgentController(TenantScoped, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Set only when an operator's pause (`pause`) or an admin's turn-off
+    # (`turn_off`) revoked it, so a message after the lift may
+    # wake its hosted box to enrol a new controller. Any other revoke
+    # path leaves it NULL, and clears it on a row already revoked.
+    revoked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     connection_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Not a foreign key: a lease row is pruned once long stale, and a
     # connection naming a process with no lease reads as lost.
@@ -5404,6 +5592,19 @@ class ServerAuditEvent(Base):
     """
 
     __tablename__ = "server_audit_events"
+    __table_args__ = (
+        # Box removal reads a machine's removal entries on every pass; partial,
+        # so it covers those four actions only.
+        Index(
+            "ix_server_audit_events_box_removal",
+            "action",
+            text("(details ->> 'machine_id')"),
+            postgresql_where=text(
+                "action IN ('hosted.box_to_remove', 'hosted.box_to_remove_cancelled', "
+                "'hosted.box_removal_claimed', 'hosted.box_removed')"
+            ),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     occurred_at: Mapped[datetime] = mapped_column(

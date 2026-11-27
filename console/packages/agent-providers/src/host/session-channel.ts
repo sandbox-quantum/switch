@@ -48,6 +48,18 @@ export const sessionRequestSchema = z.discriminatedUnion('type', [
     command: z.unknown(),
     /** Who asked, as the room names them; null for a command from Console. */
     requesterName: z.string().nullable(),
+    /**
+     * Whether Switch already told the room a reset is under way. False from a
+     * Switch that leaves that to the box; absent from one that predates
+     * it, which said so itself.
+     */
+    roomTold: z.boolean().optional(),
+    /**
+     * The session was resting (parked) when the reset came, and was started
+     * only to take it: it says so in the room rather than taking a turn, and
+     * goes back to rest.
+     */
+    resting: z.boolean().optional(),
     /** The command came from a direct chat; absent from a parent older than the field. */
     direct: z.boolean().optional(),
   }),
@@ -71,6 +83,18 @@ export const sessionRequestSchema = z.discriminatedUnion('type', [
    * link: a host that predates it cannot parse it and does not answer.
    */
   z.object({ type: z.literal('reasoning'), turnIds: z.array(z.string().min(1)).nullable() }),
+  /**
+   * Park now if idle, rather than after the usual quiet spell: the machine is
+   * short of memory. Answered `{ parking: false }` while a turn, a request to a
+   * person or background work is under way; a session mid-turn is never parked.
+   */
+  z.object({ type: z.literal('park') }),
+  /**
+   * Try again any "I was restarted" line this session still owes: its
+   * watcher's connection to Switch is back, after an outage that may have
+   * outlasted this start's tries. Answered `{ owed }`, the lines tried.
+   */
+  z.object({ type: z.literal('restart-replies') }),
 ]);
 export type SessionRequest = z.infer<typeof sessionRequestSchema>;
 
@@ -94,6 +118,13 @@ export const hostAskSchema = z.discriminatedUnion('type', [
     roomId: z.string().min(1),
     threadId: z.string().min(1).nullable(),
     body: z.string().min(1),
+    /**
+     * Post only if the room doesn't already show `body` from this agent in
+     * that thread after `afterMessageId`; answered `{ posted }`.
+     */
+    once: z.object({ afterMessageId: z.string().min(1) }).optional(),
+    /** The turn this is the restart line for: posted keyed by it where it can be. */
+    restartTurnId: z.string().min(1).max(200).optional(),
   }),
   /**
    * The room's own instructions, answered with `{ instructions }` ('' for a
@@ -501,6 +532,19 @@ export class SessionLinks {
     return this.links.get(root)?.failure ?? null;
   }
 
+  /**
+   * Records that the host at this root cannot be started, when nothing was
+   * spawned to exit and say so (its supervisor gave up first), and tells the
+   * same listeners a failed exit would: the agent's room hears it, rather
+   * than a request waiting in silence.
+   */
+  reportFailure(root: string, failure: string): void {
+    const link = this.link(root);
+    link.failure = failure;
+    for (const wake of link.waiting.splice(0)) wake();
+    for (const listener of this.failureListeners) listener(root, failure);
+  }
+
   /** Forgets a recorded failure: something is about to start the host again. */
   clearFailure(root: string): void {
     const link = this.links.get(root);
@@ -682,10 +726,15 @@ function killHostGroup(child: ChildProcess): void {
   }
 }
 
+/** Requests only a box's agent host sends (`park`, `restart-replies`); a host without a handler refuses them. */
+type BoxSessionRequest = 'park' | 'restart-replies';
+
 export type SessionRequestHandlers = {
-  [K in SessionRequest['type']]: (
+  [K in Exclude<SessionRequest['type'], BoxSessionRequest>]: (
     request: Extract<SessionRequest, { type: K }>
   ) => Promise<unknown>;
+} & {
+  [K in BoxSessionRequest]?: (request: Extract<SessionRequest, { type: K }>) => Promise<unknown>;
 };
 
 /** What the host needs of its own process to talk to its parent: `process` itself. */
@@ -806,7 +855,18 @@ export function connectParent(port: ParentPort): ParentChannel {
       send({ kind: 'reply', id, ok: false, error: 'The session host is not ready yet.' });
       return;
     }
-    const handler = handlers[request.type] as (request: SessionRequest) => Promise<unknown>;
+    const handler = handlers[request.type] as
+      | ((request: SessionRequest) => Promise<unknown>)
+      | undefined;
+    if (!handler) {
+      send({
+        kind: 'reply',
+        id,
+        ok: false,
+        error: `This session host does not take ${request.type}.`,
+      });
+      return;
+    }
     handler(request).then(
       (value) => send({ kind: 'reply', id, ok: true, value }),
       (error: unknown) =>

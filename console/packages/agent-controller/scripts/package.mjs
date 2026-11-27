@@ -3,6 +3,7 @@ import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { assertDesktopBundle } from './box-bundle.mjs';
 
 /**
  * Builds the installable controller: one npm package holding the CLI and the
@@ -58,19 +59,33 @@ const common = {
 
 await rm(out, { recursive: true, force: true });
 await mkdir(stage, { recursive: true });
-await build({
+// What each bundle was built from, beside the package rather than in it: the box
+// image's build checks the box code is there (`deploy/hosted/box/image/build.sh`).
+const meta = join(out, 'meta');
+await mkdir(meta, { recursive: true });
+const cli = await build({
   ...common,
   entryPoints: [join(root, 'src', 'cli.ts')],
   outfile: join(stage, 'cli.mjs'),
   tsconfig: join(root, 'tsconfig.json'),
+  metafile: true,
 });
-await build({
+const sharedHost = await build({
   ...common,
   entryPoints: [join(root, '..', 'agent-providers', 'src', 'host', 'shared-daemon.ts')],
   // The name the CLI looks for beside itself (PACKAGED_SHARED_HOST_BUNDLE).
   outfile: join(stage, 'shared-host.mjs'),
   tsconfig: join(root, '..', 'agent-providers', 'tsconfig.json'),
+  metafile: true,
 });
+// The same package runs v1 machines and boxes: box code only behind box mode's dynamic imports.
+for (const [name, result] of [
+  ['cli.mjs', cli],
+  ['shared-host.mjs', sharedHost],
+]) {
+  assertDesktopBundle(result.metafile, name);
+  await writeFile(join(meta, `${name}.json`), JSON.stringify(result.metafile));
+}
 await writeFile(
   join(stage, 'package.json'),
   `${JSON.stringify(

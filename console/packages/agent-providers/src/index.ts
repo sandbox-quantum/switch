@@ -16,6 +16,13 @@ export type {
   TurnAttachment,
 } from './adapter';
 export {
+  BOX_MARKER_PATH,
+  BoxModeMismatch,
+  hostBoxMode,
+  insideBox,
+  resolveControllerBoxMode,
+} from './box-mode';
+export {
   ProviderSessionError,
   ProviderUnavailableError,
   runtimeModeFor,

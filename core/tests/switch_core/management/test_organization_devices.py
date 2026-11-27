@@ -24,6 +24,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.providers.hosted import tenant_allowed
 from tests.switch_core.management.harness import (
     Harness,
     add_member,
@@ -210,3 +211,99 @@ class TestRemoving:
         async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
             controller = await session.get(AgentController, device.controller_id)
         assert controller is not None and controller.revoked_at is None
+
+
+class _Served:
+    """A `management_tenant_ids` a test can change, read through the shared
+    rule, as the authenticator reads it with hosted agents v2 on (with v2 off
+    the setting has no effect: `test_workspace_allowed`)."""
+
+    def __init__(self) -> None:
+        self.tenants: list[str] | None = None
+
+    def __call__(self, tenant_id: str) -> bool:
+        return tenant_allowed(self.tenants, tenant_id)
+
+
+class TestAWorkspaceAgentManagementDoesntServe:
+    """With `management_tenant_ids` set, the organization's routes leave a
+    workspace not on it out, as that workspace's own routes refuse it."""
+
+    @pytest.fixture
+    def served(self) -> _Served:
+        return _Served()
+
+    @pytest.fixture
+    def harness(  # noqa: F811
+        self, session_factory: async_sessionmaker[AsyncSession], served: _Served
+    ) -> Harness:
+        return build_harness(session_factory, workspace_allowed=served)
+
+    async def test_it_is_left_out_of_the_list(
+        self, harness: Harness, served: _Served
+    ) -> None:
+        lab = await _workspace(harness.session_factory, "Lab")
+        ada = await add_member(harness.session_factory, "ada")
+        bob = await add_member(harness.session_factory, "bob", lab)
+        olga = await _org_admin(harness.session_factory, "olga")
+        async with harness.client() as client:
+            await _managed_agent(harness, client, ada)
+            await enroll_console(harness, client, bob, name="lab-box", tenant_id=lab)
+            served.tenants = [TENANT_ZERO_ID]
+            listed = await client.get(DEVICES, cookies=cookies_for(olga))
+
+        assert listed.status_code == 200, listed.text
+        assert {row["workspace_id"] for row in listed.json()["devices"]} == {
+            TENANT_ZERO_ID
+        }
+        assert {row["workspace_id"] for row in listed.json()["managed_agents"]} == {
+            TENANT_ZERO_ID
+        }
+
+    async def test_removing_or_stopping_managing_there_is_refused(
+        self, harness: Harness, served: _Served
+    ) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        olga = await _org_admin(harness.session_factory, "olga")
+        async with harness.client() as client:
+            device_id, agent_id = await _managed_agent(harness, client, ada)
+            served.tenants = ["another-workspace"]
+            removed = await client.delete(
+                f"{WORKSPACES}/{TENANT_ZERO_ID}/devices/{device_id}",
+                cookies=cookies_for(olga),
+            )
+            stopped = await client.delete(
+                f"{WORKSPACES}/{TENANT_ZERO_ID}/managed-agents/{agent_id}",
+                cookies=cookies_for(olga),
+            )
+
+        for refused in (removed, stopped):
+            assert refused.status_code == 403, refused.text
+            assert refused.json()["error"]["code"] == "workspace_not_enabled"
+        async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+            controller = await session.get(AgentController, device_id)
+            definition = await session.scalar(
+                select(AgentDefinition).where(AgentDefinition.agent_id == agent_id)
+            )
+        assert controller is not None and controller.revoked_at is None
+        assert definition is not None
+
+    async def test_another_organization_s_workspace_is_still_not_found(
+        self, harness: Harness, served: _Served
+    ) -> None:
+        """The organization's own check comes first, so a restriction never
+        tells an admin anything about a workspace that isn't theirs."""
+        elsewhere = await _workspace(
+            harness.session_factory, "Elsewhere", f"org-{uuid.uuid4().hex[:8]}"
+        )
+        ada = await add_member(harness.session_factory, "ada")
+        olga = await _org_admin(harness.session_factory, "olga")
+        async with harness.client() as client:
+            device = await enroll_console(harness, client, ada)
+            served.tenants = [TENANT_ZERO_ID]
+            other = await client.delete(
+                f"{WORKSPACES}/{elsewhere}/devices/{device.controller_id}",
+                cookies=cookies_for(olga),
+            )
+
+        assert other.status_code == 404

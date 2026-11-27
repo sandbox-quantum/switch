@@ -59,11 +59,36 @@ cloud agents."
 Mount a private JSON file through `HOSTED_CONTROLLER_CONFIG_PATH` with
 `allowed_tenant_ids`, a dedicated `token` of at least 32 characters and the
 HTTPS `agent_api_endpoint` the machines enroll against. `allowed_tenant_ids`
-lists the workspaces whose members may use cloud machines, or is `null` for
-every workspace. Core refuses unknown keys, the old `tenant_id` among them.
+lists the workspaces whose members may use cloud machines, and the optional
+`allowed_user_ids` the accounts within them. **With hosted agents v2 off,**
+as before: `null` (or leaving `allowed_user_ids` out) means every one, and a
+list means whom it names. **With hosted agents v2 on**
+(`HOSTED_BOX_PROVISIONING`), `null` or a missing list admits **nobody**, and
+`"*"` (alone, as `"*"` or `["*"]`) means every one: a server turning v2 on
+must name its workspaces and accounts, or set `"*"`, on both lists. Core
+warns at start when a list is unset, and refuses `"*"` beside other entries.
+An empty list admits nobody either way. Core refuses unknown keys, the old
+`tenant_id` among them.
+
+The optional `management_tenant_ids` is separate: when set, only the listed
+workspaces may use agent management at all (`/v1/management`,
+`/v1/controllers` and the gateway's `/management` routes). Every other
+workspace is refused with 403 `workspace_not_enabled`, its own computers
+included. Left out or `null`, agent management is open to every workspace, as
+before. Set it only when turning agent management on for the first time:
+setting it later cuts off every unlisted workspace's existing machines. One
+limit, for now: the setting lives in this hosted controller file, which also
+needs `token`, `agent_api_endpoint` and `allowed_tenant_ids`. So a server that
+runs agent management without cloud machines has to write a full hosted config
+to set it (with `HOSTED_LAUNCH_CAPACITY` left at 0, nothing else changes).
 `HOSTED_LAUNCH_CAPACITY` is how many machines may exist at once across the
 server, one per user, 0–100; 0
-means the server cannot run them. Keep it no higher than the hosted controller's
+means the server cannot run them. **With hosted agents v2 on,**
+`HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE` (0–100) caps the live machines serving
+any one workspace under that, so one workspace can't take them all; a box
+serving several workspaces counts in each. 0 means no per-workspace limit, and
+Core warns at start. Choose it, with the allow-lists, before v2 serves more
+than one workspace. With v2 off it's ignored. Keep it no higher than the hosted controller's
 `max_machines`. The backend chart exposes
 `switchCore.hostedControllerSecret` (file `controller.json`),
 `switchCore.hostedLaunchCapacity`, `switchCore.hostedIdleStopMinutes` and
@@ -131,6 +156,28 @@ cloud or provider readiness.
 
 The hosted controller may change only the data retention of the instances it
 tagged as its own, never their user data or security groups.
+
+## Box eviction alerts (Kubernetes boxes)
+
+The box scaler (`box_scaler.py`) also notices when a user's box is pushed off
+its machine: a node-pressure eviction, a preemption, a taint-based eviction, a
+drain or scale-down, or the machine going away (`evictions.py`). Each eviction
+is alerted once, with ids and a fixed reason code only:
+
+- one WARN line in the scaler's log;
+- a Warning event `BoxPushedOff` on the user's `box` StatefulSet;
+- a per-machine count in the scaler's owner-only status file;
+- when `SWITCH_SCALER_REPORT_EVICTIONS=1`, the number of evictions since Core's
+  last accepted observation, in the next observation (`evictions`). Core logs
+  one WARN for it and stores nothing.
+
+**Rollout order:** deploy a Core that accepts the `evictions` field **first**,
+and only then set `SWITCH_SCALER_REPORT_EVICTIONS=1` on the scaler. An older
+Core refuses unknown observation fields, so turning it on early would make
+every observation from that box fail. The other three alerts need no setting.
+
+The scaler's Role in each box namespace needs `events: list, create` on top of
+its `pods: list`, and nothing cluster-wide.
 
 ## Operator commands
 
@@ -338,6 +385,43 @@ or in the chart with
 App's callback, with expiring user tokens. Sign-in flows live in the Switch
 API process, so run it with one replica. Keep query strings out of every
 access log in front of the callback: its URL carries a single-use OAuth code.
+
+## The cluster report and box facts
+
+Two switches on the box scaler, both off by default, for the operator's
+Machines tab and its alerts. Turn each on only once Core accepts it.
+
+- **`SWITCH_SCALER_REPORT_BOX_FACTS=1`**: each observation also carries the
+  box's container restarts since Core last accepted one, and the node it runs
+  on. It needs the eviction watch, and reuses the pods the watch lists. The run
+  script passes `restart_counter_from_env(env)` to `box_scaler.run(box_facts=...)`.
+- **`SWITCH_CLUSTER_REPORT=on`**: every 30 s the scaler posts
+  `/hosted-controller/cluster`. That's each agents machine's zone, memory used
+  (metrics-server) and booked (box pods' requests) as shares of allocatable,
+  and its safety-check state. It also covers the listed shared services' ready
+  and wanted copies. It needs `SWITCH_CLUSTER_PROXY_NAMESPACE` and
+  `SWITCH_CLUSTER_OPERATOR_NAMESPACE`, and optionally
+  `SWITCH_CLUSTER_OPERATOR_DEPLOYMENT` (the operator's Deployment name, by
+  default `hosted-controller`) and `SWITCH_CLUSTER_DATADOG_NAMESPACE` (lists
+  kube-state-metrics). The run script passes
+  `cluster_watch_from_env(kube._call, core, env, box_pods=...)` to
+  `box_scaler.run(cluster=...)`, where `box_pods` returns the pods the eviction
+  watch listed this pass (`watch.last_pods`). Booked memory then needs no
+  cluster-wide pod read.
+
+A listed service is read from its Deployment's own `spec.replicas` and
+`readyReplicas`. The autoscaler and kube-state-metrics exist only in some
+clusters, so a 404 on either leaves it out of the report. A 404 on any other
+service is reported as short.
+
+The extra reads are in `placer/cluster-report-rbac.PROPOSED.yaml` in the deployment repository, for review
+before they're applied. They're for the hosted controller's account
+(`switch-hosted-controller` in `switch-hosted`):
+- `list` on nodes, and `get` on node totals in `metrics.k8s.io`;
+- `get` on each listed Deployment by name, one Role per namespace.
+
+Nothing is written, there's no cluster-wide pod read, and there's no `list`
+on Deployments.
 
 ## Accounts, organizations and connector apps
 

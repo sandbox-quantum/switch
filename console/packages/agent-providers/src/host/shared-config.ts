@@ -47,6 +47,11 @@ export const sharedConfigSchema = z.strictObject({
    * Absent from every other session, and from configurations written before it.
    */
   importHistory: z.boolean().optional(),
+  /**
+   * Written only by a controller in box mode. The host takes box mode from the box image's marker alone; this can
+   * only make a host refuse to start where the marker is missing (`hostBoxMode`), never turn box mode off.
+   */
+  box: z.literal(true).optional(),
   execution: z
     .strictObject({
       credentialsPath: z.string().min(1),
@@ -135,6 +140,16 @@ export function servicesUnavailableNotice(reason: string): string {
  * `connectorMcpServers`, so their tools follow the session's runtime mode
  * where Switch's own are always allowed.
  */
+/**
+ * What a box's session host adds to a provider's start (`box/owner-marker-env`):
+ * its host's owner marker, and no marker an agent planted in a configured MCP
+ * server's environment. Given only in box mode.
+ */
+export type SharedConfigBox = {
+  withOwnerMarker: (env: Record<string, string>, host: NodeJS.ProcessEnv) => Record<string, string>;
+  withoutPlantedMarkers: <T extends object>(servers: Record<string, T>) => Record<string, T>;
+};
+
 export async function prepareSharedConfig(
   root: string,
   config: SharedHostConfig,
@@ -142,7 +157,8 @@ export async function prepareSharedConfig(
   services: SessionServices,
   helpers: ServiceHelpers | null,
   vendors: Record<string, HttpMcpServerSpec>,
-  redact: (secret: string) => void
+  redact: (secret: string) => void,
+  box?: SharedConfigBox
 ) {
   if (config.session.provider !== config.start.provider)
     throw new Error('Shared SDK host provider mismatch.');
@@ -237,6 +253,10 @@ export async function prepareSharedConfig(
     input.mcpServers[name] = spec;
   }
   input.mcpServers.switch = runtime;
+  if (box) {
+    input.env = box.withOwnerMarker(input.env, process.env);
+    input.mcpServers = box.withoutPlantedMarkers(input.mcpServers);
+  }
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
   // Read from the grants as the session starts, never from the saved

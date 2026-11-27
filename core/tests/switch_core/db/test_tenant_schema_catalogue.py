@@ -105,6 +105,9 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
         """
         assert set(GLOBAL_TABLES) == {
             "cloud_machines",
+            # A person's move from their v1 machine to a v2 box: one row per
+            # person, of that same one machine, naming no workspace.
+            "hosted_migrations",
             "users",
             "oidc_identities",
             # Facts about the installation, not about anything in it: which
@@ -154,6 +157,11 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # before any workspace is known, and the workspace a row names is
             # only the claim its session selects.
             "browser_handoffs",
+            # The hosted agents v2 warm pool: boxes owned by no person or
+            # workspace until a claim makes one a person's `cloud_machines`
+            # row, and the box operator's last report about itself.
+            "hosted_pool_boxes",
+            "hosted_operator_reports",
         }
 
     async def test_the_history_tables_are_exactly_these(self) -> None:

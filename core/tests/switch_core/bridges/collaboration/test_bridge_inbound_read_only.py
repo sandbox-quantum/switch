@@ -127,6 +127,8 @@ def _bridge(
         _bridge_id="bridge-1",
         _repair_placeholder_username=nothing,
         _is_registered_agent=no,
+        # Hosted agents v2's duplicate-post check: never a copy here.
+        _already_handed_in=AsyncMock(return_value=False),
         _ensure_human_in_room=ensure_human_in_room,
         _record_message_map=nothing,
         _event_for_external_post=AsyncMock(return_value=None),

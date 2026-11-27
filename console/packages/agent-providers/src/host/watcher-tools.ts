@@ -10,6 +10,8 @@ import {
   type ToolResult,
 } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
+import type { HeldReplies } from './box/held-replies';
+import type { HubTickets } from './box/watcher-box';
 import type { PlacementMap, SessionPlacements } from './placements';
 import type { Redactions } from './redaction';
 import { issueServiceToken, readServiceGrants } from './service-access';
@@ -36,7 +38,49 @@ import { sharedConfigSchema } from './shared-config';
  * and scrubs every token handed out from the arguments of every call it makes,
  * so a token an agent echoes into a room message never reaches Switch.
  */
+/**
+ * Posts the "I was restarted" line for a turn through the agent's controller,
+ * as the agent, keyed `restart:<turnId>` so Switch posts it once however
+ * often it is asked. `unsupported` from a Switch server that predates it, so
+ * the line goes the older way instead.
+ */
+export type RestartNotice = (notice: {
+  roomId: string;
+  threadId: string | null;
+  turnId: string;
+}) => Promise<'posted' | 'unsupported'>;
+
+/**
+ * What a box's agent host adds to its room tools and watcher control
+ * (`box/watcher-box`), given only in box mode. Without it, both behave as on
+ * Console's own hosts.
+ */
+export type WatcherBox = {
+  /** Where a room post Switch could not take, because it was away, is held to be sent again. */
+  held: HeldReplies;
+  heldTools: ReadonlySet<string>;
+  /** Where the controller can post a restart line keyed by its turn; absent off a controller. */
+  restartNotice: RestartNotice | undefined;
+  alreadyInRoom: (
+    catalog: SwitchToolCatalog,
+    ctx: CallerContext,
+    agentId: string,
+    ask: Extract<HostAsk, { type: 'room-reply' }>,
+    body: string
+  ) => Promise<boolean>;
+  heldPost: (
+    deps: { placements: SessionPlacements; context: (caller: Caller) => Promise<CallerContext> },
+    caller: Caller,
+    name: string,
+    args: Record<string, unknown>,
+    holder: HeldReplies
+  ) => Promise<ToolResult>;
+  tickets: HubTickets;
+};
+
 export function sessionToolAnswerer(deps: {
+  /** Box mode only: held posts, the keyed restart line, and the once-only room reply. */
+  box?: WatcherBox;
   identity: SwitchIdentity;
   connectionId: string;
   placements: SessionPlacements;
@@ -200,12 +244,22 @@ export function sessionToolAnswerer(deps: {
     caller: Caller,
     catalog: SwitchToolCatalog,
     ask: Extract<HostAsk, { type: 'room-reply' }>
-  ): Promise<null> => {
+  ): Promise<null | { posted: boolean }> => {
     const attended = deps.placements.roomOf(caller.sessionId);
     if (attended !== ask.roomId)
       throw new Error(
         `Session ${caller.sessionId} no longer attends room ${ask.roomId}${attended ? ` (it attends ${attended})` : ''}, so its reply was not posted there.`
       );
+    // The restart line, keyed by its turn through the controller: Switch
+    // posts it once, so no room check is needed first.
+    if (ask.restartTurnId && deps.box?.restartNotice) {
+      const outcome = await deps.box.restartNotice({
+        roomId: ask.roomId,
+        threadId: ask.threadId,
+        turnId: ask.restartTurnId,
+      });
+      if (outcome === 'posted') return { posted: true };
+    }
     // Stated again first: a reply is posted as the session, in the room Switch
     // holds it in, and the placement it was refused on may be the reason the
     // turn could not post itself.
@@ -216,6 +270,22 @@ export function sessionToolAnswerer(deps: {
           `Could not state the session placements before posting a reply for session ${caller.sessionId}: ${error instanceof Error ? error.message : String(error)}`
         )
       );
+    if (deps.box) {
+      const body = deps.redactions.text(ask.body);
+      const ctx = await context(caller);
+      // Raises when the room can't be read, so a reply is never posted blind.
+      if (
+        ask.once &&
+        (await deps.box.alreadyInRoom(catalog, ctx, deps.identity.agentId, ask, body))
+      )
+        return { posted: false };
+      const posted = await catalog.call(ctx, 'post_message', {
+        body,
+        ...(ask.threadId ? { thread_id: ask.threadId } : {}),
+      });
+      if (posted.isError) throw new Error(resultText(posted));
+      return ask.once ? { posted: true } : null;
+    }
     const posted = await catalog.call(await context(caller), 'post_message', {
       body: deps.redactions.text(ask.body),
       ...(ask.threadId ? { thread_id: ask.threadId } : {}),
@@ -262,6 +332,14 @@ export function sessionToolAnswerer(deps: {
     const catalog = await toolsFor(ask.name);
     const args = deps.redactions.value(ask.arguments);
     if (ask.name === 'connect_to_room') return connect(caller, catalog, args);
+    if (deps.box && deps.box.heldTools.has(ask.name) && catalog.has(ask.name))
+      return deps.box.heldPost(
+        { placements: deps.placements, context },
+        caller,
+        ask.name,
+        args,
+        deps.box.held
+      );
     return catalog.call(await context(caller), ask.name, args);
   };
 }
@@ -269,7 +347,7 @@ export function sessionToolAnswerer(deps: {
 /** The heading `connect_to_room` puts over a room's own instructions (`build_room_instructions`). */
 const ROOM_SECTION_HEADING = /^## Room-specific instructions\s*/;
 
-function resultText(result: ToolResult): string {
+export function resultText(result: ToolResult): string {
   return result.content.map((part) => part.text).join('\n');
 }
 
@@ -408,6 +486,19 @@ export const watcherStateSchema = z.enum([
 ]);
 export type WatcherState = z.infer<typeof watcherStateSchema>;
 
+/** Where one session stands, as Console shows it: Running, Back in a moment, or Resting. */
+export const sessionStateSchema = z.enum(['active', 'waking', 'parked']);
+export type SessionState = z.infer<typeof sessionStateSchema>;
+
+function sameSessions(
+  a: Record<string, SessionState> | undefined,
+  b: Record<string, SessionState> | undefined
+): boolean {
+  if (!a || !b) return a === b;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
+}
+
 export const watcherHealthSchema = z.object({
   state: watcherStateSchema,
   /** The stream's last error, why the watcher stopped, or why it stood down. */
@@ -421,6 +512,19 @@ export const watcherHealthSchema = z.object({
    * said whether it is. Absent from a watcher too old to report it.
    */
   busy: z.array(z.string()).optional(),
+  /**
+   * Each of the agent's sessions here: `active` while its host runs, `waking`
+   * while it is being started for a message, `parked` while saved and
+   * unloaded. Absent from a watcher too old to report it.
+   */
+  sessions: z.record(z.string(), sessionStateSchema).optional(),
+  /**
+   * Room messages waiting for room in a full box ("wait for room"): how many,
+   * and since when the oldest. Absent from a watcher too old to report it.
+   */
+  waitingForRoom: z
+    .object({ count: z.number().int().nonnegative(), oldestSince: z.string().nullable() })
+    .optional(),
 });
 export type WatcherHealth = z.infer<typeof watcherHealthSchema>;
 
@@ -438,6 +542,26 @@ export type WatcherHandlers = {
  * keeps current here.
  */
 export class WatcherControl {
+  /** Box mode only (`box/watcher-box`): the restart line keyed by its turn, and the hub tickets. */
+  readonly box: Pick<WatcherBox, 'restartNotice' | 'tickets'> | undefined;
+
+  constructor(options: { box?: Pick<WatcherBox, 'restartNotice' | 'tickets'> } = {}) {
+    this.box = options.box;
+  }
+
+  /** How the watcher posts a restart line keyed by its turn, when it runs under a controller. */
+  get restartNotice(): RestartNotice | undefined {
+    return this.box?.restartNotice;
+  }
+
+  /**
+   * A one-time hub ticket from the launcher (box mode), answered with the
+   * confirmation; null when it isn't taken, and always off a box.
+   */
+  giveHubTicket(ticket: string, mac: string): string | null {
+    return this.box?.tickets.giveHubTicket(ticket, mac) ?? null;
+  }
+
   private handlers: WatcherHandlers | null = null;
   private current: WatcherHealth = {
     state: 'not-running',
@@ -515,6 +639,8 @@ export class WatcherControl {
     detail?: string | null;
     placements?: PlacementMap;
     busy?: string[];
+    sessions?: Record<string, SessionState>;
+    waitingForRoom?: { count: number; oldestSince: string | null };
   }): void {
     const state = change.state ?? this.current.state;
     const same = state === this.current.state;
@@ -528,12 +654,25 @@ export class WatcherControl {
         : this.current.busy
           ? { busy: this.current.busy }
           : {}),
+      ...(change.sessions
+        ? { sessions: { ...change.sessions } }
+        : this.current.sessions
+          ? { sessions: this.current.sessions }
+          : {}),
+      ...(change.waitingForRoom
+        ? { waitingForRoom: { ...change.waitingForRoom } }
+        : this.current.waitingForRoom
+          ? { waitingForRoom: this.current.waitingForRoom }
+          : {}),
     };
     if (
       same &&
       next.detail === this.current.detail &&
       samePlacements(next.placements, this.current.placements) &&
-      sameList(next.busy, this.current.busy)
+      sameList(next.busy, this.current.busy) &&
+      sameSessions(next.sessions, this.current.sessions) &&
+      next.waitingForRoom?.count === this.current.waitingForRoom?.count &&
+      next.waitingForRoom?.oldestSince === this.current.waitingForRoom?.oldestSince
     )
       return;
     this.current = next;

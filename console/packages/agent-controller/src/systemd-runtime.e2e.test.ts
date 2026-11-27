@@ -153,6 +153,7 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
         updatedBy: 'self',
         selfUpdate: null,
         supervised: false,
+        box: false,
         now: Date.now,
         random: () => 0,
         timing: {

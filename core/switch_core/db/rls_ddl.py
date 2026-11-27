@@ -201,9 +201,19 @@ ORGANIZATION_POLICY_NAME = "organization_isolation"
 # any workspace is known, by a browser that may hold no session at all, and the
 # workspace a row names is only the claim the new session selects, re-checked
 # against a membership on every request.
+#
+# `hosted_pool_boxes` is the hosted agents v2 warm pool: boxes made before
+# anyone asked, which belong to no person and no workspace until a claim
+# turns one into a person's `cloud_machines` row. A row holds only the box's
+# id, state, times and the operator's template revision.
+# `hosted_operator_reports` is the box operator's last word about itself (its
+# template revision and what it can do), one row for the whole deployment.
 GLOBAL_TABLES = frozenset(
     {
         "cloud_machines",
+        "hosted_migrations",
+        "hosted_operator_reports",
+        "hosted_pool_boxes",
         "users",
         "oidc_identities",
         "deployment_identity",

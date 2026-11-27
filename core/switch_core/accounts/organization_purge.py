@@ -113,7 +113,13 @@ from switch_core.db.rls_ddl import (
     organization_scoped_tables,
 )
 from switch_core.db.session_scope import organization_session, tenant_session
-from switch_core.db.stores.hosted_machine_store import CloudMachineStore, bump_revision
+from switch_core.db.stores.hosted_machine_store import (
+    CloudMachineStore,
+    RevokeController,
+    bump_revision,
+    revoke_box_controllers,
+    workspaces_on,
+)
 from switch_core.db.stores.messaging_install_store import (
     INSTALL_ACTIVE,
     INSTALL_DISCONNECTED,
@@ -246,6 +252,11 @@ class OrganizationPurge:
     # whose subjects are WorkOS user ids where that sign-in is WorkOS. None
     # for a server without one.
     sign_in_issuer: str | None
+    # Revokes a hosted agents v2 box's controller as its machine is torn down
+    # (its disk is kept, and holds the credential). Agent management's,
+    # handed over by the wiring; None where it doesn't run, when the purge's
+    # deletion of the workspace's rows removes the credential anyway.
+    revoke_box_controller: RevokeController | None = None
 
     async def find(self, reference: str) -> str:
         """The id of the organization `reference` names, by id, slug or
@@ -417,6 +428,15 @@ class OrganizationPurge:
         await self._tear_down_machines(plan.machines, outcome)
         if outcome.waiting:
             return outcome
+        boxes = await self._boxes_awaiting_removal(plan.deleted_accounts)
+        if boxes:
+            # Gone from Switch, but each box's disk is still in the cluster
+            # until the runbook's manual step: never a silent "finished".
+            outcome.warnings.append(
+                f"{boxes} box disk(s) await manual removal, listed in the "
+                "operator audit log as hosted.box_to_remove."
+            )
+
         await self._record_start(plan, request)
         return outcome
 
@@ -435,7 +455,10 @@ class OrganizationPurge:
             await self._purge_workspace(workspace, members, request)
         await self._detach_machines(plan.detached_machines)
         if not plan.resuming:
-            await self._delete_organization(plan, request)
+            # The box disks still to remove by hand, for the purge's own record
+            # (counted again here: `prepare` and `delete` may run apart).
+            boxes = await self._boxes_awaiting_removal(plan.deleted_accounts)
+            await self._delete_organization(plan, request, boxes)
         for account in plan.deleted_accounts:
             await self._delete_account(account, plan, request, outcome)
         outcome.finished = True
@@ -646,6 +669,7 @@ class OrganizationPurge:
                 machine = await store.locked(session, machine_id)
                 if machine is None or machine.state == "deleted":
                     continue
+                newly = machine.desired_state != "deleted"
                 now = datetime.now(UTC)
                 # The hosted controller deletes the data volume only once
                 # `retain_until` has passed, and for a machine it already
@@ -669,6 +693,25 @@ class OrganizationPurge:
                     )
                 state = machine.state
                 await session.commit()
+            if newly and self.revoke_box_controller is not None:
+                # Never allowed to stop a purge: the workspace's rows, the
+                # credential among them, are deleted later anyway.
+                try:
+                    revoked = await revoke_box_controllers(
+                        self.session_factory,
+                        machine,
+                        await workspaces_on(self.session_factory, machine_id),
+                        self.revoke_box_controller,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Could not revoke cloud machine %s's box controllers (%s)",
+                        machine_id,
+                        type(exc).__name__,
+                    )
+                    revoked = []
+                for controller_id in revoked:
+                    self.controller_removed(controller_id)
             outcome.waiting.append(
                 f"Cloud machine {machine_id} is being torn down, its instance "
                 f"and disk deleted (now {state})."
@@ -815,7 +858,30 @@ class OrganizationPurge:
                 "Took cloud machine %s off the organization's workspaces", machine_id
             )
 
-    async def _delete_organization(self, plan: PurgePlan, request: str) -> None:
+    async def _boxes_awaiting_removal(self, accounts: list[Account]) -> int:
+        """The box machines of the accounts the purge deletes that Core counts
+        deleted (`box_deleted`), each with a disk left in the cluster for the
+        manual removal step. By owner, not the plan's machines, which leave
+        out deleted ones; read before the purge removes the rows."""
+        if not accounts:
+            return 0
+        async with self.session_factory() as session:
+            return (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(CloudMachine)
+                    .where(
+                        CloudMachine.owner_id.in_([a.id for a in accounts]),
+                        CloudMachine.backend == "box",
+                        CloudMachine.state == "deleted",
+                    )
+                )
+                or 0
+            )
+
+    async def _delete_organization(
+        self, plan: PurgePlan, request: str, boxes_awaiting_removal: int
+    ) -> None:
         scoped = organization_scoped_tables(Base.metadata)
         async with organization_session(
             self.session_factory, plan.organization_id
@@ -870,6 +936,7 @@ class OrganizationPurge:
                     "customer_id": plan.customer_id,
                     "workspaces": [workspace.id for workspace in plan.workspaces],
                     "request": request,
+                    "boxes_awaiting_removal": boxes_awaiting_removal,
                 },
             )
             await session.commit()

@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from switch_core.observability.catalogue import CATALOGUE
+from switch_core.observability.hosted import START_CASES, START_STAGES
 
 _ARTIFACTS = Path(__file__).resolve().parents[4] / "deploy" / "observability"
 
@@ -98,15 +99,16 @@ def test_monitors_are_individually_importable() -> None:
 
 def test_launches_failing_counts_only_launch_and_wake_failures() -> None:
     """A machine whose owner left, that failed to stop, or that reported an
-    error isn't a launch failing, so none of those page as one."""
+    error after it had been ready isn't a launch failing, so none of those
+    page as one. One that needs attention before it was ever ready is."""
     (monitor,) = [
         m
         for m in _load("monitors.json")  # type: ignore[union-attr]
         if m["name"].endswith("Hosted machine launches failing")
     ]
     assert (
-        "reason IN (never_connected,wake_failed,not_scheduled,never_started)"
-        in monitor["query"]
+        "reason IN (never_connected,wake_failed,not_scheduled,never_started,"
+        "launch_refused)" in monitor["query"]
     )
 
 
@@ -185,8 +187,8 @@ def test_the_refusals_alerts_split_guessing_from_retries() -> None:
         for m in _load("monitors.json")  # type: ignore[union-attr]
         if "switch.controller.credential_refusals" in m["query"]
     }
-    assert len(refusal_monitors) == 2
-    (paging,) = [m for m in refusal_monitors.values() if "route IN" in m["query"]]
+    assert len(refusal_monitors) == 3
+    (paging,) = [m for m in refusal_monitors.values() if "reason IN" in m["query"]]
     (routes,) = re.findall(r"route IN \(([^)]*)\)", paging["query"])
     assert set(routes.split(",")) == {"agent", "controller", "hosted_controller"}
     (reasons,) = re.findall(r"reason IN \(([^)]*)\)", paging["query"])
@@ -196,9 +198,33 @@ def test_the_refusals_alerts_split_guessing_from_retries() -> None:
         "wrong",
         "missing",
     }
-    (exchange,) = [m for m in refusal_monitors.values() if m is not paging]
-    assert "route:management" in exchange["query"]
+    (exchange,) = [
+        m
+        for m in refusal_monitors.values()
+        if m is not paging and "lockout_started" not in m["query"]
+    ]
+    # Token exchange, enrolment and the in-cluster workers' own credentials:
+    # retries after a revoke or a rotation look like guesses, so low urgency.
+    (low,) = re.findall(r"route IN \(([^)]*)\)", exchange["query"])
+    assert set(low.split(",")) == {
+        "management",
+        "hosted_provisioner",
+        "hosted_operator",
+    }
     assert exchange["priority"] > paging["priority"]
+
+
+def test_a_lockout_starting_has_a_low_urgency_alert() -> None:
+    """v2's per-address lockout: several starting is worth a look, not a page."""
+    (lockouts,) = [
+        m
+        for m in _load("monitors.json")  # type: ignore[union-attr]
+        if "reason:lockout_started" in m["query"]
+    ]
+    assert "switch.controller.credential_refusals" in lockouts["query"]
+    assert "service:REPLACE-WITH-SERVICE" in lockouts["query"]
+    assert "env:" not in lockouts["query"]
+    assert lockouts["priority"] >= 4
 
 
 def test_no_monitor_names_one_deployment() -> None:
@@ -221,6 +247,13 @@ _READ_WITH_MAX = (
     "switch.hosted.agents",
     "switch.hosted.sessions",
     "switch.hosted.provider_login_problems",
+    # Hosted agents v2 boxes' gauges, reported the same way.
+    "switch.hosted.agent_restarts_10m",
+    "switch.hosted.agent_oom_kills",
+    "switch.hosted.waiting_for_room",
+    "switch.hosted.boxes_valve_memory",
+    "switch.hosted.gateway",
+    "switch.hosted.alerts_open",
     "switch.workos.cursor_age",
     "switch.workos.recheck.",
     "switch.workos.full_check.",
@@ -298,13 +331,14 @@ def test_the_signal_board_stays_readable_at_a_glance() -> None:
 
 # The hosted agents board, in the order whoever is on call reads it: is
 # anything firing, can people get working agents, why is it failing, capacity,
-# and whether the charts can be trusted.
+# and whether the charts can be trusted; then, under their own note, what only
+# a hosted agents v2 box reports.
 _HOSTED_BOARD_ORDER = [
     "Hosted alerts: status",
     "Cloud machines reporting vs expected, by kind (silent = reporting below expected)",
     "Seconds since the hosted controller service last called Core (min over pods; rising = reconciler silent)",
-    "Cloud machine changes, by event and reason",
-    "New cloud machines: seconds from request to first report, p95 / max",
+    "Cloud machine changes, by event, reason and kind",
+    "New cloud machines: seconds from request to first report, p95 / max, by kind",
     "Agents on cloud machines, by process state and kind (a v1 machine's session is always none)",
     "Sessions on cloud machines: running vs max",
     "Cloud calls that failed for hosted machines, by call and kind",
@@ -316,6 +350,22 @@ _HOSTED_BOARD_ORDER = [
     "Cloud machine memory used (%), p95 / max. Needs distribution mapping, see README",
     "Cloud machine disk used (%), p95 / max. Needs distribution mapping, see README",
     "Metrics samples that failed, by sampler",
+    "**Hosted agents v2 (boxes).**",
+    "Operator alerts open, by condition (the box, machine or service is on the operator's Alerts tab)",
+    "Hosted boxes: sessions waiting for room to start",
+    "Hosted agent restarts (last 10 min), OOM kills, and box evictions",
+    "Hosted boxes: agents the memory guard stopped, and sessions the valve parked",
+    "Provider gateway on hosted boxes, by kind; boxes with a valve memory problem, by state",
+    "Hosted box anonymous memory (bytes), p95 / max. Needs distribution mapping, see README",
+    "Hosted box starts: seconds to ready from the person's first request, p50 / p90, by case (first_start target 20 / 30 s, wake 10 / 20 s). Needs distribution mapping, see README",
+    "Hosted box start stages: p50 seconds each, by case and stage (they add up to the total). Needs distribution mapping, see README",
+    "Cloud machine claims refused at a limit, by reason (workspace_full: the per-workspace cap, hosted agents v2)",
+    "Warm pool: boxes by state against the pool's size (hosted agents v2)",
+    "Warm pool: new boxes by path (pool: a waiting box taken; fallback: made from scratch)",
+    "Warm pool: boxes retired by reason, and reaper reports refused (should be 0)",
+    "Warm pool: time to make a pool box (p50, p90)",
+    "Box removals by outcome (refused and unjustified should be 0)",
+    "Box operator: live boxes against its ceiling (alerts at 80% and 95%)",
 ]
 
 
@@ -325,13 +375,21 @@ def _hosted_board() -> dict:
     return board
 
 
+def _label(definition: dict) -> str:
+    """A chart's title, or a note's bold lead-in."""
+    if definition["type"] == "note":
+        return str(definition["content"].split("**", 2)[1].join(["**", "**"]))
+    return str(definition["title"])
+
+
 def test_the_hosted_board_reads_in_on_call_order() -> None:
     """The hosted note first, then the alerts, then each chart in order."""
     widgets = _hosted_board()["widgets"]
     first = widgets[0]["definition"]
     assert first["type"] == "note"
     assert first["content"].startswith("**Hosted agents (cloud machines).**")
-    assert [w["definition"].get("title") for w in widgets[1:]] == _HOSTED_BOARD_ORDER
+    labels = [_label(w["definition"]) for w in widgets[1:]]
+    assert labels == _HOSTED_BOARD_ORDER
 
 
 def test_the_hosted_board_is_the_main_dashboards_charts_unchanged() -> None:
@@ -368,7 +426,7 @@ def test_the_hosted_alerts_panel_lists_every_alert_on_its_charts() -> None:
     query = alerts["query"]
     assert query.startswith('tag:"service:REPLACE-WITH-SERVICE" (')
     assert set(re.findall(r'"([^"]+)"', query.split(" ", 1)[1])) == expected
-    assert len(expected) == 12
+    assert len(expected) == 18
 
 
 def test_the_hosted_board_carries_placeholders_not_a_deployment() -> None:
@@ -399,3 +457,38 @@ def test_monitors_on_the_workos_mirror_are_imported_only_where_it_runs() -> None
         reads_mirror = "switch.workos." in monitor["query"]
         tagged = "requires:workos-directory" in monitor["tags"]
         assert reads_mirror == tagged, monitor["name"]
+
+
+_START_METRIC = "switch.hosted.start_seconds"
+
+
+def _queries(document: object) -> list[str]:
+    """Every query string (`q` or `query`) anywhere in a JSON document."""
+    if isinstance(document, dict):
+        found = [
+            v for k, v in document.items() if k in ("q", "query") and isinstance(v, str)
+        ]
+        return found + [q for v in document.values() for q in _queries(v)]
+    if isinstance(document, list):
+        return [q for v in document for q in _queries(v)]
+    return []
+
+
+@pytest.mark.parametrize(
+    "filename", ["dashboard.json", "hosted-dashboard.json", "monitors.json"]
+)
+def test_box_start_charts_and_alerts_read_the_recorded_names(filename: str) -> None:
+    """Every case and stage a box start query names is one Core records, from
+    the one list in observability/hosted.py: a misspelt stage draws nothing and
+    an alert over it never fires."""
+    queries = [q for q in _queries(_load(filename)) if _START_METRIC in q]
+    assert queries, f"{filename} has no box start query"
+    for query in queries:
+        scope = query.split(_START_METRIC + "{", 1)[1].split("}", 1)[0]
+        stages = re.findall(r"stage:([a-z_]+)", scope)
+        for listed in re.findall(r"stage IN \(([^)]*)\)", scope):
+            stages += [s.strip() for s in listed.split(",")]
+        cases = re.findall(r"case:([a-z_]+)", scope)
+        assert stages, f"{query!r} names no stage"
+        assert set(stages) <= set(START_STAGES), query
+        assert set(cases) <= set(START_CASES), query

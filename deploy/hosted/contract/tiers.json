@@ -1,0 +1,23 @@
+{
+  "base": {
+    "cpu_limit": "4",
+    "cpu_request": "400m",
+    "disk": "40Gi",
+    "memory_limit": "11008Mi",
+    "memory_request": "11008Mi"
+  },
+  "max": {
+    "cpu_limit": "16",
+    "cpu_request": "1900m",
+    "disk": "160Gi",
+    "memory_limit": "48384Mi",
+    "memory_request": "48384Mi"
+  },
+  "plus": {
+    "cpu_limit": "8",
+    "cpu_request": "900m",
+    "disk": "80Gi",
+    "memory_limit": "23808Mi",
+    "memory_request": "23808Mi"
+  }
+}

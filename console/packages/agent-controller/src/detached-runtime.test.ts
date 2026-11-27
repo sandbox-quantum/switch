@@ -1,6 +1,14 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -24,6 +32,10 @@ if (args[0] === '--probe') {
   const config = path.join(args[0], 'config.json');
   if (!fs.existsSync(config)) fs.copyFileSync(args[1], config);
   if (process.env.FAKE_BUNDLE_FAIL) { console.error('cannot launch'); process.exit(4); }
+  // As the real launcher starts the supervisor: detached, with this environment.
+  require('node:child_process').spawn(process.execPath, ['-e',
+    "require('fs').writeFileSync(process.argv[1], process.env.SWITCH_OWNER_MARKER ?? 'none')",
+    path.join(args[0], 'supervisor-marker.txt')], { detached: true, stdio: 'ignore', env: process.env }).unref();
 }
 `;
 
@@ -113,6 +125,109 @@ describe('DetachedRuntime', () => {
       failure: null,
       takenOver: null,
     });
+  });
+
+  it("starts the host with the agent's owner marker, passed on to what it detaches", async () => {
+    const markers = {
+      markerFor: (agentId: string) => `marker-of-${agentId}`,
+      environmentFor: (agentId: string) => ({ SWITCH_OWNER_MARKER: `marker-of-${agentId}` }),
+    };
+    const marked = new DetachedRuntime({
+      layout: dataLayout(join(dir, 'data')),
+      bundlePath: bundle,
+      ownerMarkers: markers,
+    });
+    await marked.launch('agent-1', template(), {
+      isolation: 'isolated',
+      restart: false,
+      replaceIdentity: false,
+      clearTakenOver: false,
+    });
+    const written = join(dir, 'data', 'watchers', 'agent-1', 'supervisor-marker.txt');
+    for (
+      let attempt = 0;
+      attempt < 100 && !(existsSync(written) && readFileSync(written, 'utf8') !== '');
+      attempt++
+    )
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(readFileSync(written, 'utf8')).toBe(markers.markerFor('agent-1'));
+    // The controller's own environment carries no marker, so nothing it starts
+    // for itself is taken for an agent's.
+    expect(process.env.SWITCH_OWNER_MARKER).toBeUndefined();
+  });
+
+  it('in box mode, clears a control.json left by a host that died without stopping, before launching', async () => {
+    runtime = new DetachedRuntime({
+      layout: dataLayout(join(dir, 'data')),
+      bundlePath: bundle,
+      box: true,
+    });
+    const root = join(dir, 'data', 'watchers', 'agent-1');
+    mkdirSync(root, { recursive: true });
+    // A host killed with its box left its control port behind; no host is alive.
+    writeFileSync(
+      join(root, 'control.json'),
+      JSON.stringify({ port: 40123, token: 'a'.repeat(32) })
+    );
+    await runtime.launch('agent-1', template(), {
+      isolation: 'isolated',
+      restart: false,
+      replaceIdentity: false,
+      clearTakenOver: false,
+    });
+    expect(existsSync(join(root, 'control.json'))).toBe(false);
+  });
+
+  it('outside box mode, leaves a control.json at launch as before', async () => {
+    const root = join(dir, 'data', 'watchers', 'agent-1');
+    mkdirSync(root, { recursive: true });
+    const left = JSON.stringify({ port: 40123, token: 'a'.repeat(32) });
+    writeFileSync(join(root, 'control.json'), left);
+    await runtime.launch('agent-1', template(), {
+      isolation: 'isolated',
+      restart: false,
+      replaceIdentity: false,
+      clearTakenOver: false,
+    });
+    expect(readFileSync(join(root, 'control.json'), 'utf8')).toBe(left);
+  });
+
+  it('in box mode, keeps a live host’s own control.json at launch', async () => {
+    runtime = new DetachedRuntime({
+      layout: dataLayout(join(dir, 'data')),
+      bundlePath: bundle,
+      box: true,
+    });
+    const root = join(dir, 'data', 'watchers', 'agent-1');
+    mkdirSync(root, { recursive: true });
+    const watcher = await fakeWatcher(root);
+    writeFileSync(join(root, 'shared-owner.lock'), JSON.stringify({ pid: watcher.pid }));
+    const own = JSON.stringify({ port: 40124, token: 'b'.repeat(32) });
+    writeFileSync(join(root, 'control.json'), own);
+    await runtime.launch('agent-1', template(), {
+      isolation: 'isolated',
+      restart: false,
+      replaceIdentity: false,
+      clearTakenOver: false,
+    });
+    expect(readFileSync(join(root, 'control.json'), 'utf8')).toBe(own);
+  });
+
+  it('starts the host with no marker when it has none to give', async () => {
+    await runtime.launch('agent-1', template(), {
+      isolation: 'isolated',
+      restart: false,
+      replaceIdentity: false,
+      clearTakenOver: false,
+    });
+    const written = join(dir, 'data', 'watchers', 'agent-1', 'supervisor-marker.txt');
+    for (
+      let attempt = 0;
+      attempt < 100 && !(existsSync(written) && readFileSync(written, 'utf8') !== '');
+      attempt++
+    )
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(readFileSync(written, 'utf8')).toBe('none');
   });
 
   it('surfaces a launcher failure with its output', async () => {

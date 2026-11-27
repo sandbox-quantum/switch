@@ -17,6 +17,11 @@ from switch_core.delivery.send_limits import MessageRefused, SendRateLimited
 from switch_core.trust.client import NullTrustClient
 
 
+async def _not_handed_in(_msg: object) -> bool:
+    """No post is in its room yet: these tests are not about second copies."""
+    return False
+
+
 class _FakeHumanActor:
     client_id = "human-actor-client"
     transport_user_id = "@human actor:s"
@@ -125,6 +130,7 @@ def _fake_bridge(session_factory: async_sessionmaker[AsyncSession]) -> SimpleNam
         _adapter=_FakeAdapter(),
         _channel_to_room={"chan-1": ("room-1", "!room:s")},
         _is_registered_agent=_is_registered_agent,
+        _already_handed_in=_not_handed_in,
         _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
         _trust_client=NullTrustClient(),

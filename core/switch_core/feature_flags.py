@@ -81,6 +81,14 @@ SWITCH_BUDDY = "switch_buddy"
 # ALWAYS_ON_FEATURE_FLAGS.
 GROUP_CHATS = "group_chats"
 
+# Awake-time budgets on hosted agents. Off until every hosted
+# box is split (v12.2's roll), because on an unsplit box the agents share the
+# controller's user and could under-report the awake time a budget sums.
+# Off, the budgets route refuses an
+# `awake_minutes` budget, `BudgetGuard` ignores any such row, and Console
+# doesn't offer one. Awake time is still counted and shown either way.
+HOSTED_AWAKE_BUDGETS = "hosted_awake_budgets"
+
 # switch-buddy's chat on a bridge: Console offers to move the buddy's welcome
 # to a private channel with the person on their team's chat app (a chat
 # created with `bridgeId`, resumed with `resumeOnly`). Like group chats, turn
@@ -162,6 +170,10 @@ ALWAYS_ON_FEATURE_FLAGS: frozenset[str] = frozenset(
 )
 
 # Every flag the server recognises.
+# Flags only hosted agents v2 has, absent upstream: a list of flags leaves
+# them out with v2 off, so it is upstream's exactly.
+V2_ONLY_FLAGS: frozenset[str] = frozenset({HOSTED_AWAKE_BUDGETS})
+
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
         ECOSYSTEM_SHOW_OWNERS,
@@ -174,6 +186,7 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         AGENT_CHATS,
         SWITCH_BUDDY,
         GROUP_CHATS,
+        HOSTED_AWAKE_BUDGETS,
         BUDDY_SLACK_HANDOFF,
         ORGANIZATION_CONNECTOR_APPS,
         GATEWAY_V2,

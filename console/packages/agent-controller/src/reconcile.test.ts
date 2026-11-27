@@ -9,9 +9,10 @@ import {
 } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
-import { planReconcile, reconcile, type ReconcileDeps } from './reconcile';
+import { BOX_PROVIDERS } from './providers';
+import { definitionProblem, planReconcile, reconcile, type ReconcileDeps } from './reconcile';
 import { emptyObservation } from './runtime';
-import type { AgentAssignment, Assignment } from './schemas';
+import { type AgentAssignment, type Assignment, PROVIDERS } from './schemas';
 import type { GivenLogin } from './sealed-logins';
 import { LAUNCH_GRACE_MS } from './status';
 import { ControllerStore } from './store';
@@ -527,5 +528,18 @@ describe('planReconcile', () => {
       nowMs: 0,
     });
     expect(actions).toEqual([expect.objectContaining({ kind: 'start', restart: true })]);
+  });
+});
+
+describe('the providers offered', () => {
+  it('refuses an agent of a provider this controller does not offer, as box mode does', () => {
+    const pi = agent({}, { provider: 'pi' });
+    const base = { dataDir: join(dir, 'data'), workspaces: '/data/workspaces', policy };
+    expect(definitionProblem(pi, base)).toBeNull();
+    expect(definitionProblem(pi, { ...base, offered: PROVIDERS })).toBeNull();
+    expect(definitionProblem(pi, { ...base, offered: BOX_PROVIDERS })).toBe(
+      "This controller does not run the provider 'pi'."
+    );
+    expect(definitionProblem(agent(), { ...base, offered: BOX_PROVIDERS })).toBeNull();
   });
 });

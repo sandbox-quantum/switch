@@ -1,0 +1,1274 @@
+import json
+import logging
+from itertools import count
+from urllib.error import HTTPError
+
+import pytest
+
+from switch_hosted_controller.egress_lists import (
+    PARTS,
+    BoxEgress,
+    EgressConfigError,
+    EgressKubeApi,
+    box_files,
+    hash_matches,
+    load_egress,
+    login_from_url,
+    new_password,
+    parse_egress,
+    passwd_hashes,
+    reconcile_once,
+    sha512_crypt,
+)
+
+BOXES = {
+    "11111111-1111-1111-1111-111111111111": "agents-user-ada",
+    "22222222-2222-2222-2222-222222222222": "agents-user-bo",
+}
+PROXY = "squid.egress-proxy.svc:3128"
+
+
+def write(tmp_path, doc, mode=0o600):
+    path = tmp_path / "egress.json"
+    path.write_text(json.dumps(doc))
+    path.chmod(mode)
+    return path
+
+
+# ---- SHA-512 crypt, against the specification's own vectors ----
+
+
+def test_sha512_crypt_matches_the_specification():
+    assert sha512_crypt("Hello world!", "saltstring") == (
+        "$6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl/O817G3uBnIFNjnQJuesI68u4OTLiBFdcbYEdFCoEOfaS35inz1"
+    )
+    assert sha512_crypt("Hello world!", "saltstringsaltstring", rounds=10000) == (
+        "$6$rounds=10000$saltstringsaltst$OW1/O6BYHV6BcXZu8QVeXbDWra3Oeqh0sbHbbMCVNSnCM/UrjmM0Dp8vOuZeHBy/"
+        "YTBmSK6H9qs/y3RnOaw5v."
+    )
+
+
+def test_a_new_password_is_32_random_bytes_and_safe_in_a_url():
+    a, b = new_password(), new_password()
+    assert a != b and len(a) == 43
+    assert all(c.isalnum() or c in "-_" for c in a)
+
+
+# ---- the operator's egress file ----
+
+
+def test_boxes_not_in_the_file_get_the_default_and_the_file_overrides(tmp_path):
+    path = write(
+        tmp_path,
+        {
+            "agents-user-ada": {
+                "parts": ["github", "github-downloads"],
+                "extras": ["example.org"],
+                "split": True,
+            }
+        },
+    )
+    ada, bo = load_egress(path, BOXES, ("github",))
+    assert ada == BoxEgress(
+        "agents-user-ada", ("github", "github-downloads"), ("example.org",), True
+    )
+    assert bo == BoxEgress("agents-user-bo", ("github",))
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        {"agents-user-zed": {}},  # not in the box map
+        {"kube-system": {}},
+        {"agents-user-ada": {"parts": ["ai-providers"]}},  # follows the split rule, never chosen
+        {"agents-user-ada": {"parts": ["base"]}},
+        {"agents-user-ada": {"parts": ["everything"]}},
+        {"agents-user-ada": {"extras": ["not a host"]}},
+        {"agents-user-ada": {"extras": ["10.0.0.1"]}},
+        {"agents-user-ada": {"extras": ["evil.com\nhttp_access allow all"]}},
+        {"agents-user-ada": {"extras": [f"h{i}.example.org" for i in range(11)]}},
+        {"agents-user-ada": {"split": "yes"}},
+        {"agents-user-ada": {"parts": ["github"], "owner": "x"}},
+        [],
+    ],
+)
+def test_a_bad_egress_file_is_refused_whole(tmp_path, doc):
+    with pytest.raises(EgressConfigError):
+        load_egress(write(tmp_path, doc), BOXES, ())
+
+
+def test_an_egress_file_others_can_read_is_refused(tmp_path):
+    with pytest.raises(EgressConfigError):
+        load_egress(write(tmp_path, {}, mode=0o644), BOXES, ())
+
+
+def test_a_bad_default_part_is_refused(tmp_path):
+    with pytest.raises(EgressConfigError):
+        load_egress(write(tmp_path, {}), BOXES, ("ai-providers",))
+
+
+# ---- what each box's list holds ----
+
+
+def test_an_unsplit_box_keeps_the_provider_hosts_on_its_own_login_as_today():
+    box = BoxEgress("agents-user-bo", ())
+    assert set(box.agent_hosts()) == set(PARTS["base"]) | set(PARTS["ai-providers"])
+    files = box_files(box)
+    assert set(files) == {"bo.conf", "bo.list"}
+    assert "github.com" not in files["bo.list"]
+
+
+def test_a_split_box_moves_the_provider_hosts_to_the_controllers_login_only():
+    box = BoxEgress("agents-user-ada", ("github",), split=True)
+    assert not set(box.agent_hosts()) & set(PARTS["ai-providers"])
+    assert set(PARTS["ai-providers"]) <= set(box.ctl_hosts())
+    files = box_files(box)
+    assert files["ada.conf"].splitlines()[1:] == [
+        "acl b_ada proxy_auth box-ada",
+        'acl l_ada dstdomain -n "/etc/squid/boxes/ada.list"',
+        "http_access allow CONNECT b_ada l_ada",
+        "acl c_ada proxy_auth box-ada-ctl",
+        'acl lc_ada dstdomain -n "/etc/squid/boxes/ada.ctl.list"',
+        "http_access allow CONNECT c_ada lc_ada",
+    ]
+    assert "aiplatform.googleapis.com" in files["ada.ctl.list"]
+
+
+def test_github_downloads_are_off_unless_asked_for_on_their_own():
+    assert (
+        "raw.githubusercontent.com" not in BoxEgress("agents-user-ada", ("github",)).agent_hosts()
+    )
+    assert (
+        "raw.githubusercontent.com"
+        in BoxEgress("agents-user-ada", ("github-downloads",)).agent_hosts()
+    )
+
+
+# ---- the generator ----
+
+
+class FakeKube:
+    def __init__(self, logins):
+        self.logins = logins  # namespace -> dict, or absent for a missing Secret
+        self.files: dict[str, str] = {"gone.conf": "old", "gone.list": "old"}
+        self.passwd_text = ""
+        self.writes = []
+
+    def login(self, namespace):
+        return dict(self.logins[namespace]) if namespace in self.logins else None
+
+    def set_login(self, namespace, values):
+        self.writes.append(("login", namespace))
+        self.logins[namespace] = dict(values)
+
+    def boxes_files(self):
+        return dict(self.files)
+
+    def patch_boxes_files(self, changes):
+        self.writes.append(("files", sorted(changes)))
+        for key, value in changes.items():
+            if value is None:
+                self.files.pop(key, None)
+            else:
+                self.files[key] = value
+
+    def passwd(self):
+        return self.passwd_text
+
+    def set_passwd(self, text):
+        self.writes.append(("passwd",))
+        self.passwd_text = text
+
+
+def fixed():
+    n = count()
+    return (lambda: f"pw{next(n):040d}"), (lambda: "abcdefghijklmnop")
+
+
+def test_the_generator_makes_logins_writes_the_files_and_removes_a_gone_box():
+    kube = FakeKube({"agents-user-ada": {}, "agents-user-bo": {}})
+    boxes = [BoxEgress("agents-user-ada", ("github",), split=True), BoxEgress("agents-user-bo", ())]
+    pw, salt = fixed()
+    result = reconcile_once(kube, boxes, PROXY, pw, salt)
+    assert (result.boxes, result.logins_made, result.skipped) == (2, 2, 0)
+    ada = kube.logins["agents-user-ada"]
+    # Only the keys P7 lets the generator write: the two URLs, each with its login in it.
+    assert set(ada) == {"https_proxy", "ctl_https_proxy"}
+    assert set(kube.logins["agents-user-bo"]) == {"https_proxy"}
+    password = login_from_url(ada["https_proxy"], "box-ada", PROXY)
+    ctl_password = login_from_url(ada["ctl_https_proxy"], "box-ada-ctl", PROXY)
+    assert password and ctl_password and password != ctl_password
+    hashes = passwd_hashes(kube.passwd_text)
+    assert hashes["box-ada"] == sha512_crypt(password, "abcdefghijklmnop")
+    assert hash_matches(ctl_password, hashes["box-ada-ctl"])
+    assert set(kube.files) == {
+        "ada.conf",
+        "ada.list",
+        "ada.ctl.list",
+        "bo.conf",
+        "bo.list",
+    }  # gone.* removed
+    lines = kube.passwd_text.splitlines()
+    assert [line.split(":")[0] for line in lines] == ["box-ada", "box-ada-ctl", "box-bo"]
+    assert all(line.split(":", 1)[1].startswith("$6$") for line in lines)
+    assert password not in kube.passwd_text and ctl_password not in kube.passwd_text  # hashes only
+
+
+def test_a_second_run_changes_nothing_so_squid_isnt_reloaded():
+    kube = FakeKube({"agents-user-ada": {}, "agents-user-bo": {}})
+    boxes = [BoxEgress("agents-user-ada", ()), BoxEgress("agents-user-bo", ())]
+    reconcile_once(kube, boxes, PROXY)
+    before = dict(kube.logins["agents-user-ada"])
+    kube.writes.clear()
+    result = reconcile_once(kube, boxes, PROXY)
+    assert kube.writes == [] and result.logins_made == 0 and not result.passwd_changed
+    assert (
+        kube.logins["agents-user-ada"] == before
+    )  # the box keeps its password and its HTTPS_PROXY
+
+
+def test_unsplitting_a_box_removes_its_controller_login():
+    kube = FakeKube({"agents-user-ada": {}})
+    reconcile_once(kube, [BoxEgress("agents-user-ada", (), split=True)], PROXY)
+    reconcile_once(kube, [BoxEgress("agents-user-ada", ())], PROXY)
+    assert not any(k.startswith("ctl_") for k in kube.logins["agents-user-ada"])
+    assert "box-ada-ctl" not in kube.passwd_text and "ada.ctl.list" not in kube.files
+
+
+def test_a_box_without_its_login_secret_is_skipped_and_the_others_carry_on():
+    kube = FakeKube({"agents-user-bo": {}})
+    result = reconcile_once(
+        kube, [BoxEgress("agents-user-ada", ()), BoxEgress("agents-user-bo", ())], PROXY
+    )
+    assert result.skipped == 1
+    assert "ada.conf" not in kube.files and "bo.conf" in kube.files
+    assert "box-ada" not in kube.passwd_text
+
+
+def test_no_password_ever_reaches_a_log_line(caplog):
+    kube = FakeKube({"agents-user-ada": {}})
+    with caplog.at_level(logging.DEBUG):
+        reconcile_once(kube, [BoxEgress("agents-user-ada", ("github",), split=True)], PROXY)
+
+        class Broken(FakeKube):
+            def set_login(self, namespace, values):
+                raise RuntimeError(f"api down for {namespace}")
+
+        reconcile_once(Broken({"agents-user-ada": {}}), [BoxEgress("agents-user-ada", ())], PROXY)
+    login = kube.logins["agents-user-ada"]
+    hashes = passwd_hashes(kube.passwd_text)
+    for secret in (
+        login_from_url(login["https_proxy"], "box-ada", PROXY),
+        login_from_url(login["ctl_https_proxy"], "box-ada-ctl", PROXY),
+        hashes["box-ada"],
+        hashes["box-ada-ctl"],
+        login["https_proxy"],
+    ):
+        assert secret not in caplog.text
+        assert secret[:12] not in caplog.text
+    assert "agents-user-ada" in caplog.text  # ids and counts are logged
+
+
+# ---- the Kubernetes calls ----
+
+
+class FakeCall:
+    def __init__(self, responses):
+        self.responses = responses
+        self.calls = []
+
+    def __call__(self, method, path, body=None):
+        self.calls.append((method, path, body))
+        response = self.responses.get((method, path), {})
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def test_the_api_touches_only_the_three_named_objects():
+    call = FakeCall(
+        {("GET", "/api/v1/namespaces/agents-user-ada/secrets/switch-proxy-login"): {"data": {}}}
+    )
+    api = EgressKubeApi(call)
+    api.login("agents-user-ada")
+    api.set_login("agents-user-ada", {"https_proxy": "http://box-ada:pw@h:1"})
+    api.boxes_files()
+    api.patch_boxes_files({"ada.conf": "x", "gone.conf": None})
+    api.passwd()
+    api.set_passwd("box-ada:$6$x$y\n")
+    paths = {path for _, path, _ in call.calls}
+    assert paths == {
+        "/api/v1/namespaces/agents-user-ada/secrets/switch-proxy-login",
+        "/api/v1/namespaces/egress-proxy/configmaps/squid-boxes",
+        "/api/v1/namespaces/egress-proxy/secrets/squid-passwd",
+    }
+    assert {method for method, _, _ in call.calls} == {"GET", "PATCH"}
+    assert (
+        "PATCH",
+        "/api/v1/namespaces/egress-proxy/configmaps/squid-boxes",
+        {"data": {"ada.conf": "x", "gone.conf": None}},
+    ) in call.calls
+
+
+def test_a_missing_login_secret_reads_as_none_and_other_errors_raise():
+    path = "/api/v1/namespaces/agents-user-ada/secrets/switch-proxy-login"
+    assert (
+        EgressKubeApi(FakeCall({("GET", path): HTTPError("u", 404, "x", {}, None)})).login(
+            "agents-user-ada"
+        )
+        is None
+    )
+    with pytest.raises(HTTPError):
+        EgressKubeApi(FakeCall({("GET", path): HTTPError("u", 403, "x", {}, None)})).login(
+            "agents-user-ada"
+        )
+    with pytest.raises(ValueError):
+        EgressKubeApi(FakeCall({})).login("kube-system")
+
+
+def test_a_passing_api_error_keeps_the_box_on_its_current_list():
+    kube = FakeKube({"agents-user-ada": {}, "agents-user-bo": {}})
+    boxes = [BoxEgress("agents-user-ada", ("github",)), BoxEgress("agents-user-bo", ())]
+    reconcile_once(kube, boxes, PROXY)
+    files, passwd = dict(kube.files), kube.passwd_text
+
+    class Flaky(FakeKube):
+        def login(self, namespace):
+            if namespace == "agents-user-ada":
+                raise TimeoutError("api slow")
+            return super().login(namespace)
+
+    flaky = Flaky(kube.logins)
+    flaky.files, flaky.passwd_text = dict(files), passwd
+    result = reconcile_once(flaky, boxes, PROXY)
+    assert result.skipped == 1
+    assert (
+        flaky.files == files and flaky.passwd_text == passwd
+    )  # ada not cut off, nothing rewritten
+
+
+def test_the_loop_rereads_the_files_and_a_refused_file_changes_nothing(caplog):
+    kube = FakeKube({"agents-user-ada": {}})
+    loads = iter(
+        [
+            [BoxEgress("agents-user-ada", ())],
+            EgressConfigError("agents-user-ada: an extra is not a host name"),
+        ]
+    )
+
+    def load():
+        value = next(loads)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    passes = iter([False, False, True])
+    from switch_hosted_controller.egress_lists import run
+
+    run(kube, load, PROXY, stop=lambda: next(passes), sleep=lambda s: None)
+    writes = len(kube.writes)
+    assert writes > 0 and "ada.conf" in kube.files
+    assert "refused, nothing changed" in caplog.text
+
+
+# ---- the gate's own login ----
+
+
+def test_the_gate_gets_its_own_login_with_only_its_listed_hosts(tmp_path):
+    from switch_hosted_controller.egress_lists import GATE_NAMESPACE
+
+    boxes = load_egress(write(tmp_path, {"_gate": {"hosts": ["pypi.org"]}}), BOXES, ())
+    gate = next(b for b in boxes if b.namespace == GATE_NAMESPACE)
+    assert gate.user == "gate-check" and gate.agent_hosts() == ["pypi.org"]
+    files = box_files(gate)
+    assert set(files) == {"_gate.conf", "_gate.list"}
+    assert "acl b__gate proxy_auth gate-check" in files["_gate.conf"]
+    assert files["_gate.list"] == "pypi.org\n"  # no base, no providers: only what its check needs
+    kube = FakeKube({GATE_NAMESPACE: {}, "agents-user-ada": {}, "agents-user-bo": {}})
+    reconcile_once(kube, boxes, PROXY)
+    assert kube.logins[GATE_NAMESPACE]["https_proxy"].startswith("http://gate-check:")
+
+
+@pytest.mark.parametrize(
+    "gate",
+    [
+        {},
+        {"hosts": []},
+        {"hosts": ["not a host"]},
+        {"hosts": ["a.org"], "extra": 1},
+        [],
+        {"hosts": [f"h{i}.org" for i in range(11)]},
+    ],
+)
+def test_a_bad_gate_entry_is_refused(tmp_path, gate):
+    with pytest.raises(EgressConfigError):
+        load_egress(write(tmp_path, {"_gate": gate}), BOXES, ())
+
+
+def test_the_api_may_write_the_gates_login_and_nothing_else_outside_box_namespaces():
+    call = FakeCall({})
+    EgressKubeApi(call).login("switch-node-gate")
+    assert call.calls[0][1] == "/api/v1/namespaces/switch-node-gate/secrets/switch-proxy-login"
+    with pytest.raises(ValueError):
+        EgressKubeApi(call).login("egress-proxy")
+
+
+# ---- the box template check ----
+
+
+def env(name, key, secret="switch-proxy-login"):
+    return {"name": name, "valueFrom": {"secretKeyRef": {"name": secret, "key": key}}}
+
+
+GOOD_SPLIT = {
+    "containers": [
+        {
+            "name": "agents",
+            "env": [env("HTTPS_PROXY", "https_proxy"), env("https_proxy", "https_proxy")],
+        },
+        {"name": "controller", "env": [env("SWITCH_CONTROLLER_GATEWAY_PROXY", "ctl_https_proxy")]},
+    ]
+}
+
+
+def test_a_well_formed_box_template_passes():
+    from switch_hosted_controller.egress_lists import check_box_pod_spec
+
+    assert check_box_pod_spec(GOOD_SPLIT, split=True) == []
+    unsplit = {"containers": [{"name": "box", "env": [env("HTTPS_PROXY", "https_proxy")]}]}
+    assert check_box_pod_spec(unsplit, split=False) == []
+
+
+@pytest.mark.parametrize(
+    ("spec", "split", "says"),
+    [
+        (
+            {"containers": [{"name": "agents", "env": [env("X", "ctl_https_proxy")]}]},
+            True,
+            "controller's login",
+        ),
+        (
+            {
+                "containers": [
+                    {"name": "agents", "envFrom": [{"secretRef": {"name": "switch-proxy-login"}}]}
+                ]
+            },
+            False,
+            "envFrom",
+        ),
+        (
+            {
+                "volumes": [{"name": "v", "secret": {"secretName": "switch-proxy-login"}}],
+                "containers": [],
+            },
+            False,
+            "mounts",
+        ),
+        (
+            {
+                "volumes": [
+                    {
+                        "name": "v",
+                        "projected": {"sources": [{"secret": {"name": "switch-proxy-login"}}]},
+                    }
+                ],
+                "containers": [],
+            },
+            False,
+            "mounts",
+        ),
+        (
+            {"containers": [{"name": "agents", "env": [env("P", "password")]}]},
+            False,
+            "no container may take",
+        ),
+        (
+            {"containers": [{"name": "controller", "env": [env("P", "ctl_https_proxy")]}]},
+            False,
+            "isn't split",
+        ),
+        (
+            {
+                "initContainers": [{"name": "init", "env": [env("P", "ctl_https_proxy")]}],
+                "containers": [],
+            },
+            True,
+            "controller's login",
+        ),
+    ],
+)
+def test_the_template_check_refuses_every_way_a_container_could_get_the_wrong_login(
+    spec, split, says
+):
+    from switch_hosted_controller.egress_lists import check_box_pod_spec
+
+    problems = check_box_pod_spec(spec, split)
+    assert problems and any(says in p for p in problems), problems
+
+
+def test_the_template_check_command_reads_a_rendered_statefulset(tmp_path, capsys):
+    from switch_hosted_controller.egress_lists import check_template_main
+
+    good = tmp_path / "good.json"
+    good.write_text(json.dumps({"kind": "StatefulSet", "spec": {"template": {"spec": GOOD_SPLIT}}}))
+    assert check_template_main([str(good), "--split"]) == 0
+    assert check_template_main([str(good)]) == 1  # the controller's key on a box that isn't split
+    assert "REFUSE" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"name": "GITHUB_TOKEN", "value": "ghp_x"},
+        {"name": "DB_PASSWORD", "value": "x"},
+        {"name": "anthropic_api_key", "value": "sk-x"},
+        {"name": "CLIENT_SECRET", "value": "x"},
+        {"name": "HTTPS_PROXY", "value": "http://box-ada:pw@squid.egress-proxy.svc:3128"},
+        {"name": "https_proxy", "value": "http://u:p@h:1"},
+    ],
+)
+def test_the_template_check_refuses_a_credential_as_a_plain_value(env):
+    from switch_hosted_controller.egress_lists import check_box_pod_spec
+
+    problems = check_box_pod_spec({"containers": [{"name": "agents", "env": [env]}]}, split=False)
+    assert problems and "plain value" in problems[0]
+
+
+def test_a_proxy_without_a_login_and_references_are_fine():
+    from switch_hosted_controller.egress_lists import check_box_pod_spec
+
+    spec = {
+        "containers": [
+            {
+                "name": "agents",
+                "env": [
+                    {"name": "HTTPS_PROXY", "value": "http://squid.egress-proxy.svc:3128"},
+                    {"name": "NO_PROXY", "value": "10.0.0.1,.svc,.cluster.local,localhost"},
+                    {
+                        "name": "GITHUB_TOKEN",
+                        "valueFrom": {"secretKeyRef": {"name": "other", "key": "t"}},
+                    },
+                    {"name": "EMPTY_KEY", "value": ""},
+                ],
+            }
+        ]
+    }
+    assert check_box_pod_spec(spec, split=False) == []
+
+
+# ---- step 2, in the cluster: P7's two keys, the API reads, split by default (A1's blocker) ----
+
+
+def test_a_login_is_kept_while_its_url_and_squids_hash_agree():
+    kube = FakeKube({"agents-user-ada": {}})
+    box = [BoxEgress("agents-user-ada", (), split=True)]
+    reconcile_once(kube, box, PROXY)
+    before = dict(kube.logins["agents-user-ada"])
+    kube.writes.clear()
+    reconcile_once(kube, box, PROXY)
+    assert kube.writes == [] and kube.logins["agents-user-ada"] == before
+
+
+@pytest.mark.parametrize(
+    "damage", ["no_line", "other_hash", "not_6", "other_user_url", "other_proxy"]
+)
+def test_a_login_that_doesnt_check_out_is_replaced_not_reused(damage):
+    """A stale or missing `squid-passwd` line, or a URL that isn't ours, gets a new login."""
+    kube = FakeKube({"agents-user-ada": {}})
+    box = [BoxEgress("agents-user-ada", ())]
+    reconcile_once(kube, box, PROXY)
+    url = kube.logins["agents-user-ada"]["https_proxy"]
+    if damage == "no_line":
+        kube.passwd_text = ""
+    elif damage == "other_hash":
+        kube.passwd_text = f"box-ada:{sha512_crypt('something-else', 'abcdefghijklmnop')}\n"
+    elif damage == "not_6":
+        kube.passwd_text = "box-ada:$1$abc$def\n"
+    elif damage == "other_user_url":
+        kube.logins["agents-user-ada"]["https_proxy"] = url.replace("box-ada:", "box-bo:")
+    else:
+        kube.logins["agents-user-ada"]["https_proxy"] = url.replace(PROXY, "evil.example:3128")
+    result = reconcile_once(kube, box, PROXY)
+    new_url = kube.logins["agents-user-ada"]["https_proxy"]
+    assert result.logins_made == 1 and new_url != url
+    password = login_from_url(new_url, "box-ada", PROXY)
+    assert hash_matches(password, passwd_hashes(kube.passwd_text)["box-ada"])
+
+
+def test_an_older_eight_key_secret_keeps_its_url_and_loses_the_rest():
+    """A Secret an older generator filled: the URL stays (so the box's HTTPS_PROXY doesn't change), and the
+    username, password and hash keys P7 doesn't allow are removed."""
+    password = "a" * 43
+    url = f"http://box-ada:{password}@{PROXY}"
+    line_hash = sha512_crypt(password, "abcdefghijklmnop")
+    kube = FakeKube(
+        {
+            "agents-user-ada": {
+                "username": "box-ada",
+                "password": password,
+                "hash": line_hash,
+                "https_proxy": url,
+            }
+        }
+    )
+    kube.passwd_text = f"box-ada:{line_hash}\n"
+    reconcile_once(kube, [BoxEgress("agents-user-ada", ())], PROXY)
+    assert kube.logins["agents-user-ada"] == {"https_proxy": url}
+    assert passwd_hashes(kube.passwd_text) == {"box-ada": line_hash}
+
+
+def test_hash_matches_reads_the_hashs_own_salt_at_the_default_cost_only():
+    assert hash_matches("Hello world!", sha512_crypt("Hello world!", "saltstring"))
+    assert hash_matches("Hello world!", sha512_crypt("Hello world!", "saltstring", rounds=5000))
+    # Any other cost is not trusted (a tampered line could stall every pass), so it never matches.
+    assert not hash_matches(
+        "Hello world!", sha512_crypt("Hello world!", "saltstring", rounds=10000)
+    )
+    assert not hash_matches("Hello world!", "$6$rounds=999999999$saltstring$x")
+    assert not hash_matches("Hello world", sha512_crypt("Hello world!", "saltstring"))
+    for bad in ("", "x", "$1$a$b", "$6$rounds=x$a$b", "$6$a"):
+        assert not hash_matches("Hello world!", bad)
+
+
+def test_login_from_url_takes_only_our_exact_form():
+    assert login_from_url(f"http://box-ada:pw-1_x@{PROXY}", "box-ada", PROXY) == "pw-1_x"
+    for bad in (
+        None,
+        3,
+        f"http://box-ada:@{PROXY}",
+        f"http://box-ada:p w@{PROXY}",
+        f"http://box-ada:pw@{PROXY}/x",
+        f"https://box-ada:pw@{PROXY}",
+        f"http://box-adam:pw@{PROXY}",
+    ):
+        assert login_from_url(bad, "box-ada", PROXY) is None
+
+
+def test_a_box_with_no_entry_is_split_by_default_and_an_entry_can_say_otherwise():
+    ada, bo = parse_egress(
+        json.dumps({"agents-user-bo": {"split": False}}), BOXES, (), default_split=True
+    )
+    assert ada.split and not bo.split
+    kube = FakeKube({"agents-user-ada": {}, "agents-user-bo": {}})
+    reconcile_once(kube, [ada, bo], PROXY)
+    # Template v2.3's controller reads ctl_https_proxy: a provisioned box gets it with no entry of its own.
+    assert set(kube.logins["agents-user-ada"]) == {"https_proxy", "ctl_https_proxy"}
+    assert set(kube.logins["agents-user-bo"]) == {"https_proxy"}
+    # The default can be turned off.
+    ada, bo = parse_egress("{}", BOXES, (), default_split=False)
+    assert not ada.split and not bo.split
+
+
+def test_empty_settings_give_every_box_the_defaults():
+    ada, bo = parse_egress("{}", BOXES, ("github",), default_split=True)
+    assert ada == BoxEgress("agents-user-ada", ("github",), split=True)
+    assert bo == BoxEgress("agents-user-bo", ("github",), split=True)
+
+
+def test_settings_that_arent_json_are_refused():
+    with pytest.raises(EgressConfigError):
+        parse_egress("{not json", BOXES, ())
+
+
+def _b64(text):
+    import base64
+
+    return base64.b64encode(text.encode()).decode()
+
+
+BOX_MAP_PATH = "/api/v1/namespaces/switch-hosted/secrets/box-map"
+SETTINGS_PATH = "/api/v1/namespaces/egress-lists/secrets/egress-settings"
+
+
+def test_the_box_map_is_read_by_name_through_the_api():
+    call = FakeCall(
+        {
+            ("GET", BOX_MAP_PATH): {
+                "data": {
+                    "11111111-1111-1111-1111-111111111111": _b64("agents-user-ada"),
+                    "22222222-2222-2222-2222-222222222222": _b64("agents-user-bo\n"),
+                }
+            }
+        }
+    )
+    assert EgressKubeApi(call).box_map() == BOXES
+    assert call.calls == [("GET", BOX_MAP_PATH, None)]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"not-a-machine": _b64("agents-user-ada")},
+        {"11111111-1111-1111-1111-111111111111": _b64("kube-system")},
+        {
+            "11111111-1111-1111-1111-111111111111": _b64("agents-user-ada"),
+            "22222222-2222-2222-2222-222222222222": _b64("agents-user-ada"),
+        },
+        {"11111111-1111-1111-1111-111111111111": "not base64!"},
+    ],
+)
+def test_a_bad_box_map_is_refused_whole(data):
+    with pytest.raises(EgressConfigError):
+        EgressKubeApi(FakeCall({("GET", BOX_MAP_PATH): {"data": data}})).box_map()
+
+
+def test_the_settings_are_read_by_name_and_must_hold_one_key():
+    call = FakeCall({("GET", SETTINGS_PATH): {"data": {"egress.json": _b64("{}")}}})
+    assert EgressKubeApi(call).settings() == "{}"
+    assert call.calls == [("GET", SETTINGS_PATH, None)]
+    for data in ({}, {"egress.json": _b64("{}"), "other": _b64("x")}, {"other": _b64("{}")}):
+        with pytest.raises(EgressConfigError):
+            EgressKubeApi(FakeCall({("GET", SETTINGS_PATH): {"data": data}})).settings()
+
+
+@pytest.mark.parametrize("code", [403, 404])
+def test_an_unreadable_box_map_or_settings_writes_nothing(caplog, code):
+    """A 403 or 404 on either read logs, and nothing is written that pass."""
+    from switch_hosted_controller.egress_lists import run
+
+    for path in (BOX_MAP_PATH, SETTINGS_PATH):
+        responses = {
+            ("GET", BOX_MAP_PATH): {
+                "data": {"11111111-1111-1111-1111-111111111111": _b64("agents-user-ada")}
+            },
+            ("GET", SETTINGS_PATH): {"data": {"egress.json": _b64("{}")}},
+        }
+        responses[("GET", path)] = HTTPError("u", code, "x", {}, None)
+        call = FakeCall(responses)
+        api = EgressKubeApi(call)
+        passes = iter([False, True])
+        with caplog.at_level(logging.ERROR):
+            run(
+                api,
+                lambda: parse_egress(api.settings(), api.box_map(), (), True),
+                PROXY,
+                stop=lambda: next(passes),
+                sleep=lambda s: None,
+            )
+        assert {method for method, _, _ in call.calls} == {"GET"}  # no PATCH at all
+        assert "refused, nothing changed" in caplog.text
+        caplog.clear()
+
+
+def test_main_uses_the_fresh_token_client_and_reads_through_the_api(tmp_path, monkeypatch):
+    from switch_hosted_controller import egress_lists, workers_main
+
+    (tmp_path / "token").write_text("t1")
+    (tmp_path / "ca.crt").write_text("x")
+    monkeypatch.setattr(workers_main.ssl, "create_default_context", lambda cafile=None: object())
+    seen = {}
+
+    def fake_run(kube, load, proxy, stop):
+        seen["kube"], seen["proxy"] = kube, proxy
+
+    monkeypatch.setattr(egress_lists, "run", fake_run)
+    monkeypatch.setattr(egress_lists.signal, "signal", lambda *a: None)
+    env = {"KUBERNETES_SERVICE_HOST": "10.100.0.1"}
+    assert egress_lists.main(env, sa_dir=tmp_path) == 0
+    assert isinstance(seen["kube"]._call.__self__, workers_main.InClusterKubeApi)
+    assert seen["proxy"] == "squid.egress-proxy.svc:3128"
+
+
+def test_the_fresh_token_client_rereads_a_rotated_token(tmp_path, monkeypatch):
+    from switch_hosted_controller import box_scaler, workers_main
+
+    token = tmp_path / "token"
+    token.write_text("first")
+    monkeypatch.setattr(workers_main.ssl, "create_default_context", lambda cafile=None: object())
+    sent = []
+    monkeypatch.setattr(
+        box_scaler.KubeApi, "_call", lambda self, *a, **k: sent.append(self._token) or {}
+    )
+    api = workers_main.InClusterKubeApi("https://10.100.0.1:443", token, "ca")
+    EgressKubeApi(api._call).box_map()
+    token.write_text("second")
+    EgressKubeApi(api._call).box_map()
+    assert sent == ["first", "second"]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"KUBERNETES_SERVICE_HOST": "10.100.0.1", "SWITCH_EGRESS_DEFAULT_SPLIT": "yes"},
+        {"SWITCH_EGRESS_DEFAULT_SPLIT": "true"},  # not in a cluster
+        {"KUBERNETES_SERVICE_HOST": "10.100.0.1", "SWITCH_EGRESS_PROXY": "not a proxy"},
+    ],
+)
+def test_main_refuses_to_start_on_a_bad_setting(tmp_path, env):
+    from switch_hosted_controller import egress_lists
+
+    assert egress_lists.main(env, sa_dir=tmp_path) == 2
+
+
+def test_an_entry_without_split_takes_the_default():
+    ada, _ = parse_egress(
+        json.dumps({"agents-user-ada": {"parts": []}}), BOXES, (), default_split=True
+    )
+    assert ada.split
+    ada, _ = parse_egress(
+        json.dumps({"agents-user-ada": {"parts": []}}), BOXES, (), default_split=False
+    )
+    assert not ada.split
+
+
+def test_split_is_on_unless_the_setting_turns_it_off():
+    from switch_hosted_controller.egress_lists import default_split_from_env
+
+    assert default_split_from_env({}) is True
+    assert default_split_from_env({"SWITCH_EGRESS_DEFAULT_SPLIT": "true"}) is True
+    assert default_split_from_env({"SWITCH_EGRESS_DEFAULT_SPLIT": "false"}) is False
+
+
+def test_a_box_map_value_with_stray_characters_is_refused():
+    """Strict base64: a value with a character outside the alphabet is refused, not quietly cleaned up."""
+    value = _b64("agents-user-ada")
+    data = {"11111111-1111-1111-1111-111111111111": value[:4] + "!" + value[4:]}
+    with pytest.raises(EgressConfigError):
+        EgressKubeApi(FakeCall({("GET", BOX_MAP_PATH): {"data": data}})).box_map()
+
+
+def test_set_login_sends_each_old_key_as_null_beside_the_two_urls():
+    """The real PATCH body clears an older generator's keys, so after the patch the Secret holds only what P7
+    allows. Without the nulls a merge patch would leave them, and P7 would refuse it."""
+    path = "/api/v1/namespaces/agents-user-ada/secrets/switch-proxy-login"
+    old = {k: _b64("old") for k in ("username", "password", "hash", "ctl_username", "https_proxy")}
+    call = FakeCall({("GET", path): {"data": old}})
+    values = {
+        "https_proxy": f"http://box-ada:a@{PROXY}",
+        "ctl_https_proxy": f"http://box-ada-ctl:b@{PROXY}",
+    }
+    EgressKubeApi(call).set_login("agents-user-ada", values)
+    method, patched, body = call.calls[-1]
+    assert (method, patched) == ("PATCH", path)
+    assert body == {
+        "data": {
+            "https_proxy": _b64(values["https_proxy"]),
+            "ctl_https_proxy": _b64(values["ctl_https_proxy"]),
+            "username": None,
+            "password": None,
+            "hash": None,
+            "ctl_username": None,
+        }
+    }
+
+
+# ---- the short check: a change reaches squid's files within seconds ----
+
+
+def _clocked_run(monkeypatch, loads, fail_passes=()):
+    """`run` on a fake clock that moves 3 s each check; returns the times full passes ran."""
+    from switch_hosted_controller import egress_lists
+
+    clock = {"now": 0.0}
+    passes: list[float] = []
+    calls = {"n": 0}
+
+    def fake_reconcile(kube, boxes, proxy):
+        calls["n"] += 1
+        if calls["n"] in fail_passes:
+            raise RuntimeError("API down")
+        passes.append(clock["now"])
+
+    monkeypatch.setattr(egress_lists, "reconcile_once", fake_reconcile)
+    loads = list(loads)
+
+    def load():
+        return loads.pop(0) if len(loads) > 1 else loads[0]
+
+    def sleep(seconds):
+        clock["now"] += seconds
+
+    egress_lists.run(
+        None, load, PROXY, stop=lambda: clock["now"] >= 66, sleep=sleep, clock=lambda: clock["now"]
+    )
+    return passes
+
+
+def test_an_unchanged_map_gets_a_full_pass_only_each_interval(monkeypatch):
+    ada = [BoxEgress("agents-user-ada", ())]
+    assert _clocked_run(monkeypatch, [ada]) == [0.0, 30.0, 60.0]
+
+
+def test_a_new_or_removed_box_gets_a_full_pass_at_the_next_check(monkeypatch):
+    ada = [BoxEgress("agents-user-ada", ())]
+    both = ada + [BoxEgress("agents-user-bob", ())]
+    # bob appears at the 3rd check (6 s) and is removed at the 5th (12 s).
+    passes = _clocked_run(monkeypatch, [ada, ada, both, both, ada])
+    assert passes[:3] == [0.0, 6.0, 12.0]
+
+
+def test_a_failed_pass_backs_off_then_recovers(monkeypatch, caplog):
+    ada = [BoxEgress("agents-user-ada", ())]
+    passes = _clocked_run(monkeypatch, [ada], fail_passes=(1, 2, 3))
+    # Fails at 0, retried at 3 (+3), 9 (+6), then succeeds at 21 (+12); then each interval.
+    assert passes == [21.0, 51.0]
+    assert caplog.text.count("pass failed") == 3
+
+
+def test_a_refused_map_is_logged_once_per_interval_not_every_check(monkeypatch, caplog):
+    from switch_hosted_controller import egress_lists
+
+    clock = {"now": 0.0}
+
+    def load():
+        raise EgressConfigError("box-map: an entry is not a user box namespace")
+
+    def sleep(seconds):
+        clock["now"] += seconds
+
+    monkeypatch.setattr(egress_lists, "reconcile_once", lambda *a: pytest.fail("no pass"))
+    egress_lists.run(
+        None, load, PROXY, stop=lambda: clock["now"] >= 66, sleep=sleep, clock=lambda: clock["now"]
+    )
+    assert caplog.text.count("refused, nothing changed") == 3  # at 0, 30 and 60 s
+
+
+# ---- the open web (SWITCH_EGRESS_OPEN) ----
+
+
+def _conf(box):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller.egress_lists import box_files
+
+    files = box_files(box)
+    return files, files[f"{box.box_id}.conf"].splitlines()
+
+
+def test_an_open_split_box_reaches_any_host_but_the_ai_providers_and_its_controller_keeps_its_list():
+    box = BoxEgress("agents-user-ada", ("github",), split=True, open_web=True)
+    files, conf = _conf(box)
+    assert "http_access allow b_ada" in conf
+    deny = conf.index("http_access deny b_ada ai_ada")
+    assert deny < conf.index("http_access allow b_ada")  # the AI providers are refused first
+    assert "acl ai_ada dstdomain -n aiplatform.googleapis.com oauth2.googleapis.com" in conf
+    assert "ada.list" not in files  # no list limits the agents
+    assert files["ada.ctl.list"].split() == box.ctl_hosts()  # the controller's login is unchanged
+    assert "http_access allow CONNECT c_ada lc_ada" in conf
+
+
+def test_an_open_unsplit_box_keeps_its_ai_providers_on_its_own_login():
+    """An unsplit box has no controller login: its agents call the AI providers themselves, as today."""
+    _, conf = _conf(BoxEgress("agents-user-ada", (), split=False, open_web=True))
+    assert "http_access allow b_ada" in conf and not any(" ai_" in line for line in conf)
+
+
+def test_with_the_open_web_off_a_box_is_exactly_as_before():
+    from switch_hosted_controller.egress_lists import box_files
+
+    before = BoxEgress("agents-user-ada", ("github",), split=True)
+    files = box_files(before)
+    assert files["ada.list"].split() == before.agent_hosts()
+    assert "http_access allow CONNECT b_ada l_ada" in files["ada.conf"]
+    assert "http_access allow b_ada\n" not in files["ada.conf"]
+
+
+def test_the_open_setting_reaches_every_box_with_a_login_but_never_the_gate():
+    from switch_hosted_controller.egress_lists import GATE_NAMESPACE, parse_egress
+
+    settings = json.dumps({"_gate": {"hosts": ["pypi.org"]}, "agents-user-ada": {"parts": []}})
+    listed = {
+        b.namespace: b for b in parse_egress(settings, BOXES, ("github",), True, open_web=True)
+    }
+    assert listed[GATE_NAMESPACE].open_web is False and listed[GATE_NAMESPACE].fixed_hosts == (
+        "pypi.org",
+    )
+    assert all(b.open_web for n, b in listed.items() if n != GATE_NAMESPACE)
+    # Parts are still checked, so a setting that's wrong today is still refused.
+    with pytest.raises(EgressConfigError):
+        parse_egress(
+            json.dumps({"agents-user-ada": {"parts": ["everything"]}}),
+            BOXES,
+            (),
+            True,
+            open_web=True,
+        )
+
+
+def test_the_open_setting_is_true_or_false_and_off_when_unset():
+    from switch_hosted_controller.egress_lists import open_web_from_env
+
+    assert open_web_from_env({}) is False
+    assert open_web_from_env({"SWITCH_EGRESS_OPEN": "true"}) is True
+    assert open_web_from_env({"SWITCH_EGRESS_OPEN": "false"}) is False
+    with pytest.raises(EgressConfigError):
+        open_web_from_env({"SWITCH_EGRESS_OPEN": "yes"})
+
+
+def test_main_reads_the_open_setting_and_refuses_a_bad_one(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller import egress_lists, workers_main
+
+    (tmp_path / "token").write_text("t1")
+    (tmp_path / "ca.crt").write_text("x")
+    monkeypatch.setattr(workers_main.ssl, "create_default_context", lambda cafile=None: object())
+    monkeypatch.setattr(egress_lists, "run", lambda kube, load, proxy, stop: None)
+    monkeypatch.setattr(egress_lists.signal, "signal", lambda *a: None)
+    env = {"KUBERNETES_SERVICE_HOST": "10.100.0.1", "SWITCH_EGRESS_OPEN": "maybe"}
+    assert egress_lists.main(env, sa_dir=tmp_path) == 2
+    assert egress_lists.main({**env, "SWITCH_EGRESS_OPEN": "true"}, sa_dir=tmp_path) == 0
+
+
+# ---- box-keyed boxes (warm pool): no login until their owner's settings are read ----
+
+
+def test_a_box_keyed_box_gets_no_login_never_the_defaults():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    boxes = {
+        "11111111-1111-1111-1111-111111111111": "agents-user-ada",
+        "22222222-2222-2222-2222-222222222222": "agents-box-k1-00000000000000aa",
+    }
+    listed = parse_egress("{}", boxes, ("github",), True)
+    assert [b.namespace for b in listed] == [
+        "agents-user-ada"
+    ]  # a person-keyed box keeps the defaults, as before
+
+
+def test_settings_keyed_by_a_box_keyed_name_are_refused():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    boxes = {"22222222-2222-2222-2222-222222222222": "agents-box-k1-00000000000000aa"}
+    with pytest.raises(EgressConfigError):
+        parse_egress(json.dumps({"agents-box-k1-00000000000000aa": {"parts": []}}), boxes, (), True)
+
+
+# ---- the starter's one-key login check is the only mount of the login Secret allowed ----
+
+
+def _starter_pod(**change):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller.egress_lists import LOGIN_CHECK_VOLUME
+
+    pod = {
+        "initContainers": [
+            {
+                "name": "starter",
+                "volumeMounts": [
+                    {"name": "login-check", "mountPath": "/etc/switch/login", "readOnly": True}
+                ],
+            }
+        ],
+        "containers": [{"name": "controller"}, {"name": "agents"}],
+        "volumes": [json.loads(json.dumps(LOGIN_CHECK_VOLUME))],
+    }
+    for fn in change.values():
+        fn(pod)
+    return pod
+
+
+def test_the_starters_login_check_is_allowed():
+    from switch_hosted_controller.egress_lists import check_box_pod_spec
+
+    assert check_box_pod_spec(_starter_pod(), split=True) == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda p: p["volumes"][0]["secret"]["items"].append(
+            {"key": "ctl_https_proxy", "path": "c"}
+        ),
+        lambda p: p["volumes"][0]["secret"].pop("items"),  # the whole Secret
+        lambda p: (
+            p["containers"][0]
+            .setdefault("volumeMounts", [])
+            .append({"name": "login-check", "mountPath": "/x", "readOnly": True})
+        ),
+        lambda p: p["initContainers"][0]["volumeMounts"][0].update(readOnly=False),
+        lambda p: p["initContainers"][0].update(name="other"),
+        lambda p: p["volumes"].append(
+            {"name": "again", "secret": {"secretName": "switch-proxy-login"}}
+        ),
+    ],
+)
+def test_any_other_mount_of_the_login_secret_is_refused(change):  # type: ignore[no-untyped-def]
+    from switch_hosted_controller.egress_lists import check_box_pod_spec
+
+    assert check_box_pod_spec(_starter_pod(c=change), split=True) != []
+
+
+# ---- step 5: a box-keyed box takes its owner's settings (box-owners) ----
+
+BK = "agents-box-k1-00000000000000aa"
+OWNER = "k1-0123456789abcdef"
+BOXES_BK = {"22222222-2222-2222-2222-222222222222": BK}
+
+
+def test_an_owner_with_saved_settings_gives_their_settings():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    settings = json.dumps(
+        {f"agents-user-{OWNER}": {"parts": [], "extras": ["example.org"], "split": True}}
+    )
+    (box,) = parse_egress(settings, BOXES_BK, ("github",), True, owners={BK: OWNER})
+    assert box.namespace == BK and box.parts == () and box.extras == ("example.org",) and box.split
+
+
+def test_an_owner_without_saved_settings_gets_the_defaults():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    (box,) = parse_egress("{}", BOXES_BK, ("github",), True, owners={BK: OWNER})
+    assert box.parts == ("github",) and box.split
+
+
+def test_no_box_owners_entry_gives_no_login():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    assert parse_egress("{}", BOXES_BK, ("github",), True, owners={}) == []
+    assert parse_egress("{}", BOXES_BK, ("github",), True, owners={BK: "not-a-keyed-id"}) == []
+
+
+def test_a_person_keyed_box_keeps_its_namespace_keyed_settings_never_the_defaults():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    person = f"agents-user-{OWNER}"
+    boxes = {"11111111-1111-1111-1111-111111111111": person, **BOXES_BK}
+    settings = json.dumps({person: {"parts": [], "split": True}})
+    listed = {
+        b.namespace: b for b in parse_egress(settings, boxes, ("github",), True, owners={BK: OWNER})
+    }
+    assert (
+        listed[person].parts == () and listed[BK].parts == ()
+    )  # the same person's setting, on both boxes
+
+
+def test_settings_for_someone_with_no_box_at_all_are_still_refused():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    with pytest.raises(EgressConfigError):
+        parse_egress(
+            json.dumps({"agents-user-k1-ffffffffffffffff": {"parts": []}}),
+            BOXES_BK,
+            (),
+            True,
+            owners={BK: OWNER},
+        )
+
+
+def test_a_box_keyed_boxs_squid_id_is_the_box_never_the_person():
+    box = BoxEgress(BK, ())
+    assert box.box_id == "box-k1-00000000000000aa"
+    assert OWNER not in box.box_id and OWNER not in box.user
+    person = BoxEgress(f"agents-user-{OWNER}", ())
+    assert person.box_id == OWNER  # unchanged for a person-keyed box
+    assert box.user != person.user
+
+
+def test_box_owners_is_read_by_name_and_a_bad_entry_is_skipped_alone(caplog):
+    from switch_hosted_controller.egress_lists import EgressKubeApi
+
+    path = ("GET", "/api/v1/namespaces/switch-hosted/secrets/box-owners")
+    assert EgressKubeApi(FakeCall({path: {"data": {BK: _b64(OWNER)}}})).box_owners() == {BK: OWNER}
+    other = "agents-box-k1-00000000000000bb"
+    secret_looking = "not-an-id-" + "x" * 20
+    for bad in ({"agents-user-ada": _b64(OWNER)}, {other: _b64(secret_looking)}, {"???": _b64("")}):
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            got = EgressKubeApi(FakeCall({path: {"data": {BK: _b64(OWNER), **bad}}})).box_owners()
+        assert got == {BK: OWNER}  # the good entry stays
+        assert "box-owners ALERT" in caplog.text
+        assert (
+            secret_looking not in caplog.text and OWNER not in caplog.text
+        )  # values are never logged
+
+
+def test_a_bad_box_owners_entry_drops_only_that_boxs_egress():
+    """One bad entry in the add-only list takes away that box's login, and leaves every other box's alone."""
+    from switch_hosted_controller.egress_lists import EgressKubeApi, box_files, parse_egress
+
+    other = "agents-box-k1-00000000000000bb"
+    person = f"agents-user-{OWNER}"
+    boxes = {
+        "11111111-1111-1111-1111-111111111111": person,
+        "22222222-2222-2222-2222-222222222222": BK,
+        "33333333-3333-3333-3333-333333333333": other,
+    }
+    path = ("GET", "/api/v1/namespaces/switch-hosted/secrets/box-owners")
+    owners = EgressKubeApi(
+        FakeCall({path: {"data": {BK: _b64(OWNER), other: _b64("bad owner")}}})
+    ).box_owners()
+    for open_web in (False, True):
+        listed = parse_egress("{}", boxes, ("github",), True, open_web, owners)
+        assert {b.namespace for b in listed} == {
+            person,
+            BK,
+        }  # no login for the bad entry's box only
+        for box in listed:
+            assert "00000000000000bb" not in "".join(box_files(box).values())
+
+
+def test_with_the_open_web_an_owned_box_keyed_box_is_open_and_an_unowned_one_gets_nothing():
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    (box,) = parse_egress("{}", BOXES_BK, ("github",), True, open_web=True, owners={BK: OWNER})
+    assert box.open_web and box.namespace == BK
+    assert parse_egress("{}", BOXES_BK, ("github",), True, open_web=True, owners={}) == []
+
+
+# ---- boxes the scaler holds without a proxy login (`egress-held`) ----
+
+HELD_PATH = ("GET", "/api/v1/namespaces/switch-hosted/configmaps/egress-held")
+
+
+def test_egress_held_is_read_by_name_and_a_key_not_a_box_namespace_is_skipped(caplog):
+    from switch_hosted_controller.egress_lists import EgressKubeApi
+
+    api = EgressKubeApi(FakeCall({HELD_PATH: {"data": {BK: "", "kube-system": ""}}}))
+    with caplog.at_level(logging.ERROR):
+        assert api.egress_held() == {BK}
+    assert "egress-held ALERT" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error", [HTTPError("u", 404, "x", None, None), HTTPError("u", 403, "x", None, None), OSError()]
+)
+def test_egress_held_unreadable_or_missing_keeps_every_login_and_alerts(error, caplog):
+    from switch_hosted_controller.egress_lists import EgressKubeApi, without_held
+
+    with caplog.at_level(logging.ERROR):
+        held = EgressKubeApi(FakeCall({HELD_PATH: error})).egress_held()
+    assert held is None and "egress-held ALERT" in caplog.text
+    boxes = [BoxEgress(BK, ()), BoxEgress("agents-user-ada", ())]
+    assert without_held(boxes, held) == boxes  # fail open
+
+
+def test_a_held_box_gets_no_login_and_no_squid_include_and_others_are_untouched():
+    from switch_hosted_controller.egress_lists import parse_egress, without_held
+
+    person = f"agents-user-{OWNER}"
+    boxes = {"11111111-1111-1111-1111-111111111111": person, **BOXES_BK}
+    listed = without_held(parse_egress("{}", boxes, ("github",), True, owners={BK: OWNER}), {BK})
+    assert [b.namespace for b in listed] == [person]
+    files = FakeKube({})
+    reconcile_once(files, listed, PROXY)
+    assert BK not in files.logins
+    assert all(
+        "00000000000000aa" not in name and "00000000000000aa" not in text
+        for name, text in files.files.items()
+    )
+
+
+# ---- retired boxes (`box-removals`) get no login ----
+
+
+def test_a_retired_box_gets_no_login_and_an_unreadable_list_keeps_every_box():
+    from switch_hosted_controller.egress_lists import EgressKubeApi
+
+    removals = ("GET", "/api/v1/namespaces/switch-hosted/secrets/box-removals")
+    boxmap = ("GET", "/api/v1/namespaces/switch-hosted/secrets/box-map")
+    data = {k: _b64(v) for k, v in BOXES.items()}
+    api = EgressKubeApi(
+        FakeCall({boxmap: {"data": data}, removals: {"data": {"agents-user-bo": _b64("x")}}})
+    )
+    assert set(api.live_box_map().values()) == {"agents-user-ada"}
+    api = EgressKubeApi(
+        FakeCall({boxmap: {"data": data}, removals: HTTPError("u", 404, "x", None, None)})
+    )
+    assert set(api.live_box_map().values()) == {"agents-user-ada", "agents-user-bo"}
+    api = EgressKubeApi(
+        FakeCall({boxmap: {"data": data}, removals: HTTPError("u", 403, "x", None, None)})
+    )
+    assert set(api.live_box_map().values()) == {"agents-user-ada", "agents-user-bo"}
+
+
+def test_an_empty_settings_secret_is_what_egress_lists_accepts() -> None:
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    assert parse_egress("{}", {}, ()) == []

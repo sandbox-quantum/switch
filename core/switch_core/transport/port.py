@@ -124,8 +124,13 @@ class MessageTransport(Protocol):
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
         authored: str | None = None,
+        client_txn_id: str | None = None,
     ) -> SendResult:
         """Post a text message. Raises `TransportError` if it is not accepted.
+
+        `client_txn_id`, when given, is the sender's key for this message: a
+        second send under the same key from the same client returns the first
+        message's result and posts nothing.
 
         `metered` says whether the message counts toward the tenant's usage. It
         is false for what Switch posts on a participant's behalf — greetings,
@@ -140,6 +145,11 @@ class MessageTransport(Protocol):
         all the sender's. A metered message was admitted first
         (`admit_message`).
         """
+        ...
+
+    async def sent_under(self, room_id: str, client_txn_id: str) -> str | None:
+        """The event id this client already sent under `client_txn_id`, if any:
+        what a second send under the key would return, without sending."""
         ...
 
     async def send_event(

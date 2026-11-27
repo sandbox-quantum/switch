@@ -98,6 +98,8 @@ export type DefinitionContext = {
   dataDir: string;
   workspaces: string;
   policy: DevicePolicy | null;
+  /** Box mode: the providers this controller offers (`providersFor`); an agent naming another isn't run. Unset: every registered one. */
+  offered?: readonly string[];
 };
 
 /** The definition's directory as this machine reads it: absolute and resolved, or null. */

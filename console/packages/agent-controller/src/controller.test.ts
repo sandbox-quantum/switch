@@ -101,6 +101,7 @@ function deps(server = core.url): ControllerDeps {
     updatedBy: 'self',
     selfUpdate: null,
     supervised: false,
+    box: false,
     now: Date.now,
     random: () => 0,
     timing: {

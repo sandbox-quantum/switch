@@ -10,6 +10,9 @@ import {
   verifyClaudeSignIn,
 } from '@switch-console/agent-providers';
 import { pluginRegistry } from '@switch-console/plugins/agents';
+import type { LoginCheck, LoginVerdict } from './box/login-check';
+import type { MeminfoReading } from './box/meminfo';
+import type { RestState } from './box/rest';
 import { bypassWithheldDetail, type DefinitionContext } from './device-policy';
 import { errorMessage, type Logger } from './log';
 import type { AgentObservation, AgentRuntime } from './runtime';
@@ -22,7 +25,6 @@ import {
   isProvider,
   PROTOCOL_VERSION,
   type Provider,
-  PROVIDERS,
   type ProviderStatus,
   type ReasonCode,
   type StatusReport,
@@ -99,6 +101,35 @@ export interface ProviderLocator {
  * as Console's dependency detection does, and asks it for its version. `path`
  * is read on every lookup, so a PATH refreshed since start is the one used.
  */
+/**
+ * Where an agent's sessions stand, the most awake first, from its live
+ * watcher's own report: `waking`, then `active`, then `parked`. Null when the
+ * watcher is not live, reports no sessions, or is too old to report them.
+ */
+export function sessionStateOf(
+  observation: AgentObservation
+): 'active' | 'waking' | 'parked' | null {
+  if (!observation.alive || !observation.health?.current) return null;
+  const states = Object.values(observation.health.sessions ?? {});
+  if (states.includes('waking')) return 'waking';
+  if (states.includes('active')) return 'active';
+  if (states.includes('parked')) return 'parked';
+  return null;
+}
+
+/**
+ * How many of an agent's sessions are awake (active or waking). A host too old
+ * to say where its sessions stand counts every placement, as before, so it is
+ * never taken for idle.
+ */
+export function awakeSessions(
+  health: NonNullable<AgentObservation['health']>,
+  placements: number
+): number {
+  if (!health.sessions) return placements;
+  return Object.values(health.sessions).filter((state) => state !== 'parked').length;
+}
+
 export class PathProviderLocator implements ProviderLocator {
   /**
    * `probeHome` is the home CLIs run with to print their version: some
@@ -241,10 +272,29 @@ type ProviderEntry = {
   path: string | null;
   at: number;
   login: GivenLogin | null;
-  problem: LoginProblem | { code: 'provider_login_expired'; message: string } | null;
+  problem:
+    | LoginProblem
+    | { code: 'provider_login_expired' | 'login_rejected' | 'login_not_checked'; message: string }
+    | null;
   /** Which check this is, in the order they started. */
   sequence: number;
 };
+
+/**
+ * Why a given login can't be used on this machine, and what to give instead, in
+ * words main's Console shows as they are. Nothing of the login itself.
+ */
+export function unusableLoginMessage(login: Pick<GivenLogin, 'provider' | 'kind'>): string {
+  if (login.provider === 'codex' && login.kind === 'auth-json')
+    return "This cloud machine can't use Codex's 'This computer's sign-in'. Give it an OpenAI API key instead.";
+  if (login.provider === 'claude' && login.kind === 'vertex')
+    return "This cloud machine can't use Vertex AI in this login's region. Give it a Claude setup token or API key, or a Vertex AI login in a region with its own endpoint.";
+  return `This cloud machine can't use this ${login.provider} login. Give it an API key instead.`;
+}
+
+/** Fixed words: nothing Google said, and nothing of the key. */
+const LOGIN_REJECTED = "Google didn't accept this key.";
+const LOGIN_NOT_CHECKED = "Couldn't reach Google to check this key. It will be checked again.";
 
 /**
  * Each provider's installation and login, checked at most every ten minutes
@@ -258,11 +308,21 @@ type ProviderEntry = {
 export class ProviderStatuses {
   private readonly entries = new Map<Provider, ProviderEntry>();
   private refreshing: Promise<void> | null = null;
+  /** Each provider's given-login verdict, by revision (`loginVerdict`). */
+  private readonly verdicts = new Map<Provider, { revision: string; verdict: 'ok' | 'rejected' }>();
   private givenDisabled = false;
   private checks = 0;
 
   constructor(
     private readonly deps: {
+      /** The providers this controller offers (`providersFor`): the only ones checked or reported. */
+      providers: readonly Provider[];
+      /**
+       * Box mode: a given login's own check (`checkLogin`), the gateway's
+       * `usable`, and a sign-in check that did not run being held rather than
+       * read as expired. Off, a given login is checked as before.
+       */
+      box: boolean;
       locator: ProviderLocator;
       runtime: Pick<AgentRuntime, 'probe'>;
       /**
@@ -274,6 +334,17 @@ export class ProviderStatuses {
       verify?: (provider: Provider, binaryPath: string) => Promise<ProviderReadiness> | null;
       /** The logins Switch gives this machine; null when it cannot open any. */
       sealed: SealedLogins | null;
+      /**
+       * Whether this machine can use a given login: with the provider gateway
+       * on, only one the gateway can front. Absent: any login can be used.
+       */
+      usable?: (login: GivenLogin) => boolean;
+      /**
+       * A given login's own check with its provider, after the CLI signs in
+       * with it (a Vertex AI login asks Google for a token). Absent: the CLI's
+       * check is the whole check.
+       */
+      checkLogin?: LoginCheck;
       probeCwd: string;
       now: () => number;
       log: Logger;
@@ -293,7 +364,12 @@ export class ProviderStatuses {
   seed(seeds: ProviderSeed): void {
     let changed = false;
     for (const { status, path } of seeds) {
-      if (!isProvider(status.provider) || this.entries.has(status.provider)) continue;
+      if (
+        !isProvider(status.provider) ||
+        !this.deps.providers.includes(status.provider) ||
+        this.entries.has(status.provider)
+      )
+        continue;
       const own = status.auth === 'ok' && status.auth_source === 'local';
       if (!own && status.installed) continue;
       const at = Date.parse(status.checked_at);
@@ -313,7 +389,7 @@ export class ProviderStatuses {
 
   /** Every check made so far, with where each provider's CLI was found: what `seed` takes. */
   results(): ProviderSeed {
-    return PROVIDERS.flatMap((provider) => {
+    return this.deps.providers.flatMap((provider) => {
       const entry = this.entries.get(provider);
       return entry ? [{ status: entry.status, path: entry.path }] : [];
     });
@@ -340,6 +416,8 @@ export class ProviderStatuses {
     let status = providerStatusFrom(provider, located, readiness, checkedAt);
     let login: GivenLogin | null = null;
     let problem: ProviderEntry['problem'] = null;
+    // The sign-in check of a given login did not run: not cached (see below).
+    let unchecked = false;
     if (
       located &&
       readiness?.status !== 'authenticated' &&
@@ -347,9 +425,44 @@ export class ProviderStatuses {
       !this.givenDisabled
     ) {
       const given = await this.fetchGiven(provider);
-      if (given && 'login' in given) {
-        const signedIn = await this.probe(provider, located.path, given.login);
-        if (signedIn?.status === 'authenticated') {
+      if (
+        this.deps.box &&
+        given &&
+        'login' in given &&
+        this.deps.usable &&
+        !this.deps.usable(given.login)
+      ) {
+        // A login this machine can't use (with the provider gateway on, one it
+        // can't front) is refused at once, saying why and what to give instead,
+        // rather than as a sign-in check that "did not run".
+        const message = unusableLoginMessage(given.login);
+        problem = { code: 'provider_login_missing', message };
+        status = {
+          ...status,
+          auth: 'missing',
+          auth_source: 'sealed',
+          reason: 'provider_login_missing',
+          auth_problem: message,
+        };
+      } else if (given && 'login' in given) {
+        let signedIn = await this.probe(provider, located.path, given.login);
+        let verdict: LoginVerdict = 'ok';
+        if (this.deps.box && signedIn?.status === 'authenticated') {
+          verdict = await this.loginVerdict(provider, given.login, options.verify === true);
+          if (verdict === 'unreachable')
+            // Nothing is known about the key: handled as a check that didn't run.
+            signedIn = { status: 'unknown', message: '', models: [] };
+        }
+        if (verdict === 'rejected') {
+          problem = { code: 'login_rejected', message: LOGIN_REJECTED };
+          status = {
+            ...status,
+            auth: 'expired',
+            auth_source: 'sealed',
+            reason: 'provider_login_expired',
+            auth_problem: LOGIN_REJECTED,
+          };
+        } else if (signedIn?.status === 'authenticated') {
           login = given.login;
           // What the machine's own check said is not about the login agents use now.
           status = {
@@ -359,6 +472,44 @@ export class ProviderStatuses {
             reason: undefined,
             auth_problem: undefined,
           };
+        } else if (this.deps.box && (signedIn === null || signedIn.status === 'unknown')) {
+          // The sign-in check did not run: on a split box, the agents
+          // container's launcher isn't linked yet, as just after the box wakes.
+          // That says nothing about the login, so it isn't marked expired. A
+          // login held from a check that signed in, at this revision, is kept;
+          // otherwise none is used yet. Either way the result isn't cached, so
+          // the next use checks again (login-after-wake defect, 1 Nov).
+          unchecked = true;
+          const held = this.entries.get(provider);
+          const kept =
+            held?.login &&
+            held.status.auth === 'ok' &&
+            held.status.auth_source === 'sealed' &&
+            held.login.revision === given.login.revision
+              ? held.login
+              : null;
+          login = kept;
+          // A revision Google already accepted stays in use meanwhile.
+          if (verdict === 'unreachable' && !kept)
+            problem = { code: 'login_not_checked', message: LOGIN_NOT_CHECKED };
+          status = kept
+            ? {
+                ...status,
+                auth: 'ok',
+                auth_source: 'sealed',
+                reason: undefined,
+                auth_problem: undefined,
+              }
+            : {
+                ...status,
+                auth: 'unknown',
+                auth_source: 'sealed',
+                reason: undefined,
+                auth_problem:
+                  verdict === 'unreachable'
+                    ? LOGIN_NOT_CHECKED
+                    : `The sign-in check of the ${provider} login given to this machine did not run.`,
+              };
         } else {
           problem = {
             code: 'provider_login_expired',
@@ -399,7 +550,8 @@ export class ProviderStatuses {
     this.entries.set(provider, {
       status,
       path: located?.path ?? null,
-      at,
+      // A check that couldn't try the given login is stale at once.
+      at: unchecked ? at - PROVIDER_TTL_MS : at,
       login,
       problem,
       sequence,
@@ -424,6 +576,16 @@ export class ProviderStatuses {
     return this.entries.get(provider)?.login ?? null;
   }
 
+  /**
+   * Whether a login given to the machine is waiting on a sign-in check that
+   * could not run (`unknown`, from Switch): the controller tries it again.
+   */
+  hasUnchecked(): boolean {
+    for (const entry of this.entries.values())
+      if (entry.status.auth === 'unknown' && entry.status.auth_source === 'sealed') return true;
+    return false;
+  }
+
   /** Stops using logins given to the machine: Switch could not take this machine's key. */
   disableGiven(): void {
     this.givenDisabled = true;
@@ -434,6 +596,37 @@ export class ProviderStatuses {
   /** Why the login given to the machine for `provider` is not used, as last checked. */
   loginProblem(provider: Provider): ProviderEntry['problem'] {
     return this.entries.get(provider)?.problem ?? null;
+  }
+
+  /**
+   * The given login's own check. A forced check (`verify`, as when a login is
+   * given or rechecked) always asks again; otherwise an ok or rejected answer
+   * for the same revision stands. Unreachable is never kept.
+   */
+  private async loginVerdict(
+    provider: Provider,
+    login: GivenLogin,
+    verify: boolean
+  ): Promise<LoginVerdict> {
+    const check = this.deps.checkLogin;
+    if (!check) return 'ok';
+    const kept = this.verdicts.get(provider);
+    if (!verify && kept && kept.revision === login.revision) return kept.verdict;
+    let verdict: LoginVerdict;
+    try {
+      verdict = await check(login);
+    } catch {
+      verdict = 'unreachable';
+    }
+    if (verdict === 'unreachable') this.verdicts.delete(provider);
+    else this.verdicts.set(provider, { revision: login.revision, verdict });
+    // Only the verdict: never the key, nor anything Google said.
+    if (verdict !== 'ok')
+      this.deps.log.warn('A login given to this machine did not pass its check', {
+        provider,
+        verdict,
+      });
+    return verdict;
   }
 
   /** The test prompt's answer, or null when the provider has none or it could not run. */
@@ -491,7 +684,7 @@ export class ProviderStatuses {
   /** Where each provider's CLI was found at its last check, or `not found`. */
   locations(): Partial<Record<Provider, string>> {
     return Object.fromEntries(
-      PROVIDERS.flatMap((provider) => {
+      this.deps.providers.flatMap((provider) => {
         const entry = this.entries.get(provider);
         return entry ? [[provider, entry.path ?? 'not found']] : [];
       })
@@ -499,16 +692,18 @@ export class ProviderStatuses {
   }
 
   async checkAll(options: { verify?: boolean } = {}): Promise<void> {
-    await Promise.all(PROVIDERS.map((provider) => this.check(provider, options)));
+    await Promise.all(this.deps.providers.map((provider) => this.check(provider, options)));
   }
 
   /** Checks every provider whose last check is older than the TTL, all at once. */
   async refreshStale(): Promise<void> {
     this.refreshing ??= Promise.all(
-      PROVIDERS.filter((provider) => {
-        const entry = this.entries.get(provider);
-        return !entry || this.deps.now() - entry.at >= PROVIDER_TTL_MS;
-      }).map((provider) => this.check(provider))
+      this.deps.providers
+        .filter((provider) => {
+          const entry = this.entries.get(provider);
+          return !entry || this.deps.now() - entry.at >= PROVIDER_TTL_MS;
+        })
+        .map((provider) => this.check(provider))
     )
       .then(() => {})
       .finally(() => {
@@ -519,7 +714,7 @@ export class ProviderStatuses {
 
   /** What is known now; providers not checked yet are left out rather than guessed. */
   snapshot(): ProviderStatus[] {
-    return PROVIDERS.flatMap((provider) => {
+    return this.deps.providers.flatMap((provider) => {
       const entry = this.entries.get(provider);
       return entry ? [entry.status] : [];
     });
@@ -563,6 +758,26 @@ type Mapped = {
   since?: string;
 };
 
+/**
+ * The rest state that stands in for what the agent host reports: a resting
+ * agent, or one woken from a rest whose host is not connected yet (bounded by
+ * `WAKE_GRACE_MS` in `AgentRest.state`). Never for an agent its owner stopped.
+ */
+export function restStandsIn(
+  rest: RestState | null,
+  assignment: AgentAssignment,
+  observation: AgentObservation
+): (RestState & { kind: 'resting' | 'waking' }) | null {
+  if (!rest || assignment.desired_state === 'stopped') return null;
+  if (rest.kind === 'resting') return rest;
+  if (rest.kind !== 'waking') return null;
+  const connected =
+    observation.alive &&
+    observation.health?.current === true &&
+    observation.health.state === 'connected';
+  return connected ? null : rest;
+}
+
 /** One agent's process state in the contract's terms, from what the controller recorded and sees. */
 export function mapAgentProcess(input: {
   assignment: AgentAssignment;
@@ -571,8 +786,14 @@ export function mapAgentProcess(input: {
   /** The agent's events flow on the controller stream and its agent host is taking them. */
   relayAttached: boolean;
   nowMs: number;
+  /** Resting, or waking from a rest, as `AgentRest` holds it; absent where agents do not rest. */
+  rest?: RestState | null;
+  /** Switch has the agent attached on a connected controller stream, host or not. */
+  streamCarries?: boolean;
 }): Mapped {
   const { assignment, row, observation } = input;
+  // A failure recorded at this revision wins over resting and waking, so a
+  // host that will not start always shows as failed.
   if (row?.failure && row.failure.revision === assignment.revision)
     return {
       process: 'failed',
@@ -581,6 +802,10 @@ export function mapAgentProcess(input: {
       detail: truncate(row.failure.detail),
     };
   const desiredStopped = assignment.desired_state === 'stopped';
+  if (restStandsIn(input.rest ?? null, assignment, observation))
+    // Its host is stopped on purpose (or coming back for a message) and its
+    // events are held: running, as Core and Console must read it, never stopped.
+    return { process: 'running', attached: input.streamCarries ?? false };
   const health = observation.health?.current ? observation.health : null;
   if (observation.alive) {
     if (desiredStopped || observation.flags?.enabled === false)
@@ -669,7 +894,24 @@ export class StatusCollector {
       tools: () => Promise<ToolStatus[]>;
       /** Whether the relay has the agent attached; see `mapAgentProcess`. */
       attached: (agentId: string) => boolean;
+      /**
+       * Box mode: what only a box reports (sessions' state, rest, the valve,
+       * the gateway, the agents' disk and `/proc/meminfo`).
+       * Off, the report is exactly as before, whatever box parts are given.
+       */
+      box: boolean;
+      /** Resting or waking from a rest; absent where agents do not rest. */
+      rest?: (agentId: string) => RestState | null;
+      /** Switch has the agent attached on a connected controller stream, host or not. */
+      streamCarries?: (agentId: string) => boolean;
       dataDir: string;
+      /**
+       * Split boxes: the agents' disk, as the launcher measures it
+       * (`AgentsDisk`), reported in place of `dataDir`'s, which is then the
+       * controller's own small volume. Null is unknown, sent as 0 of 0, which
+       * Switch reads as no figure rather than a wrong one.
+       */
+      disk?: () => Promise<{ free: number; total: number } | null>;
       /** Where agents with no directory of their own work, reported so the server can name it. */
       workspacesDir: string;
       /** What definitions are checked against here, as it stands now: what the device allows. */
@@ -679,6 +921,27 @@ export class StatusCollector {
       version: string;
       updatedBy: UpdatedBy;
       now: () => number;
+      /** Told each agent's awake count from its health, for the box valve's floor. */
+      onAgentAwake?: (agentId: string, awake: number) => void;
+      /** Told every agent the poll read, so the box valve forgets any other's count. */
+      onAgentsSeen?: (agentIds: ReadonlySet<string>) => void;
+      /** The box valve's cap on awake sessions, for `sessions_max`; 0 or absent where off. */
+      sessionsMax?: () => number;
+      /** Isolated hosts on the hub, and how many joined the box valve; null where the valve is off. */
+      valveHosts?: () => { joined: number; hosts: number } | null;
+      /** The box valve's memory problem, or null when readings are fine or the valve is off. */
+      valveMemory?: () => 'unprotected' | 'failing' | null;
+      /** The provider gateway's counts; null where it is off. */
+      gatewayCounts?: () => GatewayCounts | null;
+      /** Split test boxes: operator exec into the agents container is on. */
+      operatorExec?: boolean;
+      /**
+       * Since the controller started: sessions the box valve parked. Null where
+       * the valve is off, and then left out of the report.
+       */
+      boxCounts?: () => BoxCounts;
+      /** The box's `/proc/meminfo` figures, or null where there are none; absent off a box. */
+      meminfo?: () => Promise<MeminfoReading | null>;
     }
   ) {
     this.startedAt = new Date(deps.now()).toISOString();
@@ -687,29 +950,83 @@ export class StatusCollector {
   /** When this collector, and so this controller process, started. */
   private readonly startedAt: string;
 
+  /**
+   * The disk to report: the agents' on a split box, marked `workspace`, else
+   * the data folder's own, marked `unknown`. No reading is 0 of 0, `unknown`.
+   */
+  private async disk(): Promise<{ free: number; total: number; workspace: boolean }> {
+    if (this.deps.box && this.deps.disk) {
+      const reading = await this.deps.disk().catch(() => null);
+      return reading ? { ...reading, workspace: true } : { free: 0, total: 0, workspace: false };
+    }
+    const fs = await statfs(this.deps.dataDir);
+    return { free: fs.bavail * fs.bsize, total: fs.blocks * fs.bsize, workspace: false };
+  }
+
   async collect(assignment: Assignment | null): Promise<Omit<StatusReport, 'seq'>> {
+    const box = this.deps.box;
     const nowMs = this.deps.now();
     const now = new Date(nowMs).toISOString();
     const agents: AgentStatus[] = [];
+    let awake = 0;
     const seen = new Set<string>();
     const context = this.deps.context();
     for (const entry of assignment?.agents ?? []) {
       seen.add(entry.agent_id);
       const row = this.deps.store.agent(entry.agent_id);
       const observation = await this.deps.runtime.observe(entry.agent_id);
+      const rest = box ? (this.deps.rest?.(entry.agent_id) ?? null) : null;
       const mapped = mapAgentProcess({
         assignment: entry,
         row,
         observation,
         relayAttached: this.deps.attached(entry.agent_id),
         nowMs,
+        ...(box
+          ? {
+              rest,
+              streamCarries: this.deps.streamCarries?.(entry.agent_id) ?? false,
+            }
+          : {}),
       });
+      const standIn = restStandsIn(rest, entry, observation);
       const before = this.previous.get(entry.agent_id);
       const since =
         before && before.process === mapped.process ? before.since : (mapped.since ?? now);
       this.previous.set(entry.agent_id, { process: mapped.process, since });
       const health = observation.alive && observation.health?.current ? observation.health : null;
-      const ids = health ? Object.keys(health.placements).sort() : [];
+      // A resting agent keeps the sessions it rested with, all parked, so
+      // resting changes nothing Switch reads but the agent host's processes.
+      const ids = standIn
+        ? [...standIn.sessions]
+        : health
+          ? Object.keys(health.placements).sort()
+          : [];
+      const boxFields: Pick<AgentStatus, 'session' | 'waiting_for_room'> = {};
+      if (box) {
+        boxFields.session = standIn
+          ? standIn.kind === 'resting'
+            ? 'parked'
+            : 'waking'
+          : sessionStateOf(observation);
+        // Resting holds nothing awake; waking counts, so the box is not stopped mid-wake.
+        const agentAwake = standIn
+          ? standIn.kind === 'waking'
+            ? 1
+            : 0
+          : health
+            ? awakeSessions(health, ids.length)
+            : 0;
+        awake += agentAwake;
+        // The box valve's floor for this agent's count.
+        this.deps.onAgentAwake?.(entry.agent_id, agentAwake);
+        const waiting = health?.waitingForRoom;
+        if (waiting && waiting.count > 0)
+          boxFields.waiting_for_room = {
+            count: waiting.count,
+            oldest_since: waiting.oldestSince,
+          };
+      } else awake += ids.length;
       const withheld = mapped.process !== 'failed' ? bypassWithheldDetail(entry, context) : null;
       const detail = [mapped.detail, withheld].filter(Boolean).join(' ');
       agents.push({
@@ -718,8 +1035,9 @@ export class StatusCollector {
         process: mapped.process,
         attached: mapped.attached,
         sessions: { active: ids.length, ids },
+        ...boxFields,
         restarts_10m: this.deps.store.restartsSince(entry.agent_id, nowMs - 10 * 60 * 1000),
-        // v1 does not observe OOM kills; nothing here can count one.
+        // Not observed here; a box's kernel kills take the whole box.
         oom_kills: 0,
         directory: observation.configured?.cwd ?? null,
         since,
@@ -729,7 +1047,8 @@ export class StatusCollector {
     }
     for (const agentId of this.previous.keys())
       if (!seen.has(agentId)) this.previous.delete(agentId);
-    const disk = await statfs(this.deps.dataDir);
+    if (box) this.deps.onAgentsSeen?.(seen);
+    const disk = await this.disk();
     return {
       observed_at: now,
       controller: {
@@ -741,14 +1060,17 @@ export class StatusCollector {
       },
       machine: {
         platform: contractPlatform(),
-        disk_free_bytes: disk.bavail * disk.bsize,
-        disk_total_bytes: disk.blocks * disk.bsize,
+        disk_free_bytes: disk.free,
+        disk_total_bytes: disk.total,
         mem_free_bytes: freemem(),
         mem_total_bytes: totalmem(),
-        sessions_running: agents.reduce((total, agent) => total + agent.sessions.active, 0),
-        // v1 enforces no session limit; 0 says so rather than inventing one.
-        sessions_max: 0,
+        // In a box, awake sessions only: a parked session holds no process, so
+        // counting it would keep a cloud machine from ever reading as idle.
+        sessions_running: awake,
+        // The box valve's cap where it is on; 0 where nothing limits sessions.
+        sessions_max: box ? (this.deps.sessionsMax?.() ?? 0) : 0,
         workspaces_dir: this.deps.workspacesDir,
+        ...(box ? await this.boxMachine(disk.workspace) : {}),
         ...(this.deps.deviceId === null ? {} : { device_id: this.deps.deviceId }),
       },
       providers: this.deps.providers.snapshot(),
@@ -756,6 +1078,84 @@ export class StatusCollector {
       agents,
     };
   }
+
+  /** What only a box adds to the machine report; each part absent where it is off. */
+  private async boxMachine(workspaceDisk: boolean): Promise<Partial<StatusReport['machine']>> {
+    const meminfo = (await this.deps.meminfo?.()) ?? null;
+    return {
+      disk_scope: workspaceDisk ? 'workspace' : 'unknown',
+      ...valveHostsOf(this.deps.valveHosts?.() ?? null),
+      ...valveMemoryOf(this.deps.valveMemory?.() ?? null),
+      ...gatewayCountsOf(this.deps.gatewayCounts?.() ?? null),
+      ...boxCountsOf(this.deps.boxCounts?.() ?? null),
+      ...(this.deps.operatorExec ? { operator_exec: true } : {}),
+      ...(meminfo ? { mem_anon_bytes: meminfo.anon, mem_cached_bytes: meminfo.cached } : {}),
+    };
+  }
+}
+
+/**
+ * What decides whether a report goes out early: everything `statusFingerprint`
+ * covers, plus where each agent's sessions stand (`session`: waking, active or
+ * parked). Kept apart from `statusFingerprint`, which also decides when the
+ * controller reconciles locally, so a session waking or parking sends a report
+ * within one status poll without reconciling on every wake. Without it a wake
+ * waited for the next periodic report, up to a minute (Switch once
+ * showed an agent parked for 47 s after it had woken and answered).
+ */
+export function reportFingerprint(report: Omit<StatusReport, 'seq'>): string {
+  return JSON.stringify([
+    statusFingerprint(report),
+    report.agents.map((a) => [a.agent_id, a.session ?? null, a.waiting_for_room?.count ?? 0]),
+  ]);
+}
+
+/** Where each agent's sessions stood in a report, by agent id. */
+export type SessionsSent = ReadonlyMap<string, string | null>;
+
+export function sessionsSent(report: Pick<StatusReport, 'agents'>): SessionsSent {
+  return new Map(report.agents.map((a) => [a.agent_id, a.session ?? null]));
+}
+
+/**
+ * One log entry per agent whose sessions moved since the last report Switch
+ * took ('active' once reached Switch about 6 s after the reply).
+ * Ids, states and times only. `checkedAt` is when this report was collected;
+ * `skippedAt`, when set, is a check before it that was passed over because
+ * another report was on its way, the one place a change can wait a whole
+ * poll after it was seen.
+ */
+export function sessionChangeEntries(
+  before: SessionsSent | null,
+  report: Pick<StatusReport, 'agents' | 'seq'>,
+  times: { checkedAt: number; sentAt: number; skippedAt: number | null }
+): { message: string; fields: Record<string, unknown> }[] {
+  if (before === null) return [];
+  return report.agents.flatMap((a) => {
+    const was = before.get(a.agent_id) ?? null;
+    const now = a.session ?? null;
+    if (was === now) return [];
+    return [
+      {
+        message: 'Status report carried a session change',
+        fields: {
+          agent_id: a.agent_id,
+          seq: report.seq,
+          from: was,
+          to: now,
+          checked_at: new Date(times.checkedAt).toISOString(),
+          sent_at: new Date(times.sentAt).toISOString(),
+          reason:
+            times.skippedAt === null
+              ? 'seen at this check'
+              : 'a check was skipped while another report was on its way',
+          ...(times.skippedAt === null
+            ? {}
+            : { skipped_at: new Date(times.skippedAt).toISOString() }),
+        },
+      },
+    ];
+  });
 }
 
 /**
@@ -811,4 +1211,43 @@ export function providerLoginTest(
           ),
         })
       : null;
+}
+
+/** The box valve's memory problem, for the report: absent when there is none. */
+function valveMemoryOf(problem: 'unprotected' | 'failing' | null): {
+  valve_memory?: 'unprotected' | 'failing';
+} {
+  return problem ? { valve_memory: problem } : {};
+}
+
+/** The box valve's joined hosts, for the report: absent where the valve is off. */
+function valveHostsOf(hosts: { joined: number; hosts: number } | null): {
+  valve_hosts_joined?: number;
+  valve_hosts?: number;
+} {
+  return hosts ? { valve_hosts_joined: hosts.joined, valve_hosts: hosts.hosts } : {};
+}
+
+/** Since-start counts for the box (Datadog's valve parks); null where the valve is off. */
+export type BoxCounts = { valveParks: number | null };
+
+/** The since-start counts, for the report: absent where the valve is off. */
+function boxCountsOf(counts: BoxCounts | null): { valve_parks?: number } {
+  if (!counts || counts.valveParks === null) return {};
+  return { valve_parks: counts.valveParks };
+}
+
+/** The provider gateway's counts. */
+export type GatewayCounts = {
+  agents: number;
+  refused: number;
+};
+
+/** The provider gateway's counts, for the report: absent where it is off. */
+function gatewayCountsOf(counts: GatewayCounts | null): {
+  gateway_agents?: number;
+  gateway_refused?: number;
+} {
+  if (!counts) return {};
+  return { gateway_agents: counts.agents, gateway_refused: counts.refused };
 }

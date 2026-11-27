@@ -107,6 +107,24 @@ class AuditAction(StrEnum):
     AGENT_DELETED = "agent.deleted"
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
+    # Switch posted "I was restarted…" in a room as a managed agent: for its
+    # controller or for a box that never came back.
+    AGENT_RESTART_NOTICE_POSTED = "agent.restart_notice_posted"
+    AGENT_REST_NOTICE_POSTED = "agent.rest_notice_posted"
+    # Switch posted "I couldn't reset my session…" for a controller whose box
+    # had no session to take the reset.
+    AGENT_RESET_REFUSED_POSTED = "agent.reset_refused_posted"
+    # Visibility. A workspace admin turned hosted agents off or
+    # on for one person (A2).
+    HOSTED_PERSON_TURNED_OFF = "hosted.person_turned_off"
+    HOSTED_PERSON_TURNED_ON = "hosted.person_turned_on"
+    # The workspace's copy of an operator action on its people, shown to its
+    # admins as "Switch operator". The operator's own entry is server-wide.
+    HOSTED_OPERATOR_ACTION = "hosted.operator_action"
+    # A workspace admin added, changed or removed a usage budget: who, which budget, and the limit and period before and after.
+    BUDGET_CREATED = "budget.created"
+    BUDGET_UPDATED = "budget.updated"
+    BUDGET_DELETED = "budget.deleted"
     WORKSPACE_SERVICE_CLEARED = "workspace_service.cleared"
     OWNERSHIP_TRANSFERRED = "ownership.transferred"
     ROOM_ADMIN_ADDED = "room_admin.added"
@@ -253,6 +271,55 @@ class ServerAuditAction(StrEnum):
     # the mirror started again from now, with a full check of every linked
     # organization.
     DIRECTORY_EVENTS_RESTARTED = "directory.events_restarted"
+    # Visibility: the operator list, name reveals, operator
+    # actions, and the server-wide copy of each workspace admin change, so the
+    # operators' log is this one table.
+    OPERATOR_GRANTED = "operator.granted"
+    OPERATOR_REMOVED = "operator.removed"
+    OPERATOR_NAME_REVEALED = "operator.name_revealed"
+    HOSTED_USER_PAUSED = "hosted.user_paused"
+    HOSTED_USER_RESUMED = "hosted.user_resumed"
+    HOSTED_BOX_RESTARTED = "hosted.box_restarted"
+    HOSTED_MACHINE_DRAINED = "hosted.machine_drained"
+    HOSTED_ADMIN_CHANGE = "hosted.admin_change"
+    # Core asks the provisioner for a new user's box; claims and the
+    # result are linked entries.
+    HOSTED_BOX_PROVISION = "hosted.box_provision"
+    # A user's cleaned-up machine row brought back, same id, for a new box.
+    HOSTED_BOX_REVIVED = "hosted.box_revived"
+    # A deleted machine's box was scaled to 0, so Core counts the machine
+    # deleted, but its disk (the person's files and saved logins) is still in
+    # the cluster until it's removed. Server-wide, so it outlives a workspace
+    # purge; the box removal runbook lists these.
+    HOSTED_BOX_TO_REMOVE = "hosted.box_to_remove"
+    # Its revival withdraws that: the revived box reuses the namespace and
+    # disk, so the runbook skips an entry with a later cancel for the box.
+    HOSTED_BOX_TO_REMOVE_CANCELLED = "hosted.box_to_remove_cancelled"
+    # A box the box scaler found missing had its workspace controllers
+    # revoked, so a new box enrols afresh: Core's one re-ask, or the owner's
+    # Retry. Written and committed before the revokes, so none is unrecorded.
+    HOSTED_BOX_CONTROLLERS_REVOKED = "hosted.box_controllers_revoked"
+    # The move of a person's v1 machine to a v2 box, one entry per step, with
+    # the operator who ran it as the actor.
+    HOSTED_MIGRATION_STARTED = "hosted.migration_started"
+    HOSTED_MIGRATION_STEP = "hosted.migration_step"
+    HOSTED_MIGRATION_DONE = "hosted.migration_done"
+    HOSTED_MIGRATION_ROLLED_BACK = "hosted.migration_rolled_back"
+    HOSTED_MIGRATION_CLEANED = "hosted.migration_cleaned"
+    # The warm pool: a pool box given to its person (the claim), and one the
+    # reaper destroyed after Core retired it (never a person's).
+    HOSTED_POOL_BOX_CLAIMED = "hosted.pool_box_claimed"
+    HOSTED_POOL_BOX_RETIRED = "hosted.pool_box_retired"
+    # Box removal: the provisioner claimed a box named for removal (its
+    # namespace and a lease; the claim's token only as a hash), and its
+    # confirmation that the namespace and its volumes are gone.
+    HOSTED_BOX_REMOVAL_CLAIMED = "hosted.box_removal_claimed"
+    HOSTED_BOX_REMOVED = "hosted.box_removed"
+    # Operator alerts: one row per raise and per clear, with no actor.
+    # `alert.` is one of the operators' log's prefixes; it leaves them out
+    # unless asked for.
+    ALERT_RAISED = "alert.raised"
+    ALERT_CLEARED = "alert.cleared"
     # An operator held a cloud machine stopped, so its owner cannot start it,
     # or released it again (`switch-cloud-machine`).
     CLOUD_MACHINE_ADMIN_STOPPED = "cloud_machine.admin_stopped"

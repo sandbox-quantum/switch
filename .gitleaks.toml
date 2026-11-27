@@ -71,3 +71,81 @@ targetRules = ["generic-api-key"]
 paths = ['''^console/apps/switch-console-desktop/src/main/core/ssh/host-keys/[^/]+\.test\.ts$''']
 regexTarget = "match"
 regexes = ['''AAAA(?:C3NzaC1lZDI1NTE5|E2VjZHNhLXNoYTItbmlzdHA)[A-Za-z0-9+/]+={0,2}''']
+
+# Hosted agents v2 test fixtures. Each entry below needs BOTH its file path and
+# its exact line (condition = "AND"), so the same text anywhere else, or any
+# other value in the same file, is still scanned. Paths of files since moved or
+# deleted stay listed: gitleaks scans history, and older commits still carry
+# them.
+
+[[allowlists]]
+description = "Git blob ids in the box runtime's upstream-sync list"
+# 40-character hashes recording which upstream file each box copy was from.
+# The file is gone; only older commits carry it.
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^console/packages/switch-agent-runtime-box/upstream-packages\.json$''']
+regexTarget = "line"
+regexes = ['''^\s*"[^"]+\.(ts|tsx|json|mjs)": "[0-9a-f]{40}",?$''']
+
+[[allowlists]]
+description = "Test fixture in split-runtime.test.ts"
+# A made-up "swpg_" proxy token in the split-runtime test's fake agent
+# environment; never issued by anything.
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^console/packages/(agent-controller/src/box|agent-controller-box/src)/split-runtime\.test\.ts$''']
+regexTarget = "line"
+regexes = [
+  '''^\s*ANTHROPIC_AUTH_TOKEN: 'swpg_probe_0123456789abcdef',\s*$''',
+  '''^\s*env: \{ ANTHROPIC_API_KEY: 'swpg_probe_0123456789abcdef' \},\s*$''',
+]
+
+[[allowlists]]
+description = "Test fixture in sealed-login.web.test.ts"
+# A throwaway X25519 key pair used only by this cross-implementation test
+# vector; not any controller's key. If it is ever used outside this test,
+# replace it rather than allow it.
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^console/packages/agent-providers(-box)?/src/sealed-login\.web\.test\.ts$''']
+regexTarget = "line"
+regexes = [
+  '''^\s*privateKey: 'mK9YFSnL\+gcY/ye\+4HkkiK7eVYX/u\+CQzDECYtOqRUM=',\s*$''',
+  '''^\s*ephemeral_key: 'qh92VjE6EvWweftDb6jNmtIsKJKOO5NzXaXl1kXzlFE=',\s*$''',
+]
+
+[[allowlists]]
+description = "Test fixture in test_box_operator.py"
+# A made-up keyed id ("k1-" plus hex): an id format, not a credential.
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^deploy/hosted/controller/tests/test_box_operator\.py$''']
+regexTarget = "line"
+regexes = [
+  '''^\s*\("user_keyed_id", "k1-0123456789ABCDEF"\),\s*$''',
+]
+
+[[allowlists]]
+description = "Test fixture in k8s-fields.json"
+# A plain source label in the box operator's Kubernetes field fixture. The file
+# has moved to the deployment repository with the tests that read it; the entry
+# stays because older commits in history still carry it.
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^deploy/hosted/controller/tests/fixtures/k8s-fields\.json$''']
+regexTarget = "line"
+regexes = [
+  '''^\s*"source": "cluster OpenAPI v3, v1\.37\.0-eks-b9510e3",\s*$''',
+]
+
+[[allowlists]]
+description = "Test fixture in test_read_views_routes.py"
+# A made-up keyed id ("k1-" plus hex): an id format, not a credential.
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^core/tests/switch_core/visibility/test_read_views_routes\.py$''']
+regexTarget = "line"
+regexes = [
+  '''^\s*keyed = "k1-0123456789abcdef"\s*$''',
+]

@@ -20,6 +20,10 @@
       "types": "./dist/testing.d.mts",
       "default": "./dist/testing.mjs"
     },
+    "./box": {
+      "types": "./dist/box.d.mts",
+      "default": "./dist/box.mjs"
+    },
     "./package.json": "./package.json",
     "./host-daemon": "./dist/host-daemon.mjs",
     "./shared-host-daemon": "./dist/shared-host-daemon.mjs"

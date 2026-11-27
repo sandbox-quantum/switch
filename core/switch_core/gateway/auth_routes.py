@@ -122,6 +122,7 @@ from switch_core.gateway.schemas import (
     UpdateMeRequest,
 )
 from switch_core.gateway.sign_in_events import record_sign_in, sign_in_failed
+from switch_core.hosted_v2 import hosted_v2_on
 from switch_core.observability.catalogue import AUTH_SIGN_IN_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.organization_admin_notices import OrganizationAdminNotices
@@ -130,6 +131,9 @@ from switch_core.room_service import RoomService
 from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 from switch_core.version import server_declaration
+from switch_core.visibility.box_provision import ask_for_box, box_provisioning_on
+from switch_core.visibility.guards import get_operator_list
+from switch_core.visibility.operators import OperatorList
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +262,13 @@ async def _prewarm(
         )
         return SignupMachine(status="unavailable", reason=str(error))
     await session.commit()
+    await ask_for_box(
+        factory,
+        machine_id=machine.id,
+        config=config,
+        settings=settings,
+        now=datetime.now(UTC),
+    )
     if (conflict := claim_conflict(machine, datetime.now(UTC))) is not None:
         return SignupMachine(status="unavailable", reason=conflict)
     if owner_stopped(machine):
@@ -380,6 +391,13 @@ async def signup(
             machine = SignupMachine(
                 status="unavailable", reason=MACHINE_AFTER_WORKSPACE
             )
+        elif box_provisioning_on(config) and getattr(config, "hosted_pool_size", 0) > 0:
+            # Hosted agents v2 with a warm pool: no box at sign-up. One is
+            # taken from the pool, or made, at the person's first start, so
+            # the pool's boxes go to people who use them. The answer says
+            # nothing is wrong, as before (Console shows nothing for
+            # `starting`). With no pool, a sign-up asks for the box as before.
+            machine = SignupMachine(status="starting", reason=None)
         else:
             machine = await _prewarm(
                 session, session_factory, user.id, config, settings
@@ -497,6 +515,7 @@ async def session_state(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    operators: Annotated[OperatorList, Depends(get_operator_list)],
 ) -> SessionStateResponse:
     """Who is signed in, which workspace this session is in, and — when it
     is in none — what would get it into one.
@@ -526,6 +545,14 @@ async def session_state(
         can_manage_connector_apps=await deployment_manager(session_factory, user)
         is not None,
         connector_apps_in_dashboard=await connector_apps_in_dashboard(session_factory),
+        # Read from the operator list only, never from `users.role`. A hint for
+        # the web's navigation, so nothing is written to the operator log here:
+        # `require_operator` records list changes before any operator route
+        # answers.
+        # With hosted agents v2 off, not read or sent, as upstream.
+        hosted_operator=operators.is_operator(user.id)
+        if hosted_v2_on(config)
+        else None,
     )
 
 
