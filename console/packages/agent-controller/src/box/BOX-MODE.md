@@ -64,5 +64,7 @@ Each item below is gated on box mode, with a test for box on and one showing box
   Switch that runs hosted agents v2 does.
 - Each provider's own variables in the controller's environment reach every agent (`PROVIDER_ENV_VARS`), so a box
   controller's environment must hold only what is meant for its agents.
-- A Codex ChatGPT sign-in needs the gateway's way out to reach `chatgpt.com` and `auth.openai.com`. Where a box's
-  egress lists are fixed, they must name both for the controller's login.
+- A Codex ChatGPT sign-in needs the gateway's way out to reach `chatgpt.com` and `auth.openai.com`. The hosted
+  egress lists' `ai-providers` part names both, with the other hosts the gateway calls, and a split box gives that
+  part to the controller's login only. Lists made anywhere else must name them for the controller's login too.
+  Vertex AI's regional hosts (`<region>-aiplatform.googleapis.com`) are not in that part: only its global host is.

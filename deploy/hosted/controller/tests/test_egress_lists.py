@@ -132,6 +132,10 @@ def test_a_split_box_moves_the_provider_hosts_to_the_controllers_login_only():
         "http_access allow CONNECT c_ada lc_ada",
     ]
     assert "aiplatform.googleapis.com" in files["ada.ctl.list"]
+    # A Codex ChatGPT sign-in: the gateway calls its backend and renews it at OpenAI's sign-in, on its own login.
+    for host in ("chatgpt.com", "auth.openai.com"):
+        assert host in files["ada.ctl.list"].split()
+        assert host not in files["ada.list"].split()
 
 
 def test_github_downloads_are_off_unless_asked_for_on_their_own():
@@ -939,7 +943,10 @@ def test_an_open_split_box_reaches_any_host_but_the_ai_providers_and_its_control
     assert "http_access allow b_ada" in conf
     deny = conf.index("http_access deny b_ada ai_ada")
     assert deny < conf.index("http_access allow b_ada")  # the AI providers are refused first
-    assert "acl ai_ada dstdomain -n aiplatform.googleapis.com oauth2.googleapis.com" in conf
+    assert (
+        "acl ai_ada dstdomain -n aiplatform.googleapis.com api.anthropic.com api.openai.com auth.openai.com "
+        "chatgpt.com oauth2.googleapis.com"
+    ) in conf
     assert "ada.list" not in files  # no list limits the agents
     assert files["ada.ctl.list"].split() == box.ctl_hosts()  # the controller's login is unchanged
     assert "http_access allow CONNECT c_ada lc_ada" in conf

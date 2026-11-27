@@ -70,7 +70,17 @@ PARTS: dict[str, tuple[str, ...]] = {
     "github": ("github.com", "api.github.com", "codeload.github.com"),
     # Off and opt-in on its own: both serve files straight to a shell.
     "github-downloads": ("raw.githubusercontent.com", "objects.githubusercontent.com"),
-    "ai-providers": ("aiplatform.googleapis.com", "oauth2.googleapis.com"),
+    # What the box's provider gateway calls (`upstreamFor` in the controller's `provider-gateway.ts`) and renews its
+    # logins at: Vertex AI's global host and Google's token endpoint, the Anthropic and OpenAI APIs, and Codex's
+    # ChatGPT backend and OpenAI's sign-in, where a ChatGPT sign-in's refresh token is renewed.
+    "ai-providers": (
+        "aiplatform.googleapis.com",
+        "oauth2.googleapis.com",
+        "api.anthropic.com",
+        "api.openai.com",
+        "chatgpt.com",
+        "auth.openai.com",
+    ),
 }
 OPTIONAL_PARTS = frozenset(PARTS) - {
     "base",
