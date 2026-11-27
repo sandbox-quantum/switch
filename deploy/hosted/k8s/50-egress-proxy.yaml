@@ -82,6 +82,9 @@ spec:
         - mountPath: "/etc/squid/passwd"
           name: passwd
           readOnly: true
+        - mountPath: "/etc/squid/categories"
+          name: categories
+          readOnly: true
         - mountPath: "/etc/squid/reload"
           name: reload
           readOnly: true
@@ -197,6 +200,12 @@ spec:
           defaultMode: 365
           name: squid-reload
         name: reload
+      # Host categories and what each gets (block, watch or allow), the operator's own (DEPLOY.md, "Host
+      # categories"). Not in these files, and optional: without it nothing is categorised.
+      - configMap:
+          name: squid-categories
+          optional: true
+        name: categories
       # The network reporter's own Core credential (`network_report_token`). Optional, so squid starts without it: the
       # reporter then logs that it can't send, and boxes' egress is unaffected.
       - name: network-report-core
@@ -349,7 +358,9 @@ data:
     # Each request's box, host, outcome and bytes, for the network reporter beside squid, which follows this file, sums
     # it per box every minute, sends Core one report, and keeps the file short (network_report.py). Flushed per line.
     buffered_logs off
-    logformat switch_box %ts %un %Ss/%>Hs %>rd %>rP %>st %<st
+    # The last field is the request's category and what the policy gave it, `<action>:<category>` (DEPLOY.md, "Host
+    # categories"), or `-` for none.
+    logformat switch_box %ts %un %Ss/%>Hs %>rd %>rP %>st %<st %{switch_category}note
     access_log stdio:/var/log/squid/box.log logformat=switch_box
     cache_log /var/log/squid/cache.log
     pinger_enable off   # the ICMP pinger needs NET_RAW, which this pod rightly lacks
@@ -384,12 +395,18 @@ data:
     # - box files (squid-boxes) are joined, in name order, into one staged file, which goes live only after a
     #   clean `squid -k parse`, by a plain rename over the live file (rename(2): atomic, and the same with
     #   GNU, BSD or busybox `mv`), so a bad file never replaces a good one. Started with a bad file, it keeps
-    #   the pod's last good file if it has one, and otherwise allows no box at all.
+    #   the pod's last good file if it has one, and otherwise allows no box at all;
+    # - host categories (squid-categories), lists of hosts or addresses by category plus a policy, become rules at
+    #   the head of that same staged file: after a box's login and before any box's own rules, each match tagged
+    #   `<action>:<category>` (`switch_category`) and refused where the policy says block. They go live with it,
+    #   after the same parse.
     # It checks every $poll seconds, takes checksums and counts, and never prints a file's content.
     set -u
     conf=${SQUID_CONF:-/etc/squid/conf.d/squid.conf}
     src_boxes=${SQUID_SRC_BOXES:-/etc/squid/boxes}
     src_passwd=${SQUID_SRC_PASSWD:-/etc/squid/passwd}
+    src_cat=${SQUID_SRC_CATEGORIES:-/etc/squid/categories}
+    max_lists=32
     live=${SQUID_LIVE:-/run/squid-live}
     squid=${SQUID_BIN:-squid}
     poll=${SQUID_POLL_S:-2}
@@ -398,6 +415,88 @@ data:
     files() { find -L "$1" -type f ! -path '*/..*' 2>/dev/null | sort; }
     sig() { files "$1" | while IFS= read -r f; do cat "$f"; done 2>/dev/null | cksum; }
     count() { files "$1" | wc -l | tr -d ' '; }
+    sig_rules() { sig "$src_boxes"; sig "$src_cat"; }
+
+    # A category list as squid reads it: comments (`#` or `;` to the end of a line) and blank lines dropped, a
+    # hosts-file line (`0.0.0.0 example.com`) read as its host, and `*.example.com` as squid's `.example.com` (the
+    # domain and its subdomains).
+    category_list() {
+      sed -e 's/[#;].*//' "$1" |
+        awk 'NF == 0 { next } NF >= 2 && $1 ~ /^(0\.0\.0\.0|127\.0\.0\.1|::|::1)$/ { print $2; next } { print $1 }' |
+        sed -e 's/^\*\./\./'
+    }
+
+    # The host categories. Each list file holds hosts (`<category>.hosts`: `example.com` for that host,
+    # `.example.com` or `*.example.com` with its subdomains) or addresses (`<category>.ips`) of one category, read
+    # by category_list into cat.new for the parse, and `policy` says what each category
+    # gets, one `<category> <action>` per line: `block` (refused), `watch` or `allow` (let through). A request has
+    # one category: the first, in the policy's line order, whose lists match it, then any category the policy
+    # doesn't name, in name order, as block. Each list file becomes an acl excluding every earlier category's, and a
+    # note tagging a match `<action>:<category>`; a block also a deny. A file name that isn't `<category>.hosts`,
+    # `<category>.ips` or `policy` (a category is lowercase letters, digits and dashes), a policy line naming no
+    # listed category, naming one twice or giving another action, or more than $max_lists categories, fails the
+    # whole stage, like a box file that doesn't parse.
+    category_rules() {
+      lists=$(files "$src_cat" | grep -v '/policy$' || true)
+      cats=""
+      for f in $lists; do
+        name=${f##*/}
+        case "$name" in
+          *.hosts) c=${name%.hosts} ;;
+          *.ips) c=${name%.ips} ;;
+          *) c="" ;;
+        esac
+        if ! printf '%s\n' "$c" | grep -Eq '^[a-z0-9][a-z0-9-]{0,31}$'; then
+          echo "squid-reload: WARN a category file isn't named <category>.hosts or <category>.ips: $name" >&2
+          return 1
+        fi
+        cats="$cats $c"
+      done
+      cats=$(printf '%s\n' $cats | sort -u | tr '\n' ' ')
+      if [ "$(printf '%s\n' $cats | grep -c . || true)" -gt "$max_lists" ]; then
+        echo "squid-reload: WARN more than $max_lists host categories" >&2
+        return 1
+      fi
+      order=""
+      if [ -f "$src_cat/policy" ]; then
+        while read -r c a extra; do
+          case "$c" in '' | '#'*) continue ;; esac
+          case "$a" in block | watch | allow) ;; *) a="" ;; esac
+          case " $cats " in *" $c "*) listed=1 ;; *) listed="" ;; esac
+          case " $order " in *" $c:"*) listed="" ;; esac
+          if [ -z "$a" ] || [ -n "$extra" ] || [ -z "$listed" ]; then
+            echo "squid-reload: WARN a policy line isn't '<listed category> block|watch|allow', or names a category twice: $c" >&2
+            return 1
+          fi
+          order="$order $c:$a"
+        done < "$src_cat/policy"
+      fi
+      for c in $cats; do
+        case " $order " in *" $c:"*) ;; *) order="$order $c:block" ;; esac
+      done
+      [ -n "$lists" ] || return 0
+      rm -rf "$live/cat.new" && mkdir -p "$live/cat.new" || return 1
+      echo "acl switch_box_login proxy_auth REQUIRED"
+      n=0
+      earlier=""
+      for entry in $order; do
+        c=${entry%%:*}
+        a=${entry#*:}
+        mine=""
+        for f in "$src_cat/$c.hosts" "$src_cat/$c.ips"; do
+          [ -f "$f" ] || continue
+          case "$f" in *.hosts) type="dstdomain -n" ;; *) type=dst ;; esac
+          read_as="$live/cat.new/${f##*/}"
+          category_list "$f" > "$read_as" || return 1
+          n=$((n + 1))
+          echo "acl switch_cat_$n $type \"$read_as\""
+          echo "note switch_category $a:$c switch_cat_$n$earlier"
+          [ "$a" != block ] || echo "http_access deny switch_box_login switch_cat_$n$earlier"
+          mine="$mine !switch_cat_$n"
+        done
+        earlier="$earlier$mine"
+      done
+    }
 
     apply_logins() {
       # A missing or unreadable file gives an empty one: no login works, so nothing is allowed.
@@ -413,7 +512,10 @@ data:
         cat "$src_boxes/_none.conf" > "$live/boxes.conf.new" 2>/dev/null || : > "$live/boxes.conf.new"
       else
         # Only the .conf files: a box's .list files are the host lists its .conf names by path, not squid config.
-        files "$src_boxes" | grep '\.conf$' | while IFS= read -r f; do cat "$f" && echo || exit 1; done > "$live/boxes.conf.new"
+        (
+          category_rules || exit 1
+          files "$src_boxes" | grep '\.conf$' | while IFS= read -r f; do cat "$f" && echo || exit 1; done
+        ) > "$live/boxes.conf.new"
       fi
     }
 
@@ -423,7 +525,16 @@ data:
         "$squid" -k parse -f "$live/staged.conf" >/dev/null 2>&1
     }
 
+    # The categories' lists go live with the box files: staged in cat.new for the parse, then renamed to cat, and
+    # the file that names them pointed there.
     go_live() {
+      if [ -d "$live/cat.new" ]; then
+        rm -rf "$live/cat.old"
+        [ ! -d "$live/cat" ] || mv "$live/cat" "$live/cat.old"
+        mv "$live/cat.new" "$live/cat"
+        sed "s#$live/cat.new/#$live/cat/#g" "$live/boxes.conf.new" > "$live/boxes.conf.tmp" &&
+          mv -f "$live/boxes.conf.tmp" "$live/boxes.conf.new"
+      fi
       mv -f "$live/boxes.conf.new" "$live/boxes.conf"
     }
 
@@ -435,7 +546,7 @@ data:
     mkdir -p "$live"
     # Checksums first, then the copies: a change made while copying is seen as a change on the next check.
     last_logins=$(sig "$src_passwd")
-    last_boxes=$(sig "$src_boxes")
+    last_boxes=$(sig_rules)
     apply_logins
     failing_since=""
     warned=0
@@ -459,7 +570,7 @@ data:
         kill -HUP "$pid" && echo "squid-reload: logins changed, applied and reloaded"
         last_logins=$now
       fi
-      now=$(sig "$src_boxes")
+      now=$(sig_rules)
       if [ "$now" != "$last_boxes" ]; then
         if stage && parses; then
           go_live

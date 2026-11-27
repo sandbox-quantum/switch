@@ -15,10 +15,13 @@ No hostname leaves this process, not even hashed: a host is named in the report 
 digits) this process gives it the first time it sees it and keeps only in memory (`HostIds`), so the same host keeps
 its id while this process runs and gets a new one after a restart. Another squid replica's reporter has its own ids.
 
-squid's line (`switch_box`): `<epoch> <login> <squid status>/<http status> <host> <port> <bytes up> <bytes down>`.
-A refusal is squid's `TCP_DENIED` other than a 407: a 407 asks the client for its proxy login, which it then sends. A box's agents
-log in as `box-<id>` and its controller as `box-<id>-ctl` (`egress_lists.BoxEgress`); both count for the box. A line
-without a box login (refused before any box's rule) is counted as unattributed.
+squid's line (`switch_box`): `<epoch> <login> <squid status>/<http status> <host> <port> <bytes up> <bytes down>
+<category>`. A refusal is squid's `TCP_DENIED` other than a 407: a 407 asks the client for its proxy login, which it
+then sends. `<category>` is the request's host category and what the operator's policy gave it (squid's
+`switch_category` note, from `squid-categories`), `<policy>:<category>` with the policy `block`, `watch` or `allow`,
+or `-` for none; each category is counted per box and host, with its policy (`categories`). A box's
+agents log in as `box-<id>` and its controller as `box-<id>-ctl` (`egress_lists.BoxEgress`); both count for the box.
+A line without a box login (refused before any box's rule) is counted as unattributed.
 
 If Core can't be reached, the window's sums are kept and merged into the next one, and older ones beyond that are
 dropped and counted (`dropped_windows`), so a long outage costs memory for one window, not one per minute.
@@ -69,6 +72,8 @@ POLL_S = 1.0
 # `box-<id>` and `box-<id>-ctl`, where <id> is `box-k1-<16 hex>` (box-keyed) or `k1-<16 hex>` (person-keyed).
 LOGIN_RE = re.compile(r"^box-((?:box-)?k1-[0-9a-f]{16})(?:-ctl)?$")
 HOST_RE = re.compile(r"^[A-Za-z0-9.:\[\]_-]{1,253}$")
+# A host category and its action, as squid's reload wrapper tags a request with them.
+CATEGORY_RE = re.compile(r"^(block|watch|allow):([a-z0-9][a-z0-9-]{0,31})$")
 
 
 @dataclass
@@ -77,12 +82,18 @@ class Totals:
     denied: int = 0
     bytes_up: int = 0
     bytes_down: int = 0
+    # Requests by host category, each with the category's policy: {"malware": {"requests": 2, "policy": "block"}}.
+    categories: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def add(self, other: Totals) -> None:
         self.requests += other.requests
         self.denied += other.denied
         self.bytes_up += other.bytes_up
         self.bytes_down += other.bytes_down
+        for name, entry in other.categories.items():
+            mine = self.categories.setdefault(name, {"requests": 0, "policy": entry["policy"]})
+            mine["requests"] += entry["requests"]
+            mine["policy"] = entry["policy"]  # the latest, should the policy change mid-window
 
 
 @dataclass
@@ -114,9 +125,9 @@ def parse(line: str) -> tuple[str | None, str, Totals] | None:
     """(box id or None, host:port, one request's totals) from one `switch_box` line; None for a line that isn't
     one."""
     parts = line.split()
-    if len(parts) != 7:
+    if len(parts) != 8:
         return None
-    _, login, status, host, port, up, down = parts
+    _, login, status, host, port, up, down, category = parts
     try:
         bytes_up, bytes_down = int(up), int(down)
     except ValueError:
@@ -126,10 +137,17 @@ def parse(line: str) -> tuple[str | None, str, Totals] | None:
     matched = LOGIN_RE.fullmatch(login)
     code, _, http = status.partition("/")
     denied = (code == "TCP_DENIED" and http != "407") or code == "NONE_NONE"
+    tagged = CATEGORY_RE.fullmatch(category)
     return (
         matched.group(1) if matched else None,
         f"{host}:{port}",
-        Totals(1, 1 if denied else 0, max(bytes_up, 0), max(bytes_down, 0)),
+        Totals(
+            1,
+            1 if denied else 0,
+            max(bytes_up, 0),
+            max(bytes_down, 0),
+            {tagged.group(2): {"requests": 1, "policy": tagged.group(1)}} if tagged else {},
+        ),
     )
 
 

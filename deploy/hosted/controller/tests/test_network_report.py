@@ -23,9 +23,14 @@ OLD = "k1-fedcba9876543210"
 
 
 def line(
-    login: str, host: str, status: str = "TCP_TUNNEL/200", up: int = 100, down: int = 1000
+    login: str,
+    host: str,
+    status: str = "TCP_TUNNEL/200",
+    up: int = 100,
+    down: int = 1000,
+    tag: str = "-",
 ) -> str:
-    return f"1795680000.123 {login} {status} {host} 443 {up} {down}"
+    return f"1795680000.123 {login} {status} {host} 443 {up} {down} {tag}"
 
 
 def test_a_line_names_its_box_by_either_login_and_counts_a_refusal() -> None:
@@ -146,3 +151,35 @@ def test_a_proxy_login_challenge_is_not_a_refusal() -> None:
     _, _, refused = parse(line(f"box-{BOX}", "github.com", status="TCP_DENIED/403"))
     _, _, older = parse(line(f"box-{BOX}", "github.com", status="TCP_DENIED"))
     assert (challenge.denied, refused.denied, older.denied) == (0, 1, 1)
+
+
+def test_requests_are_counted_by_category_with_its_policy() -> None:
+    agg = Aggregator()
+    ids = HostIds()
+    refused = {"status": "TCP_DENIED/403", "up": 0, "down": 0}
+    agg.add_line(line(f"box-{BOX}", "blocked.example", tag="block:ours", **refused))  # type: ignore[arg-type]
+    agg.add_line(line(f"box-{BOX}", "bad.example", tag="block:malware", **refused))  # type: ignore[arg-type]
+    agg.add_line(line(f"box-{BOX}", "bad.example", tag="block:malware", **refused))  # type: ignore[arg-type]
+    agg.add_line(line(f"box-{BOX}", "x.pool.example", tag="watch:miners"))
+    agg.add_line(line(f"box-{BOX}", "a.cdn.example", tag="allow:cdn"))
+    agg.add_line(line(f"box-{BOX}", "github.com"))
+    agg.add_line(line(f"box-{BOX}", "odd.example", tag="block:Not_A_Category"))
+    agg.add_line(line(f"box-{BOX}", "odd.example", tag="drop:ours"))
+    [box] = report_body(agg.take(), 60, 0, ids)["boxes"]
+    assert (box["requests"], box["denied"]) == (8, 3)
+    assert box["categories"] == {
+        "ours": {"requests": 1, "policy": "block"},
+        "malware": {"requests": 2, "policy": "block"},
+        "miners": {"requests": 1, "policy": "watch"},
+        "cdn": {"requests": 1, "policy": "allow"},
+    }
+    by_host = {h["host"]: h for h in box["hosts"]}
+    assert by_host[ids.of("bad.example:443")]["categories"] == {
+        "malware": {"requests": 2, "policy": "block"}
+    }
+    assert by_host[ids.of("github.com:443")]["categories"] == {}
+
+
+def test_a_line_with_another_field_count_is_unreadable() -> None:
+    assert parse("1795680000.123 box-x TCP_TUNNEL/200 github.com 443 1 2 - -") is None
+    assert parse("1795680000.123 box-x TCP_TUNNEL/200 github.com 443 1 2") is None
