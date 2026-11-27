@@ -35,7 +35,8 @@ from switch_core.bridges.agent.protocol.agent_management import (
     CheckedPlacement,
     NewManagedAgent,
 )
-from switch_core.db.models import Agent, Room, Template
+from switch_core.db.audit import AuditAction
+from switch_core.db.models import Agent, AuditEvent, Room, Template
 from switch_core.db.stores.template_install_store import TemplateInstallStore
 from switch_core.official_templates import current_revision
 from switch_core.providers.registry import provider_ids
@@ -621,6 +622,37 @@ async def test_a_template_agent_runs_in_auto_mode_unless_it_says_not(
 
     (created,) = managed["management"].created
     assert (created.auto_mode, created.auto_approve) == (expected, False)
+
+
+@pytest.mark.asyncio
+async def test_an_agent_granting_can_manage_agents_is_recorded_as_not_by_the_owner(
+    managed,
+):
+    template_id = await _stored(
+        managed,
+        "agent:\n"
+        "  name: helper\n"
+        "  instructions: Help.\n"
+        "  provider: claude\n"
+        "  machine: laptop\n"
+        "  directory: /srv/helper\n"
+        "  can_manage_agents: true\n",
+        kind="agent",
+    )
+
+    await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    async with managed["session_factory"]() as session:
+        [event] = (
+            await session.execute(
+                select(AuditEvent).where(
+                    AuditEvent.action == AuditAction.AGENT_MANAGEMENT_GRANTED.value
+                )
+            )
+        ).scalars()
+    assert event.details is not None
+    assert event.details["acting_agent_id"] == managed["agent_id"]
+    assert event.details["by_owner"] is False
 
 
 @pytest.mark.asyncio

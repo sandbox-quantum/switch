@@ -281,6 +281,25 @@ def request_actor() -> tuple[str | None, str | None]:
     return context.user_id, context.agent_id
 
 
+def escalation_details(
+    *, owner_id: str | None, actor_user_id: str | None, acting_agent_id: str | None
+) -> dict[str, Any]:
+    """Who gave an agent more power, for the details of
+    `AGENT_AUTO_APPROVE_ENABLED` and `AGENT_MANAGEMENT_GRANTED`.
+
+    `by_owner` is true only when the agent's owner did it themselves: not an
+    agent acting for them, and not anyone else. A change with no request
+    behind it counts as not by the owner. The security monitor alerts on
+    `by_owner` false, so an owner setting up their own agent does not page.
+    """
+    return {
+        "acting_agent_id": acting_agent_id,
+        "by_owner": acting_agent_id is None
+        and actor_user_id is not None
+        and actor_user_id == owner_id,
+    }
+
+
 async def record_audit_event(
     session: AsyncSession,
     *,
