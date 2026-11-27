@@ -121,16 +121,22 @@ def test_failures_are_classified_from_the_real_exception_types() -> None:
 
 @pytest.fixture
 def fake(monkeypatch: pytest.MonkeyPatch) -> FakeRocketChat:
-    """The fake behind `verify_credentials`, which builds a client of its own."""
+    """The fake behind `verify_credentials`, noting the policy each client
+    it builds was given."""
     server = FakeRocketChat()
-    monkeypatch.setattr(httpx, "AsyncClient", server.client)
+
+    def client(policy: OutboundPolicy, **kwargs: Any) -> httpx.AsyncClient:
+        server.policies.append(policy)
+        return server.client(**kwargs)
+
+    monkeypatch.setattr(adapter_module, "guarded_async_client", client)
     return server
 
 
 async def test_good_credentials_are_accepted(fake: FakeRocketChat) -> None:
-    await RocketChatAdapter.verify_credentials(
-        _raw(), outbound_policy=OutboundPolicy.parse("")
-    )
+    policy = OutboundPolicy.parse("")
+    await RocketChatAdapter.verify_credentials(_raw(), outbound_policy=policy)
+    assert fake.policies == [policy]
     [call] = fake.called("me")
     assert call.headers["X-User-Id"] == BOT_ID
     assert call.headers["X-Auth-Token"] == "test-placeholder-token"
@@ -179,17 +185,24 @@ async def test_an_unreachable_server_is_named(monkeypatch: pytest.MonkeyPatch) -
     def unreachable(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
 
-    real = httpx.AsyncClient
     monkeypatch.setattr(
-        httpx,
-        "AsyncClient",
-        lambda **kw: real(
+        adapter_module,
+        "guarded_async_client",
+        lambda policy, **kw: httpx.AsyncClient(
             transport=httpx.MockTransport(unreachable), base_url=kw["base_url"]
         ),
     )
     with pytest.raises(BridgeCredentialError, match="Could not reach Rocket.Chat"):
         await RocketChatAdapter.verify_credentials(
             _raw(), outbound_policy=OutboundPolicy.parse("")
+        )
+
+
+async def test_an_address_the_policy_blocks_is_not_sent_the_token() -> None:
+    with pytest.raises(BridgeCredentialError, match="may not connect"):
+        await RocketChatAdapter.verify_credentials(
+            _raw(server_url="http://127.0.0.1:9"),
+            outbound_policy=OutboundPolicy.parse(""),
         )
 
 

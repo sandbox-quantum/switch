@@ -70,7 +70,6 @@ from switch_core.bridges.collaboration.matrix.client import (
     MatrixApiError,
     MediaTooLarge,
     NotAMatrixAnswer,
-    open_http,
 )
 from switch_core.bridges.collaboration.matrix.formatting import (
     PERMALINK,
@@ -108,7 +107,11 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     turn_status,
 )
 from switch_core.clients.mentions import mention_regex
-from switch_core.outbound import OutboundPolicy, guarded_async_client
+from switch_core.outbound import (
+    OutboundPolicy,
+    OutboundURLRefused,
+    guarded_async_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -459,10 +462,16 @@ class MatrixAdapter(PlatformAdapter):
         """
         config = MatrixConnectionConfig.model_validate(connection_config)
         api = HomeserverApi(
-            open_http(config.homeserver_url), access_token=config.access_token
+            guarded_async_client(outbound_policy, base_url=config.homeserver_url),
+            access_token=config.access_token,
         )
         try:
             who = await api.whoami()
+        except OutboundURLRefused as exc:
+            raise BridgeCredentialError(
+                f"Switch may not connect to the homeserver at "
+                f"{config.homeserver_url}: {exc}"
+            ) from exc
         except NotAMatrixAnswer as exc:
             raise BridgeCredentialError(
                 _not_a_homeserver(config.homeserver_url, exc)

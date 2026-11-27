@@ -13,8 +13,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
+import httpx
 import pytest
-from mattermostdriver.exceptions import NoAccessTokenProvided, ResourceNotFound
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telegram.request import HTTPXRequest
 
@@ -22,6 +22,7 @@ from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
+from switch_core.bridges.collaboration.mattermost import adapter as mattermost_adapter
 from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
@@ -141,52 +142,80 @@ class TestDiscord:
         login.assert_not_awaited()
 
 
-class _Driver:
-    def __init__(self, *, login: Exception | None, team: Exception | None) -> None:
-        self._login = login
-        self.teams = MagicMock()
-        self.teams.get_team_by_name.side_effect = team
-        self.logged_out = False
+class _FakeMattermost:
+    """The REST API `verify_credentials` signs in to, noting each request."""
 
-    def login(self) -> None:
-        if self._login is not None:
-            raise self._login
+    def __init__(self, *, login_status: int, team_status: int) -> None:
+        self.login_status = login_status
+        self.team_status = team_status
+        self.requests: list[tuple[str, str]] = []
+        self.policies: list[OutboundPolicy] = []
 
-    def logout(self) -> None:
-        self.logged_out = True
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append((request.method, request.url.path))
+        if request.url.path == "/api/v4/users/login":
+            if self.login_status != 200:
+                return httpx.Response(
+                    self.login_status, json={"message": "Invalid credentials"}
+                )
+            return httpx.Response(200, json={}, headers={"Token": "session-token"})
+        if request.url.path.startswith("/api/v4/teams/name/"):
+            assert request.headers["Authorization"] == "Bearer session-token"
+            if self.team_status != 200:
+                return httpx.Response(self.team_status, json={"message": "not found"})
+            return httpx.Response(200, json={"id": "team-1"})
+        return httpx.Response(200, json={})
 
+    def serve(self) -> Any:
+        def client(policy: OutboundPolicy, **kwargs: Any) -> httpx.AsyncClient:
+            self.policies.append(policy)
+            kwargs.pop("verify")
+            return httpx.AsyncClient(
+                transport=httpx.MockTransport(self.handle), **kwargs
+            )
 
-def _mattermost_driver(driver: _Driver) -> Any:
-    return patch.object(MattermostAdapter, "_create_driver", lambda *_, **__: driver)
+        return patch.object(mattermost_adapter, "guarded_async_client", client)
 
 
 class TestMattermost:
     async def test_a_refused_sign_in_is_a_credential_error(self) -> None:
-        driver = _Driver(login=NoAccessTokenProvided("Invalid credentials"), team=None)
-        with _mattermost_driver(driver):
+        server = _FakeMattermost(login_status=401, team_status=200)
+        with server.serve():
             with pytest.raises(BridgeCredentialError, match="refused the sign-in"):
                 await MattermostAdapter.verify_credentials(
                     dict(MATTERMOST), outbound_policy=OutboundPolicy.parse("")
                 )
 
     async def test_a_team_it_cannot_find_is_a_credential_error(self) -> None:
-        driver = _Driver(login=None, team=ResourceNotFound("not found"))
-        with _mattermost_driver(driver):
+        server = _FakeMattermost(login_status=200, team_status=404)
+        with server.serve():
             with pytest.raises(BridgeCredentialError, match="no team named 'eng'"):
                 await MattermostAdapter.verify_credentials(
                     dict(MATTERMOST), outbound_policy=OutboundPolicy.parse("")
                 )
-        assert driver.logged_out
+        assert server.requests[-1] == ("POST", "/api/v4/users/logout")
 
     async def test_a_working_sign_in_is_accepted_and_signed_out(self) -> None:
-        driver = _Driver(login=None, team=None)
-        with _mattermost_driver(driver):
+        server = _FakeMattermost(login_status=200, team_status=200)
+        policy = OutboundPolicy.parse("")
+        with server.serve():
             await MattermostAdapter.verify_credentials(
-                dict(MATTERMOST), outbound_policy=OutboundPolicy.parse("")
+                dict(MATTERMOST), outbound_policy=policy
             )
 
-        driver.teams.get_team_by_name.assert_called_once_with("eng")
-        assert driver.logged_out
+        assert server.requests == [
+            ("POST", "/api/v4/users/login"),
+            ("GET", "/api/v4/teams/name/eng"),
+            ("POST", "/api/v4/users/logout"),
+        ]
+        assert server.policies == [policy]
+
+    async def test_an_address_the_policy_blocks_is_not_signed_in_to(self) -> None:
+        with pytest.raises(BridgeCredentialError, match="may not connect"):
+            await MattermostAdapter.verify_credentials(
+                {**MATTERMOST, "url": "http://127.0.0.1:9"},
+                outbound_policy=OutboundPolicy.parse(""),
+            )
 
 
 def _service(
@@ -226,10 +255,9 @@ async def test_an_edit_is_not_signed_in_with_at_a_url_switch_may_not_reach(
     config.outbound_policy.check_url = AsyncMock(
         side_effect=OutboundURLRefused("chat.example.invalid is a private address")
     )
-    driver = _Driver(login=None, team=None)
-    driver.login = MagicMock()  # type: ignore[method-assign]
+    server = _FakeMattermost(login_status=200, team_status=200)
 
-    with _mattermost_driver(driver):
+    with server.serve():
         with pytest.raises(BridgeStartRefused, match="private address"):
             await _service(session_factory, config).check_edited_connection_config(
                 bridge_id="the-edited-bridge",
@@ -237,4 +265,4 @@ async def test_an_edit_is_not_signed_in_with_at_a_url_switch_may_not_reach(
                 connection_config=dict(MATTERMOST),
             )
 
-    driver.login.assert_not_called()
+    assert server.requests == []

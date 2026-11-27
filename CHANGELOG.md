@@ -88,6 +88,15 @@ version of their own to them without also giving them a release of their own.
   A message's file link is fetched only when it has the shape of a Zulip
   upload (`/user_uploads/<realm>/…/<name>`); any other is reported as a file
   that could not be relayed.
+- **A Google Chat bridge calls only Google's APIs, through the outbound
+  address guard.** The connection config no longer takes `api_base_url` or
+  `pubsub_base_url`; a stored value is ignored, so the service account's token
+  cannot be sent to another host.
+- **Matrix, Mattermost and Rocket.Chat credentials are checked through the
+  outbound address guard**, as the running bridges already connect, so the
+  server's name cannot resolve to an internal or metadata address between the
+  URL check and the token or password being sent. A Mattermost check now signs
+  in over the REST API rather than through the driver.
 - **A template param's `pattern` is checked in bounded time.** A match that
   takes longer than 0.1 s is refused as a validation error naming the param,
   so a backtracking pattern cannot hold the server. Saving or updating a
