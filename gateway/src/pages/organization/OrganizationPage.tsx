@@ -6,6 +6,7 @@ import EditableField from "../../components/EditableField";
 import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { useLoad } from "../workspace/useLoad";
 import OrganizationAuditSection from "./OrganizationAuditSection";
+import FreeBetaPanel from "./billing/FreeBetaPanel";
 import OrganizationConnectorsSettings from "./connectors/OrganizationConnectorsSettings";
 import OrganizationIssuesNotice from "./OrganizationIssuesNotice";
 import OrganizationDevicesSettings from "./devices/OrganizationDevicesSettings";
@@ -111,5 +112,18 @@ export function OrganizationAuditLogPage() {
       organizationName={organization.name}
       membersFromDirectory={organization.members_from_directory}
     />
+  );
+}
+
+/** What the organization's plan is: for now, the Free Beta of Switch Cloud,
+ *  shown on any server. */
+export function OrganizationBillingPage() {
+  return (
+    <Box>
+      <Typography variant="h5" sx={{ mb: 3 }}>
+        Plans & billing
+      </Typography>
+      <FreeBetaPanel />
+    </Box>
   );
 }

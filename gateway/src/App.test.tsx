@@ -600,6 +600,20 @@ describe("the layout", () => {
         "Users",
         "Guardrails",
         "Audit log",
+        "Plans & billing",
+      ]);
+    });
+
+    it("shows an organization admin the Free Beta on Plans & billing", async () => {
+      mockFetch(signedInAs("org_admin"));
+      renderAt("/settings/org/billing");
+      const panel = await screen.findByRole("region", { name: "Build your human-agent hybrid team now." });
+      expect(within(panel).getByText("Free Beta for Switch Cloud")).toBeTruthy();
+      expect(within(panel).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+        "A free cloud device to host your agents",
+        "Unlimited rooms",
+        "Free until 18 Feb 2027",
+        "Self-hosting version is open source",
       ]);
     });
 
@@ -931,7 +945,7 @@ describe("the layout", () => {
       for (const [role, path] of [
         ["member", "/settings/org"],
         ["workspace_admin", "/settings/org/users"],
-        ["org_admin", "/settings/org/billing"],
+        ["org_admin", "/settings/org/no-such-page"],
       ] as const) {
         mockFetch(signedInAs(role));
         renderAt(path);
