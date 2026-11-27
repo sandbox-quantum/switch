@@ -66,7 +66,14 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
           height: TARGET,
           borderRadius: "12px",
           transition: "background-color 0.15s ease",
-          ...(active && { backgroundColor: "color-mix(in srgb, var(--sw-card) 80%, transparent)" }),
+          ...(active && {
+            backgroundColor: "color-mix(in srgb, var(--sw-card) 80%, transparent)",
+            // The dark card barely lifts off the dark canvas, so the open item
+            // takes the hover tint two steps brighter instead.
+            '[data-mui-color-scheme="dark"] &': {
+              backgroundColor: "color-mix(in srgb, var(--sw-foreground) 20%, transparent)",
+            },
+          }),
         }}
       >
         <item.icon sx={{ fontSize: ICON, strokeWidth: 1.5 }} />
