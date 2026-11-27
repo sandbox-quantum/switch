@@ -38,7 +38,10 @@ from switch_core.gateway.auth import (
     require_admin,
 )
 from switch_core.gateway.dependencies import get_session, get_system_session
-from switch_core.gateway.hosted_controller import controller_session
+from switch_core.gateway.hosted_controller import (
+    box_controller_session,
+    controller_session,
+)
 
 # The only routes that may open a session with no tenant bound. `get_session`
 # is unavailable to them because there is no `get_current_user` to bind one:
@@ -299,15 +302,24 @@ def test_the_routes_that_never_bind_a_tenant_are_exactly_these() -> None:
     assert {
         route.key
         for route in ROUTES
-        if not route.binds_a_tenant and controller_session not in route.calls
+        if not route.binds_a_tenant
+        and controller_session not in route.calls
+        and box_controller_session not in route.calls
     } == _ROUTES_THAT_NEVER_BIND_A_TENANT
 
 
 def test_controller_credential_is_confined_to_the_controller_routes() -> None:
+    """v1's controller and the box workers share these three; the box-only
+    ones below take the box workers' own session."""
     assert {route.key for route in ROUTES if controller_session in route.calls} == {
         ("GET", "/hosted-controller/machines"),
         ("POST", "/hosted-controller/machines/{machine_id}/prepare"),
         ("POST", "/hosted-controller/machines/{machine_id}/observation"),
+    }
+
+
+def test_box_controller_credential_is_confined_to_the_box_routes() -> None:
+    assert {route.key for route in ROUTES if box_controller_session in route.calls} == {
         # The cluster report. Node names, zones, memory shares and the
         # listed services' copies, nothing per tenant; the body is strict and
         # capped at 64 KiB, and nothing in it is echoed back.
