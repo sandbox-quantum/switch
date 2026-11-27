@@ -1335,6 +1335,14 @@
       "created_at": "2026-11-27T12:05:25Z",
       "repoId": 1302612528,
       "pullRequestNo": 2300
+    },
+    {
+      "name": "Hui-Hwoo",
+      "id": 105327492,
+      "comment_id": 7226553590,
+      "created_at": "2026-11-27T19:27:56Z",
+      "repoId": 1302612528,
+      "pullRequestNo": 2324
     }
   ]
 }
