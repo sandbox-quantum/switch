@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { safeId } from '../safe-id';
 import { MAX_ATTACHMENT_BYTES, stageAttachment } from './attachments';
 import { sharedSessionRoot } from './launch';
 
@@ -18,8 +19,10 @@ const MAX_STAGED_BYTES = 32 * 1024 * 1024;
 export const TRANSFER_IDLE_MS = 120_000;
 export const STAGED_UNCONSUMED_MS = 10 * 60_000;
 
+export const transferIdSchema = z.string().regex(/^[A-Za-z0-9-]{1,64}$/);
+
 export const attachmentChunkSchema = z.object({
-  transferId: z.string().regex(/^[A-Za-z0-9-]{1,64}$/),
+  transferId: transferIdSchema,
   sessionId: z.string().min(1),
   name: z.string().min(1),
   mimeType: z.string().min(1),
@@ -71,9 +74,14 @@ export class AttachmentTransfers {
     await rm(this.directory, { recursive: true, force: true });
   }
 
+  private partPath(transferId: string): string {
+    return join(this.directory, `${safeId(transferId, 'transfer id')}.part`);
+  }
+
   async cancel(transferId: string): Promise<void> {
+    const target = this.partPath(transferId);
     this.partials.delete(transferId);
-    await rm(join(this.directory, `${transferId}.part`), { force: true });
+    await rm(target, { force: true });
   }
 
   /** Delete partial transfers idle past their window and staged files nothing consumed. */
@@ -157,7 +165,7 @@ export class AttachmentTransfers {
         expected: partial.next,
       });
     const data = Buffer.from(encoded, 'base64');
-    const part = join(this.directory, `${chunk.transferId}.part`);
+    const part = this.partPath(chunk.transferId);
     if (
       data.byteLength > MAX_CHUNK_BYTES ||
       partial.received + data.byteLength > chunk.size ||

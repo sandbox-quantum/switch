@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -118,4 +118,22 @@ it('refuses a transfer to a session that is not on this host', async () => {
   await expect(transfers.receive({ ...only!, sessionId: 'absent' })).rejects.toMatchObject({
     code: 'not_found',
   });
+});
+
+it('refuses to cancel a transfer id that would name a file outside its directory', async () => {
+  const transfers = new AttachmentTransfers(root);
+  const externalFile = join(paths.base, 'target.part');
+  await writeFile(externalFile, 'important data');
+  await expect(transfers.cancel('../target')).rejects.toThrow('cannot be used in a file name');
+  expect(await readFile(externalFile, 'utf8')).toBe('important data');
+});
+
+it('deletes partial file when cancelling valid transfer id', async () => {
+  const transfers = new AttachmentTransfers(root);
+  const [first] = chunks(Buffer.from('hello attachment world'), 8, 't-cancel');
+  await transfers.receive(first!);
+  const partFile = join(root, 'relay-attachments', 't-cancel.part');
+  expect(await readFile(partFile)).toBeTruthy();
+  await transfers.cancel('t-cancel');
+  await expect(readFile(partFile)).rejects.toMatchObject({ code: 'ENOENT' });
 });

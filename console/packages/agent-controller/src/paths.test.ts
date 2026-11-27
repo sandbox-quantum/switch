@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isSafeId } from '@switch-console/agent-providers';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   controllerSessionsDir,
@@ -10,7 +11,6 @@ import {
   agentWorkspace,
   ensureDataDir,
   insideDataDir,
-  isSafeSegment,
   serverWorkspacesDir,
 } from './paths';
 
@@ -107,11 +107,10 @@ describe('dataLayout', () => {
       join('/home/me/.switch/agents/localhost-8000', 'scout')
     );
     expect(() => agentWorkspace('/w', '../escape')).toThrow(/cannot be used/);
-    expect(() => layout.watcherRoot('../x')).toThrow(/cannot be used as a directory name/);
+    expect(() => layout.watcherRoot('../x')).toThrow(/cannot be used in a file name/);
     expect(() => agentWorkspace('/w', 'a/b')).toThrow();
-    for (const bad of ['', '.', '..', '.hidden', 'a/b', 'a..b'])
-      expect(isSafeSegment(bad)).toBe(false);
-    expect(isSafeSegment('00000000-0000-4000-8000-0000000000a1')).toBe(true);
+    for (const bad of ['', '.', '..', '.hidden', 'a/b', 'a..b']) expect(isSafeId(bad)).toBe(false);
+    expect(isSafeId('00000000-0000-4000-8000-0000000000a1')).toBe(true);
   });
 });
 

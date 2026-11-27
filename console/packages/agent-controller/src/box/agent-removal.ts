@@ -1,10 +1,10 @@
 import { constants } from 'node:fs';
 import { lstat, open, readdir, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { sharedSessionRoot } from '@switch-console/agent-providers';
+import { isSafeId, sharedSessionRoot } from '@switch-console/agent-providers';
 import { z } from 'zod';
 import type { Logger } from '../log';
-import { type DataLayout, isSafeSegment } from '../paths';
+import type { DataLayout } from '../paths';
 
 /**
  * What removing an agent from this machine deletes, so nothing of it is left
@@ -12,7 +12,7 @@ import { type DataLayout, isSafeSegment } from '../paths';
  * gone, its folders and its sessions' folders (a box once
  * kept 55 removed agents' folders, because removal deleted only the relay token).
  *
- * Every path is built from an id `isSafeSegment` accepts (no separator, no
+ * Every path is built from an id `isSafeId` accepts (no separator, no
  * `..`), under the controller's own `agents/` and `watchers/` folders or the
  * shared sessions folder, and deleted without following a link: `rm` removes a
  * symbolic link itself, never what it points at, so an agent that planted a
@@ -103,7 +103,7 @@ export async function deleteLoginCopies(
   agentId: string
 ): Promise<RemovalResult> {
   const result: RemovalResult = { deleted: [], failed: [] };
-  if (!isSafeSegment(agentId)) return result;
+  if (!isSafeId(agentId)) return result;
   await remove(deps.layout.agentCredentials(agentId), `agents/${agentId}/credentials.json`, result);
   for (const folder of LOGIN_FOLDERS)
     await remove(
@@ -169,7 +169,7 @@ export async function deleteAgentFolders(
   agentId: string
 ): Promise<RemovalResult> {
   const result: RemovalResult = { deleted: [], failed: [] };
-  if (!isSafeSegment(agentId)) return result;
+  if (!isSafeId(agentId)) return result;
   const base = deps.sessionsBase ?? sessionsFolder();
   // Sessions first: their configs are how they are known to be this agent's,
   // and they name the credentials path, which goes with `agents/<id>`.
@@ -183,7 +183,7 @@ export async function deleteAgentFolders(
 /**
  * Agents with a folder in `agents/` or `watchers/` that `keep` does not name:
  * removed while this controller was not running, or before removal deleted
- * their folders. Only names `isSafeSegment` accepts, and only real folders,
+ * their folders. Only names `isSafeId` accepts, and only real folders,
  * never a link.
  */
 export async function leftoverAgents(
@@ -199,7 +199,7 @@ export async function leftoverAgents(
       continue;
     }
     for (const name of names) {
-      if (keep.has(name) || !isSafeSegment(name)) continue;
+      if (keep.has(name) || !isSafeId(name)) continue;
       try {
         if ((await lstat(join(layout.root, parent, name))).isDirectory()) found.add(name);
       } catch {

@@ -5,6 +5,8 @@ import {
   createRPCNamespace,
   createRPCRouter,
   registerRPCRouter,
+  RPC_CHANNELS_CHANNEL,
+  rpcChannels,
 } from './rpc';
 
 // ---------------------------------------------------------------------------
@@ -156,11 +158,11 @@ describe('registerRPCRouter', () => {
     expect(result).toBe('cloned https://example.com');
   });
 
-  it('does not register any channel for non-function, non-object values', () => {
+  it('registers no RPC channel for non-function, non-object values', () => {
     const ipc = makeIpcMainStub();
     // @ts-expect-error intentionally passing an invalid router value to test robustness
     registerRPCRouter({ broken: null }, ipc as never, () => true);
-    expect(ipc.registeredChannels()).toHaveLength(0);
+    expect(ipc.registeredChannels()).toEqual([RPC_CHANNELS_CHANNEL]);
   });
 });
 
@@ -221,4 +223,17 @@ it('refuses an untrusted sender before invoking any RPC handler', async () => {
   );
   await expect(rpc.test.handler()).rejects.toThrow('trusted app frame');
   expect(handler).not.toHaveBeenCalled();
+});
+
+it('names, for the preload, exactly the channels it registers, and only to a trusted sender', async () => {
+  const ipc = makeIpcMainStub();
+  registerRPCRouter(router, ipc as never, () => true);
+  const channels = rpcChannels(router);
+  expect(channels.length).toBeGreaterThan(0);
+  expect(new Set([...channels, RPC_CHANNELS_CHANNEL])).toEqual(new Set(ipc.registeredChannels()));
+  expect(await ipc.invoke(RPC_CHANNELS_CHANNEL)).toEqual(channels);
+
+  const untrusted = makeIpcMainStub();
+  registerRPCRouter(router, untrusted as never, () => false);
+  expect(() => untrusted.invoke(RPC_CHANNELS_CHANNEL)).toThrow('trusted app frame');
 });

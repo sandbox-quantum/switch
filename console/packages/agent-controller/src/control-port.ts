@@ -1,6 +1,5 @@
-import { lstat, readFile } from 'node:fs/promises';
 import { connect } from 'node:net';
-import { ControlClient } from '@switch-console/agent-providers';
+import { ControlClient, parseUntrustedJson, readUntrusted } from '@switch-console/agent-providers';
 import { z } from 'zod';
 
 const CONTROL_FILE_LIMIT_BYTES = 4096;
@@ -31,10 +30,9 @@ export async function overControlPort<T>(
   ask: (client: ControlClient) => Promise<T>,
   checkPort?: (port: number) => Promise<void>
 ): Promise<T> {
-  const link = await lstat(controlFile);
-  if (!link.isFile()) throw new Error(`${controlFile} is not a regular file.`);
-  if (link.size > CONTROL_FILE_LIMIT_BYTES) throw new Error(`${controlFile} is too large.`);
-  const { port, token } = controlFileSchema.parse(JSON.parse(await readFile(controlFile, 'utf8')));
+  const text = await readUntrusted(controlFile, { maxBytes: CONTROL_FILE_LIMIT_BYTES });
+  if (text === null) throw new Error(`${controlFile} does not exist; is the agent host running?`);
+  const { port, token } = parseUntrustedJson(text, controlFileSchema, controlFile);
   if (checkPort) await checkPort(port);
   const client = new ControlClient(connect({ host: '127.0.0.1', port }), token);
   let timer: ReturnType<typeof setTimeout> | undefined;

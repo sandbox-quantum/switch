@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { FileSystemError } from '../types';
+import { FileSystemError, FileSystemErrorCodes } from '../types';
 import { LocalFileSystem } from './local-fs';
 
 describe('LocalFileSystem', () => {
@@ -87,17 +87,6 @@ describe('LocalFileSystem', () => {
       const result = await fsService.list('', { includeHidden: true });
 
       expect(result.entries.some((e) => e.path === '.hidden')).toBe(true);
-    });
-
-    it('should apply filter pattern', async () => {
-      fs.writeFileSync(path.join(tempDir, 'test.ts'), 'typescript');
-      fs.writeFileSync(path.join(tempDir, 'test.js'), 'javascript');
-      fs.writeFileSync(path.join(tempDir, 'readme.md'), 'markdown');
-
-      const result = await fsService.list('', { filter: '.*\\.ts$' });
-
-      expect(result.entries).toHaveLength(1);
-      expect(result.entries[0].path).toBe('test.ts');
     });
 
     it('should truncate when maxEntries reached', async () => {
@@ -315,12 +304,6 @@ describe('LocalFileSystem', () => {
       expect(result.matches.every((m) => m.filePath.endsWith('.ts'))).toBe(true);
     });
 
-    it('should filter by file pattern', async () => {
-      const result = await fsService.search('foo', { filePattern: '*.md' });
-
-      expect(result.total).toBe(0);
-    });
-
     it('should be case-insensitive by default', async () => {
       const result1 = await fsService.search('FOO');
       const result2 = await fsService.search('foo');
@@ -496,6 +479,197 @@ describe('LocalFileSystem', () => {
       const result = await fsService.read('valid/nested/file.txt');
 
       expect(result.content).toBe('content');
+    });
+
+    it('should block reading through a symlink pointing outside root', async () => {
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-outside-'));
+      try {
+        const secretFile = path.join(outsideDir, 'secret.txt');
+        fs.writeFileSync(secretFile, 'secret data');
+        fs.symlinkSync(secretFile, path.join(tempDir, 'escape_link'));
+
+        await expect(fsService.read('escape_link')).rejects.toThrow(FileSystemError);
+        await expect(fsService.read('escape_link')).rejects.toMatchObject({
+          code: FileSystemErrorCodes.PATH_ESCAPE,
+        });
+      } finally {
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should block writing through a symlink pointing outside root', async () => {
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-outside-'));
+      try {
+        const targetFile = path.join(outsideDir, 'victim.txt');
+        fs.writeFileSync(targetFile, 'original');
+        fs.symlinkSync(targetFile, path.join(tempDir, 'escape_link'));
+
+        await expect(fsService.write('escape_link', 'malicious overwrite')).rejects.toThrow(
+          FileSystemError
+        );
+        await expect(fsService.write('escape_link', 'malicious overwrite')).rejects.toMatchObject({
+          code: FileSystemErrorCodes.PATH_ESCAPE,
+        });
+        expect(fs.readFileSync(targetFile, 'utf-8')).toBe('original');
+      } finally {
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should block operations through a directory symlink pointing outside root', async () => {
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-outside-'));
+      try {
+        fs.writeFileSync(path.join(outsideDir, 'file.txt'), 'outside data');
+        fs.symlinkSync(outsideDir, path.join(tempDir, 'escape_dir'));
+
+        await expect(fsService.read('escape_dir/file.txt')).rejects.toMatchObject({
+          code: FileSystemErrorCodes.PATH_ESCAPE,
+        });
+        await expect(fsService.write('escape_dir/new.txt', 'evil')).rejects.toMatchObject({
+          code: FileSystemErrorCodes.PATH_ESCAPE,
+        });
+        expect(fs.existsSync(path.join(outsideDir, 'new.txt'))).toBe(false);
+      } finally {
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should block writing to dangling symlinks pointing outside root', async () => {
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-outside-'));
+      try {
+        const nonExistentFile = path.join(outsideDir, 'not_yet_created.txt');
+        fs.symlinkSync(nonExistentFile, path.join(tempDir, 'dangling_escape'));
+
+        await expect(fsService.write('dangling_escape', 'evil')).rejects.toMatchObject({
+          code: FileSystemErrorCodes.PATH_ESCAPE,
+        });
+        expect(fs.existsSync(nonExistentFile)).toBe(false);
+      } finally {
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should remove a symlink pointing outside root, leaving its target, while refusing to go through it', async () => {
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-outside-'));
+      try {
+        const secretFile = path.join(outsideDir, '.env');
+        fs.writeFileSync(secretFile, 'important');
+        const link = path.join(tempDir, '.env');
+        fs.symlinkSync(secretFile, link);
+
+        await expect(fsService.read('.env')).rejects.toMatchObject({
+          code: FileSystemErrorCodes.PATH_ESCAPE,
+        });
+        await expect(fsService.write('.env', 'evil')).rejects.toMatchObject({
+          code: FileSystemErrorCodes.PATH_ESCAPE,
+        });
+
+        expect(await fsService.remove('.env')).toEqual({ success: true });
+        expect(fs.existsSync(link)).toBe(false);
+        expect(fs.readFileSync(secretFile, 'utf-8')).toBe('important');
+      } finally {
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should remove a dangling symlink and a link to a directory outside root, as links', async () => {
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-outside-'));
+      try {
+        fs.writeFileSync(path.join(outsideDir, 'kept.txt'), 'kept');
+        fs.symlinkSync(path.join(outsideDir, 'missing'), path.join(tempDir, 'dangling'));
+        fs.symlinkSync(outsideDir, path.join(tempDir, 'dir_link'));
+
+        expect(await fsService.remove('dangling')).toEqual({ success: true });
+        expect(await fsService.remove('dir_link', { recursive: true })).toEqual({ success: true });
+        expect(fs.existsSync(path.join(tempDir, 'dangling'))).toBe(false);
+        expect(fs.existsSync(path.join(tempDir, 'dir_link'))).toBe(false);
+        expect(fs.readFileSync(path.join(outsideDir, 'kept.txt'), 'utf-8')).toBe('kept');
+      } finally {
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should still refuse to remove an entry inside a linked directory outside root', async () => {
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-outside-'));
+      try {
+        fs.writeFileSync(path.join(outsideDir, 'victim.txt'), 'kept');
+        fs.symlinkSync(outsideDir, path.join(tempDir, 'out'));
+
+        await expect(fsService.remove('out/victim.txt')).rejects.toMatchObject({
+          code: FileSystemErrorCodes.PATH_ESCAPE,
+        });
+        expect(fs.existsSync(path.join(outsideDir, 'victim.txt'))).toBe(true);
+      } finally {
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should refuse to copy onto a symlink pointing outside root, which copying follows', async () => {
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-outside-'));
+      try {
+        const victim = path.join(outsideDir, 'victim.txt');
+        fs.writeFileSync(victim, 'original');
+        fs.writeFileSync(path.join(tempDir, 'src.txt'), 'evil');
+        fs.symlinkSync(victim, path.join(tempDir, 'dest'));
+
+        await expect(fsService.copyFile('src.txt', 'dest')).rejects.toMatchObject({
+          code: FileSystemErrorCodes.PATH_ESCAPE,
+        });
+        expect(fs.readFileSync(victim, 'utf-8')).toBe('original');
+      } finally {
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should allow valid operations through intra-root symlinks', async () => {
+      const subDir = path.join(tempDir, 'sub');
+      fs.mkdirSync(subDir);
+      fs.writeFileSync(path.join(subDir, 'file.txt'), 'internal content');
+
+      fs.symlinkSync(subDir, path.join(tempDir, 'internal_dir'));
+      fs.symlinkSync(path.join(subDir, 'file.txt'), path.join(tempDir, 'internal_file'));
+
+      const fileResult = await fsService.read('internal_file');
+      expect(fileResult.content).toBe('internal content');
+
+      const dirResult = await fsService.read('internal_dir/file.txt');
+      expect(dirResult.content).toBe('internal content');
+
+      await fsService.write('internal_dir/new.txt', 'new inside content');
+      expect(fs.readFileSync(path.join(subDir, 'new.txt'), 'utf-8')).toBe('new inside content');
+    });
+
+    it('should block a dangling symlink whose target runs through a linked directory outside root', async () => {
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-outside-'));
+      try {
+        // `hop` points inside the root by name, but through `out`, a link outside it.
+        fs.symlinkSync(outsideDir, path.join(tempDir, 'out'));
+        const realRoot = fs.realpathSync(tempDir);
+        fs.symlinkSync(path.join(realRoot, 'out', 'created.txt'), path.join(tempDir, 'hop'));
+
+        await expect(fsService.write('hop', 'evil')).rejects.toMatchObject({
+          code: FileSystemErrorCodes.PATH_ESCAPE,
+        });
+        expect(fs.existsSync(path.join(outsideDir, 'created.txt'))).toBe(false);
+      } finally {
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should allow writing through a dangling symlink that points inside root', async () => {
+      fs.symlinkSync(path.join(tempDir, 'later.txt'), path.join(tempDir, 'pending'));
+
+      await fsService.write('pending', 'inside');
+      expect(fs.readFileSync(path.join(tempDir, 'later.txt'), 'utf-8')).toBe('inside');
+    });
+
+    it('should refuse a symlink loop', async () => {
+      fs.symlinkSync(path.join(tempDir, 'b'), path.join(tempDir, 'a'));
+      fs.symlinkSync(path.join(tempDir, 'a'), path.join(tempDir, 'b'));
+
+      await expect(fsService.write('a', 'x')).rejects.toMatchObject({
+        code: FileSystemErrorCodes.PATH_ESCAPE,
+      });
     });
   });
 

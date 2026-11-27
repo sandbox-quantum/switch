@@ -3,6 +3,7 @@ import { chmod, mkdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
+import { isSafeId, safeId } from '@switch-console/agent-providers';
 import { ConfigurationError } from './errors';
 
 export const DATA_DIR_ENV = 'SWITCH_CONTROLLER_DATA_DIR';
@@ -149,14 +150,14 @@ export type DataLayout = {
 export function serverWorkspacesDir(server: string): string {
   const { host } = new URL(server);
   const segment = host.replace(/[^A-Za-z0-9._-]+/g, '-');
-  if (!isSafeSegment(segment))
+  if (!isSafeId(segment))
     throw new ConfigurationError(`The server address '${server}' cannot name a folder.`);
   return join(homedir(), '.switch', 'agents', segment);
 }
 
 /** An agent's working directory under `workspaces`, when its definition names none. */
 export function agentWorkspace(workspaces: string, name: string): string {
-  return join(workspaces, safeSegment(name, 'agent name'));
+  return join(workspaces, safeId(name, 'agent name'));
 }
 
 /** A directory from an agent's definition with a leading `~` read as this user's home. */
@@ -193,22 +194,9 @@ export function dataLayout(root: string): DataLayout {
     root,
     database: join(root, 'controller.db'),
     secrets: join(root, 'secrets'),
-    agentDir: (agentId) => join(root, 'agents', safeSegment(agentId, 'agent id')),
+    agentDir: (agentId) => join(root, 'agents', safeId(agentId, 'agent id')),
     agentCredentials: (agentId) =>
-      join(root, 'agents', safeSegment(agentId, 'agent id'), 'credentials.json'),
-    watcherRoot: (agentId) => join(root, 'watchers', safeSegment(agentId, 'agent id')),
+      join(root, 'agents', safeId(agentId, 'agent id'), 'credentials.json'),
+    watcherRoot: (agentId) => join(root, 'watchers', safeId(agentId, 'agent id')),
   };
-}
-
-const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
-
-/** A server-supplied value about to become one path segment under the data directory. */
-export function isSafeSegment(value: string): boolean {
-  return SAFE_SEGMENT.test(value) && !value.includes('..');
-}
-
-function safeSegment(value: string, what: string): string {
-  if (!isSafeSegment(value))
-    throw new Error(`The ${what} '${value}' cannot be used as a directory name.`);
-  return value;
 }

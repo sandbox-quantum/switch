@@ -1,5 +1,6 @@
 import { isAbsolute } from 'node:path';
 import {
+  isSafeId,
   providerLoginEnvironment,
   providerUnsupportedReason,
   runtimeModeFor,
@@ -13,7 +14,7 @@ import {
 } from './device-policy';
 import { ReasonedError } from './errors';
 import { errorCode, errorMessage, type Logger } from './log';
-import { expandHome, insideDataDir, isSafeSegment } from './paths';
+import { expandHome, insideDataDir } from './paths';
 import { type AgentObservation, type AgentRuntime, emptyObservation } from './runtime';
 import {
   type AgentAssignment,
@@ -105,7 +106,7 @@ export function definitionProblem(
   entry: AgentAssignment,
   context: DefinitionContext
 ): string | null {
-  if (!isSafeSegment(entry.agent_id))
+  if (!isSafeId(entry.agent_id))
     return `The agent id '${entry.agent_id}' cannot be used as a directory name.`;
   if (
     !isProvider(entry.definition.provider) ||
@@ -119,7 +120,7 @@ export function definitionProblem(
   if (advancedProblem) return advancedProblem;
   if (entry.definition.isolation === 'unknown')
     return 'This controller does not know the isolation this agent asks for.';
-  if (entry.definition.directory === null && !isSafeSegment(entry.definition.name))
+  if (entry.definition.directory === null && !isSafeId(entry.definition.name))
     return `The agent name '${entry.definition.name}' cannot be used as a workspace directory name; set a directory.`;
   if (entry.definition.directory !== null) {
     const directory = expandHome(entry.definition.directory);
@@ -519,7 +520,7 @@ export async function executeAction(action: Action, deps: ReconcileDeps): Promis
       return;
     case 'remove':
       // An id that was never safe to put in a path never got an agent host or a key.
-      if (isSafeSegment(action.agentId)) {
+      if (isSafeId(action.agentId)) {
         if (deps.box) await removeAgent(action.agentId, deps);
         else {
           await deps.runtime.stop(action.agentId, { wait: false });
@@ -622,7 +623,7 @@ export async function reconcile(
   const context = deps.context();
   for (const entry of assignment.agents) {
     // An id that cannot name a directory has nothing on disk to observe.
-    if (!isSafeSegment(entry.agent_id)) {
+    if (!isSafeId(entry.agent_id)) {
       observations.set(entry.agent_id, emptyObservation());
       continue;
     }

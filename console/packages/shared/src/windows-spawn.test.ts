@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CmdExeLineBreakError,
   getWindowsEnvValue,
   escapeCmdExeArgument,
   escapeCmdExeCommand,
@@ -34,12 +35,22 @@ describe('escapeCmdExeCommand', () => {
       'C:\\Program^ Files^ ^(x86^)\\npm.cmd'
     );
   });
+
+  it('refuses a program path with a line break, which no escaping neutralises', () => {
+    for (const command of ['C:\\app\nname.cmd', 'C:\\app\rname.cmd'])
+      expect(() => escapeCmdExeCommand(command)).toThrow(CmdExeLineBreakError);
+  });
 });
 
 describe('escapeCmdExeArgument', () => {
   it('quotes, then caret-escapes twice for the batch file’s own pass', () => {
     expect(escapeCmdExeArgument('a&b')).toBe('^^^"a^^^&b^^^"');
     expect(escapeCmdExeArgument('100%')).toBe('^^^"100^^^%^^^"');
+  });
+
+  it('refuses an argument with a line break, which cmd.exe reads as a new command', () => {
+    for (const argument of ['test\ncalc.exe', 'test\r\ncalc.exe', 'test\rcalc.exe'])
+      expect(() => escapeCmdExeArgument(argument)).toThrow(CmdExeLineBreakError);
   });
 
   it('escapes an embedded quote and the backslashes before it for the C runtime', () => {
@@ -140,5 +151,29 @@ describe('resolveExecFileSpawn', () => {
 
     expect(spawn.command).toBe('C:\\Windows\\System32\\cmd.exe');
     expect(spawn.args[3]).toBe('"D:\\tools\\claude.cmd ^^^"--version^^^""');
+  });
+
+  it('refuses to build a batch command line from an argument with a line break', () => {
+    expect(() =>
+      resolveExecFileSpawn({
+        command: 'npm',
+        args: ['test\ncalc.exe'],
+        platform: 'win32',
+        env: WINDOWS_ENV,
+        fileExists: existsIn(['C:\\Program Files\\nodejs\\npm.cmd']),
+      })
+    ).toThrow(CmdExeLineBreakError);
+  });
+
+  it('passes a line break through untouched where no cmd.exe is involved', () => {
+    expect(
+      resolveExecFileSpawn({
+        command: 'node',
+        args: ['-e', 'a\nb'],
+        platform: 'linux',
+        env: {},
+        fileExists: () => false,
+      }).args
+    ).toEqual(['-e', 'a\nb']);
   });
 });
