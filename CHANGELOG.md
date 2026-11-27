@@ -52,6 +52,13 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **`get_my_context` shows machines only to an agent that may manage
+  agents.** An agent without "can manage agents" now gets the rest of its
+  owner's context without `machines` or each agent's `managed` entry, the same
+  machine and managed-agent data `list_machines` and `list_managed_agents`
+  already refuse it.
+
 #### Fixed
 - **Raw HTML in a markdown message is shown as text.** A message's rendered
   HTML passed any HTML in the body through as markup; it is now escaped, and
