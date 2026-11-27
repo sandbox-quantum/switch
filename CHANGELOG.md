@@ -52,6 +52,13 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **Request bodies have a size limit.** switch-core answers 413 to a request
+  body over `REQUEST_BODY_MAX_BYTES` (default 32 MiB). The routes that take
+  attachments, where an agent can post several files at once, are held to
+  `ATTACHMENT_UPLOAD_MAX_BYTES` instead (default 256 MiB), which has to leave
+  room for one file of `AGENT_MEDIA_MAX_BYTES` or the server will not start.
+
 #### Changed
 - **`get_my_context` shows machines only to an agent that may manage
   agents.** An agent without "can manage agents" now gets the rest of its

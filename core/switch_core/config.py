@@ -40,6 +40,9 @@ _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
 # worth catching at startup rather than at the first `GRANT`. The 63-character
 # cap matches Postgres's own `NAMEDATALEN` limit.
 _DB_ROLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+# What a multipart upload adds around one file: boundaries, part headers and
+# the caption and thread fields.
+_MULTIPART_HEADROOM_BYTES = 1024 * 1024
 # The longest short name a Teams app manifest takes.
 _TEAMS_APP_SHORT_NAME_LIMIT = 30
 # A Microsoft partner ID: digits, and a Teams manifest takes at most 10.
@@ -903,6 +906,14 @@ class SwitchConfig(BaseSettings):
     # of being truncated or silently dropped.
     agent_media_max_bytes: int = 20 * 1024 * 1024
 
+    # The longest request body the HTTP server accepts; a longer one is
+    # answered 413 (`request_body_limit.py`). The routes that take attachments
+    # have their own, larger limit, because an agent posts several files in one
+    # request; it has to leave room for at least one file of
+    # `agent_media_max_bytes` and its multipart framing.
+    request_body_max_bytes: int = Field(default=32 * 1024 * 1024, ge=1)
+    attachment_upload_max_bytes: int = Field(default=256 * 1024 * 1024, ge=1)
+
     # The longest message, in characters, a sender may write to a room. Every
     # room row is copied to each agent in the room, so one message costs this
     # many times the agents there. A longer message is refused with a reason
@@ -1313,6 +1324,16 @@ class SwitchConfig(BaseSettings):
                     f"{self.telemetry_timeout_seconds!r}."
                 )
 
+        if (
+            self.attachment_upload_max_bytes
+            < self.agent_media_max_bytes + _MULTIPART_HEADROOM_BYTES
+        ):
+            raise ValueError(
+                "ATTACHMENT_UPLOAD_MAX_BYTES must leave room for one attachment of "
+                f"AGENT_MEDIA_MAX_BYTES ({self.agent_media_max_bytes}) and "
+                f"{_MULTIPART_HEADROOM_BYTES} bytes of multipart framing, got "
+                f"{self.attachment_upload_max_bytes}."
+            )
         if self.template_max_bytes < 1:
             raise ValueError(
                 f"TEMPLATE_MAX_BYTES must be at least 1, got {self.template_max_bytes}."
