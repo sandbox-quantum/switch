@@ -109,6 +109,14 @@
       "sha256": "bab2bc6bbe3d6fa3563a3f1d65b4bdcd9281a91cb5a725a97fb2c826d2f32ff8"
     },
     {
+      "path": "admission/bad/p3-networkpolicy-core-a-wider-range.json",
+      "sha256": "b468dbe4bc6413c63c05b78f4d58a003576b434d34b3d32756d5ed3f67daa065"
+    },
+    {
+      "path": "admission/bad/p3-networkpolicy-core-another-range.json",
+      "sha256": "8ec83e7ad2b635b3255fe97c0d3be8fd7dba339cdaa735a5d8232c6f2f425870"
+    },
+    {
       "path": "admission/bad/p3-networkpolicy-deny-lets-egress-out.json",
       "sha256": "308385af4baf63b052abbaf2fca6034f8c4cd0e103022e18dd30515ef3e5a334"
     },

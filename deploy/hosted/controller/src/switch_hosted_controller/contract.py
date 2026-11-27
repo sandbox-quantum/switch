@@ -1000,6 +1000,15 @@ def _egress_port(s: dict) -> None:
     _body(s)["spec"]["egress"][2]["ports"][0]["port"] = 3129
 
 
+def _core_range(cidr: str) -> Callable[[dict], None]:
+    """The box's direct route to Core (egress rule 1) to `cidr` in place of the configured range."""
+
+    def apply(s: dict) -> None:
+        _body(s)["spec"]["egress"][1]["to"] = [{"ipBlock": {"cidr": cidr}}]
+
+    return apply
+
+
 def _reap(name: str, in_owners: bool) -> Callable[[dict], None]:
     def apply(s: dict) -> None:
         s["setup"].append({"path": f"/api/v1/namespaces/{name}", "object": _ns_obj(name)})
@@ -1104,6 +1113,8 @@ BAD: list[Bad] = [
     Bad("p3-networkpolicy-ingress-allowed", DENY, _set(("spec", "ingress"), [{}]), (P3N,), "both policies select every pod and allow nothing in"),
     Bad("p3-networkpolicy-deny-lets-egress-out", DENY, _set(("spec", "policyTypes"), ["Ingress"]), (P3N,), "default-deny must deny everything, in and out"),
     Bad("p3-networkpolicy-egress-to-another-port", EGRESS, _egress_port, (P3N,), "agent-egress must be exactly the template's"),
+    Bad("p3-networkpolicy-core-another-range", EGRESS, _core_range("198.51.100.0/28"), (P3N,), "agent-egress must be exactly the template's"),
+    Bad("p3-networkpolicy-core-a-wider-range", EGRESS, _core_range("192.0.2.0/24"), (P3N,), "agent-egress must be exactly the template's"),
     Bad("p3-quota-pods-allowed", QUOTA, _set(("spec", "hard"), {"pods": "1"}), (P3Q,), "the quota is the template's"),
     Bad("p3-disk-another-class", PVC, _set(("spec", "storageClassName"), "gp2"), (P3Q,), "a disk is gp3, ReadWriteOnce"),
     Bad("p3-account-mounts-its-token", SA, _set(("automountServiceAccountToken",), True), (P3Q,), "the box's account mounts no token"),
