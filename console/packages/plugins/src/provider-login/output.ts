@@ -33,6 +33,26 @@ export function linksIn(lines: readonly string[]): string[] {
   return [...seen];
 }
 
+/**
+ * Whether an authorize link sends the browser back to a callback server on
+ * the computer the command runs on. Such a link works only in a browser on
+ * that same computer, so a sign-in run for someone elsewhere skips it.
+ */
+export function callsBackHere(link: string): boolean {
+  let redirect: string | null;
+  try {
+    redirect = new URL(link).searchParams.get('redirect_uri');
+  } catch {
+    return false;
+  }
+  if (!redirect) return false;
+  try {
+    return LOOPBACK_HOST.test(new URL(redirect).hostname);
+  } catch {
+    return false;
+  }
+}
+
 const ASKS_FOR_CODE = /paste (the )?(authentication |authorization |auth )?code/i;
 /** An authorize link for the flow that ends on a page showing a code to paste. */
 const CODE_FLOW_LINK = /[?&]code=true(&|$)/;

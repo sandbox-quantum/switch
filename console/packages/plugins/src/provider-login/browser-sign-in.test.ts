@@ -10,6 +10,7 @@ const TOKEN = `sk-ant-oat01-${'a'.repeat(40)}AA`;
 /** Stands in for `claude setup-token`: a link, a prompt, and a token once a code is typed. */
 const FAKE_CLAUDE = `#!/bin/sh
 [ -t 0 ] || { echo "not a terminal"; exit 3; }
+printf 'Opening https://claude.ai/oauth/authorize?redirect_uri=http%%3A%%2F%%2Flocalhost%%3A49775%%2Fcallback&x=0\\n'
 printf "Browser didn't open? Use the URL below\\n"
 printf '\\033]8;id=1;https://claude.ai/oauth/authorize?code=true&x=1\\007https://claude.ai/oauth/authorize?code=true&x=1\\033]8;;\\007\\n'
 printf ' Paste code here if prompted > '

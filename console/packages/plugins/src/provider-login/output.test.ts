@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { asksForCode, deviceCodeIn, linesOf, linksIn, setupTokenIn, terminalText } from './output';
+import {
+  asksForCode,
+  callsBackHere,
+  deviceCodeIn,
+  linesOf,
+  linksIn,
+  setupTokenIn,
+  terminalText,
+} from './output';
 
 /** What `claude setup-token` 2.1 drew in a terminal, as captured (link shortened). */
 const CLAUDE_SETUP_TOKEN =
@@ -127,5 +135,21 @@ describe('a sign-in drawn in a terminal', () => {
     const token = `sk-ant-oat01-${'a'.repeat(40)}-${'B'.repeat(20)}AA`;
     expect(setupTokenIn(terminalText(`Your OAuth token:\r\n\x1b[2G${token}\r\n`))).toBe(token);
     expect(setupTokenIn('Paste code here if prompted')).toBeNull();
+  });
+});
+
+describe('callsBackHere', () => {
+  it('spots an authorize link that calls back to this computer', () => {
+    expect(
+      callsBackHere(
+        'https://claude.ai/oauth/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A49775%2Fcallback'
+      )
+    ).toBe(true);
+    expect(
+      callsBackHere(
+        'https://claude.ai/oauth/authorize?code=true&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback'
+      )
+    ).toBe(false);
+    expect(callsBackHere('https://auth.openai.com/codex/device')).toBe(false);
   });
 });

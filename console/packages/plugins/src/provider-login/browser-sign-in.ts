@@ -2,7 +2,15 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { asksForCode, deviceCodeIn, linesOf, linksIn, setupTokenIn, terminalText } from './output';
+import {
+  asksForCode,
+  callsBackHere,
+  deviceCodeIn,
+  linesOf,
+  linksIn,
+  setupTokenIn,
+  terminalText,
+} from './output';
 
 /** The providers whose CLI can sign in through a browser on a machine nobody sits at. */
 export const BROWSER_SIGN_IN_PROVIDERS = [
@@ -259,7 +267,9 @@ export function startBrowserSignIn(input: {
         raw = (raw + chunk.toString('utf8')).slice(-OUTPUT_LIMIT);
         const text = terminalText(raw);
         const lines = linesOf(text);
-        const url = linksIn(lines).find((link) => link.startsWith('https://'));
+        const url = linksIn(lines).find(
+          (link) => link.startsWith('https://') && !callsBackHere(link)
+        );
         const userCode = deviceCode ? deviceCodeIn(lines) : null;
         if (url && (!deviceCode || userCode)) {
           const next = { url, userCode, needsCode: asksForCode(lines) };
