@@ -16,6 +16,14 @@ export type GatewayPlan = {
   env: (endpoint: string, token: string) => Record<string, string>;
 };
 
+/**
+ * The providers a box signs in through a browser: those whose sign-in ends in
+ * a login `gatewayPlanFor` fronts. Claude Code's ends in a setup token. Codex's
+ * and OpenCode's end in ChatGPT tokens that refresh and rotate, and Cursor and
+ * Antigravity keep theirs inside the CLI, so the agents would hold the login.
+ */
+export const BOX_BROWSER_SIGN_IN: readonly string[] = ['claude'];
+
 /** One `VertexTokens` per login revision, shared by every agent using it. */
 export class VertexTokenCache {
   private readonly byKey = new Map<string, VertexTokens>();

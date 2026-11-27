@@ -399,6 +399,13 @@ provider cancels it) and when it stops. A code Claude Code refuses fails the
 sign-in at once with the CLI's words. A controller that keeps no key across
 starts cannot keep the login, so it refuses.
 
+In box mode (Switch Cloud) only Claude Code signs in through a browser
+(`BOX_BROWSER_SIGN_IN` in `box/gateway-logins.ts`): its setup token is kept as
+above and then goes through the provider gateway like a pasted one, so the
+agents' CLI never holds it. The others are refused: the gateway can't front
+Codex's or OpenCode's ChatGPT tokens, which refresh and rotate, and Cursor and
+Antigravity keep their login inside the CLI.
+
 ### The controller credential
 
 `enroll --secret-store` says where the controller credential is kept, and the data

@@ -757,7 +757,8 @@ export async function runController(
             return status;
           },
           takeUpLogin,
-          signInWithBrowser: (operationId, provider) =>
+          signInWithBrowser: async (operationId, provider) =>
+            boxed?.browserSignInRefusal(provider) ??
             signInWithBrowser(operationId, provider, {
               client,
               keys,

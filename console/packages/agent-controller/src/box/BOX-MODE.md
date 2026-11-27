@@ -45,6 +45,9 @@ Each item below is gated on box mode, with a test for box on and one showing box
   id that answers EPERM counts as alive; no device id is sent.
 - Only the providers the box image carries are offered: Claude Code, Codex, OpenCode, Cursor and Antigravity
   (`providersFor` in `providers.ts`). Every other provider stays registered, for desktop and v1.
+- A browser sign-in (`provider.login` with `method: "browser"`) runs only for Claude Code (`BOX_BROWSER_SIGN_IN` in
+  `gateway-logins.ts`): the setup token it ends with is kept sealed and goes through the provider gateway like a
+  pasted one. The others are refused, as the gateway fronts none of their sign-ins.
 - Updates come only from rolling the box image, which is pinned by digest: a box runs `--updated-by-console`, and
   Switch sends such a controller no release.
 

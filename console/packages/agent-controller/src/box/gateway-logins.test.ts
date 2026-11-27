@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { GivenLogin } from '../sealed-logins';
-import { gatewayPlanFor, VertexTokenCache, vertexUpstream } from './gateway-logins';
+import {
+  BOX_BROWSER_SIGN_IN,
+  gatewayPlanFor,
+  VertexTokenCache,
+  vertexUpstream,
+} from './gateway-logins';
 import { VertexTokens } from './vertex-tokens';
 
 const ENDPOINT = 'http://127.0.0.1:41000';
@@ -55,6 +60,20 @@ describe('the CLI never gets the login', () => {
       expect(env).toContain(ENDPOINT);
     });
   }
+});
+
+describe('a browser sign-in on a box', () => {
+  it('is offered only for a provider whose sign-in ends in a login the gateway fronts', () => {
+    expect(BOX_BROWSER_SIGN_IN).toEqual(['claude']);
+    // What `claude setup-token` ends with, and what Codex's and OpenCode's ChatGPT sign-ins do.
+    expect(
+      gatewayPlanFor(login({ kind: 'setup-token', credential: 'sk-ant-oat01-x' }), quietCache())
+    ).not.toBeNull();
+    for (const provider of ['codex', 'opencode'] as const)
+      expect(
+        gatewayPlanFor(login({ provider, kind: 'auth-json', credential: '{}' }), quietCache())
+      ).toBeNull();
+  });
 });
 
 describe('each login', () => {

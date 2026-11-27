@@ -26,7 +26,7 @@ import {
   startAgent,
 } from '../reconcile';
 import type { AgentRuntime } from '../runtime';
-import type { Assignment } from '../schemas';
+import type { Assignment, OperationResult } from '../schemas';
 import type { GivenLogin } from '../sealed-logins';
 import { noSessionMidTurn, type ProviderStatuses, type StatusCollector } from '../status';
 import { LeftoverWatch } from './agent-removal';
@@ -39,7 +39,7 @@ import {
   gatewayProbe,
   resolveGateway,
 } from './gateway-agents';
-import { gatewayPlanFor, VertexTokenCache } from './gateway-logins';
+import { BOX_BROWSER_SIGN_IN, gatewayPlanFor, VertexTokenCache } from './gateway-logins';
 import { boxHubValve } from './hub-valve';
 import type { LauncherLink, LinkState } from './launcher-link';
 import type { LauncherMeasure } from './launcher-measure';
@@ -438,6 +438,21 @@ export class BoxController {
         }
       }
       return fronted;
+    };
+  }
+
+  /**
+   * Why the box refuses a browser sign-in for `provider`, or null when it runs
+   * one: the login it ends with must go through the provider gateway.
+   */
+  browserSignInRefusal(provider: string): OperationResult | null {
+    if (BOX_BROWSER_SIGN_IN.includes(provider)) return null;
+    return {
+      outcome: 'failed',
+      error: {
+        code: 'operation_unsupported',
+        message: `Switch Cloud signs only Claude Code in through a browser. Give ${provider} an API key instead.`,
+      },
     };
   }
 

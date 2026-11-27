@@ -416,6 +416,37 @@ describe('runController in box mode', () => {
     expect(await running).toBe('stopped');
   });
 
+  it('refuses a browser sign-in for every provider but Claude Code, whose token goes through the provider gateway', async () => {
+    core.setAssignment({ revision: 1, agents: [] });
+    running = runController(boxDeps(), stop.signal);
+    const refused = ['codex', 'opencode', 'cursor', 'antigravity'];
+    for (const provider of refused) {
+      core.addOperation({
+        id: `op-${provider}`,
+        kind: 'provider.login',
+        agent_id: null,
+        params: { provider, method: 'browser' },
+        created_at: '2026-01-01T00:00:00Z',
+      });
+      core.push('operation.pending', {
+        operation_id: `op-${provider}`,
+        kind: 'provider.login',
+        agent_id: null,
+      });
+    }
+    await waitFor(
+      () => refused.every((provider) => core.results.has(`op-${provider}`)),
+      'the sign-ins answered'
+    );
+    for (const provider of refused)
+      expect(core.results.get(`op-${provider}`)).toMatchObject({
+        outcome: 'failed',
+        error: { code: 'operation_unsupported' },
+      });
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
   it('ends as revoked, asking Switch nothing, when an earlier run was revoked and wiped its credential', async () => {
     const enrolled = deps();
     await secrets.delete(CONTROLLER_CREDENTIAL);
