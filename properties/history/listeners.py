@@ -76,27 +76,43 @@ async def wait_for_heartbeat(connection: asyncpg.Connection, name: str) -> None:
     )
 
 
-async def wait_until_back(connection: asyncpg.Connection, name: str) -> int | None:
+async def wait_until_back(
+    connection: asyncpg.Connection, name: str, ended: set[int]
+) -> int | None:
+    """When a connection under the name that no cut ended is seen: an ended
+    backend can stay in `pg_stat_activity` a moment after
+    `pg_terminate_backend` returns, and counting it would read a listener
+    that never reconnected as back at once."""
     deadline = time.monotonic() + BACK_WITHIN_SECONDS
     while time.monotonic() < deadline:
         if await connection.fetchval(
-            "SELECT count(*) FROM pg_stat_activity WHERE application_name LIKE $1",
+            """
+            SELECT count(*) FROM pg_stat_activity
+            WHERE application_name LIKE $1 AND pid <> ALL($2::int[])
+            """,
             name,
+            list(ended),
         ):
             return round(time.time() * 1000)
         await asyncio.sleep(0.1)
     return None
 
 
-async def cut(connection: asyncpg.Connection, name: str) -> list[int]:
+async def cut(connection: asyncpg.Connection, name: str, ended: set[int]) -> list[int]:
+    """End every backend under the name that no earlier cut ended, adding
+    them to `ended`; one still on its way out is not cut, or counted, again."""
     rows = await connection.fetch(
         """
         SELECT pid FROM pg_stat_activity
-        WHERE application_name LIKE $1 AND pg_terminate_backend(pid)
+        WHERE application_name LIKE $1 AND pid <> ALL($2::int[])
+            AND pg_terminate_backend(pid)
         """,
         name,
+        list(ended),
     )
-    return [row["pid"] for row in rows]
+    pids = [row["pid"] for row in rows]
+    ended.update(pids)
+    return pids
 
 
 async def main(argv: list[str]) -> int:
@@ -130,7 +146,8 @@ async def main(argv: list[str]) -> int:
     try:
         await wait_for_heartbeat(connection, name)
         first_cut_at = time.time()
-        first = await cut(connection, name)
+        ended: set[int] = set()
+        first = await cut(connection, name, ended)
         if not first:
             raise SystemExit(f"listeners: no connection named {name!r} to cut")
         print(json.dumps({"first_cut_at": round(first_cut_at * 1000)}), flush=True)
@@ -138,10 +155,10 @@ async def main(argv: list[str]) -> int:
         until = time.monotonic() + args.window
         while time.monotonic() < until:
             await asyncio.sleep(args.every)
-            ended = await cut(connection, name)
-            if ended:
-                cuts.append({"at": round(time.time() * 1000), "pids": ended})
-        back_at = await wait_until_back(connection, name)
+            pids = await cut(connection, name, ended)
+            if pids:
+                cuts.append({"at": round(time.time() * 1000), "pids": pids})
+        back_at = await wait_until_back(connection, name, ended)
     finally:
         await connection.close()
     print(json.dumps({"cuts": cuts, "back_at": back_at}), flush=True)

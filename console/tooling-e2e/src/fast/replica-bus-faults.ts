@@ -307,7 +307,7 @@ export const disconnectWhileDeaf: FastScenario = {
         return !(await readsLive(viaDeaf, room.id, agent.id));
       });
       log(
-        `replica ${holder} read the agent offline ${heardMs}ms after the close, replica ${deaf} ${tookMs}ms after it`
+        `replica ${holder} read the agent offline ${heardMs}ms after the close, replica ${deaf} ${tookMs}ms after it (${tookMs - heardMs}ms later)`
       );
     });
   },

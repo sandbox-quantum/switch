@@ -7,17 +7,21 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+import pytest
 from sqlalchemy import text
 
 from switch_core import signals as signals_module
 from switch_core.db.engine import create_engine_from_config, create_unpooled_engine
-from switch_core.db.listening import ReconnectBackoff
+from switch_core.db.listening import (
+    ListeningConnectionLost,
+    ReconnectBackoff,
+    hold_open,
+)
 from switch_core.messages.notify import MessageListener
 from switch_core.signals import SignalBus
 from tests.switch_core.db.test_dead_peer_detection import _config_for
 
 if TYPE_CHECKING:
-    import pytest
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 NAME = "listening-test-0a1b2c3d"
@@ -122,3 +126,33 @@ async def test_the_message_listener_knows_at_once_and_wakes_every_room_on_reconn
         assert woken == ["!room:test"]
     finally:
         await listener.stop()
+
+
+async def test_a_connection_that_ended_before_it_was_held_is_noticed_at_once(
+    postgres_url: str,
+) -> None:
+    """As a cut during the signal bus's resync is: asyncpg has already called
+    its termination listeners, so none is called for `hold_open`'s."""
+    engine = create_unpooled_engine(_config_for(postgres_url), f"{NAME} held")
+    try:
+        async with engine.connect() as connection:
+            driver = (await connection.get_raw_connection()).driver_connection
+            assert await _end_backends(postgres_url, "held") == 1
+            for _ in range(200):
+                if driver.is_closed():
+                    break
+                await asyncio.sleep(0.01)
+            started = time.monotonic()
+
+            with pytest.raises(ListeningConnectionLost):
+                await hold_open(
+                    driver,
+                    heartbeat_seconds=20.0,
+                    heartbeat_timeout_seconds=60.0,
+                    running=lambda: True,
+                    after_beat=None,
+                )
+
+            assert time.monotonic() - started < 1.0
+    finally:
+        await engine.dispose()

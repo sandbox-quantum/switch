@@ -73,14 +73,20 @@ async def hold_open(
     driver.add_termination_listener(on_end)
     try:
         while running():
+            # Checked before waiting as well as after: a connection that ended
+            # before the listener was added (during a resync, say) fires
+            # nothing, and would otherwise wait out a whole heartbeat.
+            _raise_if_ended(driver, ended)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(ended.wait(), heartbeat_seconds)
-            if ended.is_set() or driver.is_closed():
-                raise ListeningConnectionLost(
-                    "the server closed the listening connection"
-                )
+            _raise_if_ended(driver, ended)
             await driver.execute("SELECT 1", timeout=heartbeat_timeout_seconds)
             if after_beat is not None:
                 after_beat()
     finally:
         driver.remove_termination_listener(on_end)
+
+
+def _raise_if_ended(driver: Any, ended: asyncio.Event) -> None:
+    if ended.is_set() or driver.is_closed():
+        raise ListeningConnectionLost("the server closed the listening connection")

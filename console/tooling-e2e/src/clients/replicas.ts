@@ -375,33 +375,59 @@ export class Replicas {
       ],
       { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] }
     );
-    let stdout = '';
+    type Result = { cuts: { at: number; pids: number[] }[]; backAt: number | null };
+    let pending = '';
     let stderr = '';
+    let result: Result | null = null;
+    let broken: Error | null = null;
     let cutAt: (at: number) => void = () => undefined;
     let notCut: (error: Error) => void = () => undefined;
     const first = new Promise<number>((resolve, reject) => {
       cutAt = resolve;
       notCut = reject;
     });
+    // Called from the child's event handlers, so it never throws: a throw
+    // there would be uncaught, ending the whole run and leaving the child
+    // cutting. A line it cannot read stops the child and fails the scenario.
+    const readLine = (line: string): void => {
+      if (!line.startsWith('{')) return; // `uv` and Python may print other lines
+      try {
+        const record = JSON.parse(line) as { first_cut_at?: number; cuts?: Result['cuts']; back_at?: number | null };
+        if (record.first_cut_at !== undefined) cutAt(record.first_cut_at);
+        if (record.cuts !== undefined) result = { cuts: record.cuts, backAt: record.back_at ?? null };
+      } catch (error) {
+        broken = new Error(`cutting replica ${replica}'s ${role} listener printed a line it could not read: ${line}`, {
+          cause: error,
+        });
+        notCut(broken);
+        child.kill();
+      }
+    };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-      const line = stdout.split('\n').find((l) => l.includes('first_cut_at'));
-      if (line !== undefined) cutAt((JSON.parse(line) as { first_cut_at: number }).first_cut_at);
+      // Only whole lines: a chunk may end partway through one.
+      const lines = (pending + chunk).split('\n');
+      pending = lines.pop() ?? '';
+      for (const line of lines) readLine(line.trim());
     });
     child.stderr.on('data', (chunk: string) => {
       stderr += chunk;
     });
-    const done = new Promise<{ cuts: { at: number; pids: number[] }[]; backAt: number | null }>((resolve, reject) => {
-      child.on('error', reject);
+    const done = new Promise<Result>((resolve, reject) => {
+      child.on('error', (error) => {
+        notCut(error);
+        reject(error);
+      });
       child.on('close', (code) => {
-        const failure = new Error(`cutting replica ${replica}'s ${role} listener failed (exit ${code}): ${stderr.trim()}`);
+        readLine(pending.trim());
+        pending = '';
+        const failure =
+          broken ?? new Error(`cutting replica ${replica}'s ${role} listener failed (exit ${code}): ${stderr.trim()}`);
         notCut(failure);
-        if (code !== 0) return reject(failure);
-        const last = stdout.trim().split('\n').at(-1) ?? '';
-        const result = JSON.parse(last) as { cuts: { at: number; pids: number[] }[]; back_at: number | null };
-        resolve({ cuts: result.cuts, backAt: result.back_at });
+        if (broken !== null || code !== 0) return reject(failure);
+        if (result === null) return reject(new Error(`cutting replica ${replica}'s ${role} listener reported no cuts`));
+        resolve(result);
       });
     });
     // Either may go unawaited when the other fails first.
