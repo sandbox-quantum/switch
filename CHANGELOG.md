@@ -5283,6 +5283,10 @@ version of their own to them without also giving them a release of their own.
   are now resolved first, a dangling one included, and one leading out of the
   location is refused.
 
+- **The app window can call only the app's own requests into the main
+  process.** Its bridge passed any channel name through; it now refuses every
+  channel but those the app registers for its requests.
+
 - **On Windows, a command for a `.cmd` or `.bat` CLI with a line break in an
   argument is refused.** Such a CLI runs through cmd.exe, which treats a line
   break as the end of one command and the start of the next whatever the
