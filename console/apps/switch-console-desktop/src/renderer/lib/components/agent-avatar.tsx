@@ -1,8 +1,8 @@
+import { agentInitials, resolveAgentAvatarSrc } from '@switch-console/chat-ui/model/agent-avatar';
 import { useEffect, useState } from 'react';
 import buddyAvatar from '@/assets/images/switch-buddy/avatar.png';
 import { useAvatarSettings } from '@renderer/lib/stores/use-avatar-settings';
 import { cn } from '@renderer/utils/utils';
-import { agentInitials, resolveAgentAvatarSrc } from '@shared/core/agents/agent-avatar';
 import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 
 /** The image an agent's avatar shows, or null for its initials. */

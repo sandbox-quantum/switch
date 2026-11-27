@@ -12,10 +12,9 @@ import {
   Switch,
   TextField,
 } from "@mui/material";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   type Controller,
-  createManagedAgent,
   type Definition,
   type Isolation,
   type DesiredState,
@@ -25,11 +24,7 @@ import {
   updateManagedAgent,
 } from "../../data/management";
 
-const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
-
 interface Form {
-  name: string;
-  description: string;
   controllerId: string;
   provider: Provider;
   model: string;
@@ -43,40 +38,18 @@ interface Form {
   running: boolean;
 }
 
-function initialForm(
-  agent: ManagedAgent | null,
-  controllers: Controller[],
-  providers: ProviderInfo[],
-): Form {
-  if (agent)
-    return {
-      name: agent.name,
-      description: agent.description,
-      controllerId: agent.controller_id ?? "",
-      provider: agent.definition.provider,
-      model: agent.definition.model ?? "",
-      instructions: agent.definition.instructions,
-      directory: agent.definition.directory ?? "",
-      autoMode: agent.definition.auto_mode,
-      autoApprove: agent.definition.auto_approve,
-      isolation: agent.definition.isolation,
-      advancedConfig: agent.definition.advanced_config,
-      running: agent.desired_state === "running",
-    };
-  const online = controllers.find((c) => c.state === "online");
+function initialForm(agent: ManagedAgent): Form {
   return {
-    name: "",
-    description: "",
-    controllerId: online?.id ?? "",
-    provider: providers[0]?.id ?? "",
-    model: "",
-    instructions: "",
-    directory: "",
-    autoMode: true,
-    autoApprove: false,
-    isolation: "shared",
-    advancedConfig: {},
-    running: true,
+    controllerId: agent.controller_id ?? "",
+    provider: agent.definition.provider,
+    model: agent.definition.model ?? "",
+    instructions: agent.definition.instructions,
+    directory: agent.definition.directory ?? "",
+    autoMode: agent.definition.auto_mode,
+    autoApprove: agent.definition.auto_approve,
+    isolation: agent.definition.isolation,
+    advancedConfig: agent.definition.advanced_config,
+    running: agent.desired_state === "running",
   };
 }
 
@@ -94,10 +67,9 @@ function definitionFrom(form: Form): Definition {
 }
 
 /**
- * Creates a managed agent, or edits one: its definition, the machine it runs
- * on, and whether it should be running. Server refusals (an offline machine,
- * a provider that is not installed or not logged in there) are shown as the
- * server words them.
+ * Edits a managed agent: its definition, the device it runs on, and whether
+ * it should be running. Refusals (an offline device, a provider that is not
+ * installed or not signed in there) are shown as Switch words them.
  */
 export default function ManagedAgentDialog({
   open,
@@ -108,38 +80,54 @@ export default function ManagedAgentDialog({
   onSaved,
 }: {
   open: boolean;
-  /** The agent to edit, or null to create one. */
+  /** The agent to edit; null while none is. */
   agent: ManagedAgent | null;
   controllers: Controller[];
-  /** The providers the server runs; empty until they have loaded. */
+  /** The providers Switch runs; empty until they have loaded. */
   providers: ProviderInfo[];
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [form, setForm] = useState<Form>(() => initialForm(agent, controllers, providers));
+  return (
+    <Dialog open={open && agent !== null} onClose={onClose} maxWidth="sm" fullWidth>
+      {agent && (
+        <EditManagedAgent
+          key={agent.agent_id}
+          agent={agent}
+          controllers={controllers}
+          providers={providers}
+          onClose={onClose}
+          onSaved={onSaved}
+        />
+      )}
+    </Dialog>
+  );
+}
+
+function EditManagedAgent({
+  agent,
+  controllers,
+  providers,
+  onClose,
+  onSaved,
+}: {
+  agent: ManagedAgent;
+  controllers: Controller[];
+  providers: ProviderInfo[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  // Read once per agent, not on every status refresh.
+  const [form, setForm] = useState<Form>(() => initialForm(agent));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    setForm(initialForm(agent, controllers, providers));
-    setError(null);
-    // Reset only when the dialog opens or switches agent, not on every status refresh.
-  }, [open, agent?.agent_id]);
 
   const set = <K extends keyof Form>(key: K, value: Form[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
 
-  const placeable = controllers.filter(
-    (c) => c.state !== "revoked" || c.id === agent?.controller_id,
-  );
-  const nameValid = agent !== null || NAME_PATTERN.test(form.name);
-  const canSave =
-    nameValid &&
-    (agent !== null || form.description.trim() !== "") &&
-    form.provider !== "" &&
-    !saving;
-  // An agent keeps its provider even if the server no longer lists it.
+  const placeable = controllers.filter((c) => c.state !== "revoked" || c.id === agent.controller_id);
+  const canSave = form.provider !== "" && !saving;
+  // An agent keeps its provider even if Switch no longer lists it.
   const providerChoices =
     form.provider === "" || providers.some((p) => p.id === form.provider)
       ? providers
@@ -149,23 +137,12 @@ export default function ManagedAgentDialog({
     setSaving(true);
     setError(null);
     const desired: DesiredState = form.running ? "running" : "stopped";
-    const controllerId = form.controllerId || null;
     try {
-      if (agent === null)
-        await createManagedAgent({
-          name: form.name,
-          description: form.description.trim(),
-          display_name: null,
-          controller_id: controllerId,
-          desired_state: desired,
-          definition: definitionFrom(form),
-        });
-      else
-        await updateManagedAgent(agent.agent_id, {
-          definition: definitionFrom(form),
-          desired_state: desired,
-          controller_id: controllerId,
-        });
+      await updateManagedAgent(agent.agent_id, {
+        definition: definitionFrom(form),
+        desired_state: desired,
+        controller_id: form.controllerId || null,
+      });
       onSaved();
       onClose();
     } catch (err) {
@@ -176,30 +153,11 @@ export default function ManagedAgentDialog({
   };
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>{agent ? `Edit ${agent.name}` : "New managed agent"}</DialogTitle>
+    <>
+      <DialogTitle>{`Edit ${agent.name}`}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {error && <Alert severity="error">{error}</Alert>}
-          {agent === null && (
-            <>
-              <TextField
-                label="Name"
-                value={form.name}
-                onChange={(e) => set("name", e.target.value)}
-                error={form.name !== "" && !nameValid}
-                helperText="Lowercase letters, digits, '.', '-' and '_'. How the agent is addressed in rooms."
-                required
-                autoFocus
-              />
-              <TextField
-                label="Description"
-                value={form.description}
-                onChange={(e) => set("description", e.target.value)}
-                required
-              />
-            </>
-          )}
           <TextField
             select
             label="Device"
@@ -297,9 +255,9 @@ export default function ManagedAgentDialog({
           disabled={!canSave}
           startIcon={saving ? <CircularProgress size={16} /> : undefined}
         >
-          {agent ? "Save" : "Create"}
+          Save
         </Button>
       </DialogActions>
-    </Dialog>
+    </>
   );
 }

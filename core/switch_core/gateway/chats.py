@@ -16,7 +16,7 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable, Coroutine
 from datetime import datetime
 from functools import partial
 from typing import Annotated, Any, Literal
@@ -71,6 +71,7 @@ from switch_core.gateway.auth import (
 from switch_core.gateway.dependencies import get_config, get_user_store
 from switch_core.security_events import SecuritySignal, log_security_event
 from switch_core.session_activity.listener import Change, RoomSubscription
+from switch_core.shielded import finish_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -380,7 +381,7 @@ def _session_check(
     user: User,
     request: Request,
     tenant_id: str,
-) -> Callable[[], Awaitable[bool]]:
+) -> Callable[[], Coroutine[Any, Any, bool]]:
     """What a stream asks at each re-read: whether the session it was opened
     with still stands, and may still enter its workspace, or the account's
     sessions have been ended, this one signed out of, or the workspace left
@@ -1053,7 +1054,7 @@ async def chat_events(
     *,
     ping_seconds: float,
     recheck_seconds: float,
-    session_current: Callable[[], Awaitable[bool]],
+    session_current: Callable[[], Coroutine[Any, Any, bool]],
 ) -> AsyncIterator[bytes]:
     """The caller's chat events as SSE frames.
 
@@ -1068,7 +1069,7 @@ async def chat_events(
     stream = _ChatStream(service, tenant_id, user, after)
     service.watch_memberships(tenant_id, user.id, stream.on_memberships)
     try:
-        frames, alive = await stream.refresh(None, initial=True)
+        frames, alive = await finish_shielded(stream.refresh(None, initial=True))
         for frame in frames:
             yield frame
         if not alive:
@@ -1090,7 +1091,7 @@ async def chat_events(
                 yield b": ping\n\n"
             read: dict[str, float] | None
             if now >= next_recheck:
-                if not await session_current():
+                if not await finish_shielded(session_current()):
                     return
                 next_recheck = now + recheck_seconds
                 read = None
@@ -1100,7 +1101,7 @@ async def chat_events(
                 read = stream.take_rung()
             else:
                 continue
-            frames, alive = await stream.refresh(read, initial=False)
+            frames, alive = await finish_shielded(stream.refresh(read, initial=False))
             last_pass = time.monotonic()
             for frame in frames:
                 yield frame
@@ -1119,7 +1120,7 @@ async def chat_activity_events(
     ping_seconds: float,
     recheck_seconds: float,
     queue_max: int,
-    session_current: Callable[[], Awaitable[bool]],
+    session_current: Callable[[], Coroutine[Any, Any, bool]],
 ) -> AsyncIterator[bytes]:
     """Turn steps and approval requests of the rooms the caller may read, as SSE.
 
@@ -1172,8 +1173,8 @@ async def chat_activity_events(
     # Per-connection, so a turn reread on every change resends only moved steps.
     sent: dict[tuple[str, str, str, str], int] = {}
     try:
-        await service.sync_owned_rooms(tenant_id, user.id)
-        rooms = await _readable_room_ids(service, tenant_id, user)
+        await finish_shielded(service.sync_owned_rooms(tenant_id, user.id))
+        rooms = await finish_shielded(_readable_room_ids(service, tenant_id, user))
         if rooms is None:
             return
         subscription = service.activity_listener.subscribe_rooms(
@@ -1196,12 +1197,12 @@ async def chat_activity_events(
                 yield b": ping\n\n"
             recheck = now >= next_recheck
             if recheck:
-                if not await session_current():
+                if not await finish_shielded(session_current()):
                     return
                 next_recheck = now + recheck_seconds
             if recheck or item is _RESYNC or item is _MEMBERSHIPS:
-                current = await _readable_room_ids(
-                    service, tenant_id, user, slotted=True
+                current = await finish_shielded(
+                    _readable_room_ids(service, tenant_id, user, slotted=True)
                 )
                 if current is None:
                     return
@@ -1215,7 +1216,9 @@ async def chat_activity_events(
                 if len(sent) > _ACTIVITY_SENT_MAX:
                     # Forgetting only resends steps the client already holds.
                     sent.clear()
-                frames = await _activity_frames(service, tenant_id, user, item, sent)
+                frames = await finish_shielded(
+                    _activity_frames(service, tenant_id, user, item, sent)
+                )
                 if frames is None:
                     return
                 for frame in frames:

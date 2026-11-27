@@ -1,13 +1,14 @@
+import { oidcSignInButtons } from '@switch-console/chat-ui/model/sign-in-options';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { Label } from '@switch-console/chat-ui/primitives/label';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@renderer/lib/ui/button';
-import { Input } from '@renderer/lib/ui/input';
-import { Label } from '@renderer/lib/ui/label';
-import { Spinner } from '@renderer/lib/ui/spinner';
 import type { SignupMachine, SwitchAuthConfig } from '@shared/core/switch-servers/switch-servers';
 import { SignInProviderLogo } from './sign-in-provider-logo';
 import { loadSwitchCloudOrigin, managedCloudServerId } from './switch-cloud-origin';
@@ -264,10 +265,10 @@ export const ServerSignInFields = observer(function ServerSignInFields({
     if (signIn.submitting) return;
     if (await signIn.signInWithOidc(provider)) onSignedIn({ machine: null });
   };
-  const oidcButtons: { id: string | null; label: string }[] =
-    config && config.oidcLoginOptions.length > 0
-      ? config.oidcLoginOptions
-      : [{ id: null, label: config?.oidcProviderLabel ?? 'SSO' }];
+  const oidcButtons = oidcSignInButtons(
+    config?.oidcLoginOptions ?? [],
+    config?.oidcProviderLabel ?? null
+  );
 
   if (!config) {
     return (

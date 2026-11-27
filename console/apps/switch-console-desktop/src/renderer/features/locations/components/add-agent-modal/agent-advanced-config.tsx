@@ -1,9 +1,8 @@
+import { AdvancedConfigSection as SharedAdvancedConfigSection } from '@switch-console/chat-ui/components/new-agent-form';
 import type { RepoAgentAttributes, RepoAgentField } from '@switch-console/core/agents/plugins';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { rpc } from '@renderer/lib/ipc';
-import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
-import { Field, FieldDescription, FieldLabel } from '@renderer/lib/ui/field';
 import { getProvider } from '@shared/core/providers/agent-provider-registry';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import {
@@ -122,46 +121,19 @@ export function AdvancedConfigSection({
   catalogue: ModelCatalogueResult | undefined;
   onFieldChange: (key: string, value: FormValue) => void;
 }) {
-  const [open, setOpen] = useState(false);
   return (
-    <div>
-      <DisclosureRow
-        open={open}
-        title="Advanced configuration"
-        meta={
-          providerLabel
-            ? `${providerLabel} · ${fields.length} ${fields.length === 1 ? 'field' : 'fields'}`
-            : undefined
-        }
-        onToggle={() => setOpen((v) => !v)}
-      />
-      {open && (
-        <div className="flex flex-col gap-4 pt-3">
-          {fields.map((field) => {
-            const catalogueState = fieldCatalogueState(field, form, catalogue);
-            return (
-              <Field key={field.key}>
-                <FieldLabel htmlFor={`agent-advanced-${field.key}`}>
-                  {field.label}
-                  {field.required || field.type === 'boolean' ? '' : ' (optional)'}
-                </FieldLabel>
-                <DefinitionFieldInput
-                  suggestions={catalogueState.suggestions}
-                  field={field}
-                  value={form[field.key] ?? (field.type === 'boolean' ? false : '')}
-                  onChange={(value) => onFieldChange(field.key, value)}
-                />
-                {catalogueState.note && <FieldDescription>{catalogueState.note}</FieldDescription>}
-                {field.help && (
-                  <FieldDescription className="text-foreground-muted">
-                    {field.help}
-                  </FieldDescription>
-                )}
-              </Field>
-            );
-          })}
-        </div>
+    <SharedAdvancedConfigSection
+      providerLabel={providerLabel}
+      fields={fields}
+      fieldNote={(field) => fieldCatalogueState(field, form, catalogue).note}
+      renderInput={(field) => (
+        <DefinitionFieldInput
+          suggestions={fieldCatalogueState(field, form, catalogue).suggestions}
+          field={field}
+          value={form[field.key] ?? (field.type === 'boolean' ? false : '')}
+          onChange={(value) => onFieldChange(field.key, value)}
+        />
       )}
-    </div>
+    />
   );
 }

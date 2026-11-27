@@ -1,7 +1,11 @@
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { ArrowUpCircle, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { SwitchVersionDrift } from '@shared/core/managed-switch-server/managed-switch-server';
 import { type SwitchServer, urlHost } from '@shared/core/switch-servers/switch-servers';

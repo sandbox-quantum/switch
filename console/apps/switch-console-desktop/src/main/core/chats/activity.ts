@@ -2,7 +2,7 @@ import {
   ACTIVITY_UNAVAILABLE_TEXT,
   type ChatActivityTarget,
   type ChatActivityUnavailableReason,
-} from '@shared/core/chats/activity';
+} from '@switch-console/chat-ui/contracts/activity';
 
 /**
  * Which session of an agent attends a chat, when it runs on this machine or

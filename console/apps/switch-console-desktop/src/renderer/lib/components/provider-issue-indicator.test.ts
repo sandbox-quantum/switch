@@ -5,7 +5,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 const readiness = vi.hoisted(() => ({ data: undefined as unknown, enabled: [] as boolean[] }));
 vi.mock('@renderer/lib/ipc', () => ({ rpc: {} }));
 // Rendered in place, so the tooltip's text is in the markup.
-vi.mock('@renderer/lib/ui/tooltip', () => ({
+vi.mock('@switch-console/chat-ui/primitives/tooltip', () => ({
   Tooltip: ({ children }: { children: React.ReactNode }) =>
     React.createElement(React.Fragment, null, children),
   TooltipTrigger: ({ render }: { render: React.ReactNode }) => render,

@@ -446,6 +446,16 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/auth/me/license",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/auth/me/team-survey",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/auth/oidc/callback",
       "auth": "none",
       "flags": []
@@ -680,6 +690,11 @@
     {
       "route": "GET /gateway/joinable-tenants",
       "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/license",
+      "auth": "none",
       "flags": []
     },
     {
@@ -1323,6 +1338,11 @@
     },
     {
       "route": "POST /gateway/auth/me/reset-test-account",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/me/start-over",
       "auth": "session",
       "flags": []
     },
@@ -1975,7 +1995,17 @@
       ]
     },
     {
+      "route": "PUT /gateway/auth/me/license",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PUT /gateway/auth/me/password",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/auth/me/team-survey",
       "auth": "session",
       "flags": []
     },

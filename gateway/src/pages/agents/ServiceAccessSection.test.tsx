@@ -337,7 +337,7 @@ describe("ServiceAccessSection", () => {
   });
 
   const SWITCHED_OFF = (name: string) =>
-    `${name} is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors in Switch Console.`;
+    `${name} is not enabled in this workspace. Ask a workspace admin; they switch it on in Settings › Connectors.`;
 
   it("says a service switched off in the workspace cannot be turned on, and still turns one off", async () => {
     const calls = mockServer(
@@ -523,7 +523,7 @@ describe("ServiceAccessSection", () => {
     mockServer(GRANTED, [onOff("active")]);
     renderSection(<ServiceAccessSection agent={agent} canGrant={false} onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(GRANTED.grants[0]!.summary)).toBeTruthy();
-    expect(screen.getByText(/New grants are only for an agent Switch Console runs/)).toBeTruthy();
+    expect(screen.getByText(/New grants are only for an agent run from/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
     expect(screen.queryByLabelText("GitHub account")).toBeNull();

@@ -12,7 +12,7 @@ describe("landingAfterSwitch", () => {
     },
   );
 
-  it.each(["/agents/a1", "/rooms/r1", "/rooms/groups", "/templates/t1", "/connectors/github"])(
+  it.each(["/agents/a1", "/rooms/r1", "/chats", "/templates/t1", "/connectors/github"])(
     "leaves %s for the landing page, as it showed the old workspace's",
     (path) => {
       expect(landingAfterSwitch(path)).toBe("/");

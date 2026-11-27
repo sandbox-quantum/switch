@@ -25,10 +25,8 @@ vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {}, emit: () => {} },
 }));
 
-import {
-  GiveMachineLogin,
-  loginKindsFor,
-} from '@renderer/features/locations/components/add-agent-modal/give-machine-login';
+import { providerLoginKinds } from '@switch-console/chat-ui/model/provider-catalogue';
+import { GiveMachineLogin } from '@renderer/features/locations/components/add-agent-modal/give-machine-login';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import '@renderer/index.css';
 
@@ -128,16 +126,16 @@ async function chooseVertex(el: HTMLElement): Promise<void> {
 
 describe('giving a machine a Claude login through Vertex AI', () => {
   it('offers Vertex AI as a third Claude login', () => {
-    expect(loginKindsFor('claude').map((kind) => kind.label)).toEqual([
+    expect(providerLoginKinds('claude', true).map((kind) => kind.label)).toEqual([
       'Setup token',
       'API key',
       'Vertex AI',
     ]);
-    expect(loginKindsFor('codex').map((kind) => kind.value)).not.toContain('vertex');
+    expect(providerLoginKinds('codex', true).map((kind) => kind.value)).not.toContain('vertex');
   });
 
   it('offers Vertex AI to Antigravity beside this computer’s sign-in', () => {
-    expect(loginKindsFor('antigravity').map((kind) => kind.label)).toEqual([
+    expect(providerLoginKinds('antigravity', true).map((kind) => kind.label)).toEqual([
       "This computer's sign-in",
       'Vertex AI',
     ]);

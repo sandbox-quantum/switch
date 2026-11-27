@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TemplateDetail } from "../../data/api";
@@ -103,21 +104,26 @@ afterEach(() => {
   Object.defineProperty(window, "location", { configurable: true, writable: true, value: originalLocation });
 });
 
+/** The fact the page states under `label`, as its row reads. */
+const fact = (label: string) => screen.getByText(label, { selector: "span" }).parentElement?.textContent;
+
 describe("TemplateDetailPage", () => {
-  it("says an official template is changed by nobody, and offers no access setting, save or delete", async () => {
+  it("says an official template is changed by nobody, and offers no edit, transfer or delete", async () => {
     showWith(EXPERT);
     expect(
       await screen.findByText(
         "Maintained by Switch, so nobody can change it. Copy or download it to make your own version.",
       ),
     ).toBeTruthy();
-    expect(screen.queryByLabelText("Access")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.getByText("Comes with Switch")).toBeTruthy();
+    expect(screen.getByText("Official")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Transfer ownership" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete template" })).toBeNull();
-    expect(screen.getByText("4")).toBeTruthy();
+    expect(fact("Runs")).toBe("Runs4");
     // It changes only with a release, so it has no dates of its own.
-    expect(screen.queryByText("Created:")).toBeNull();
-    expect(screen.queryByText("Updated:")).toBeNull();
+    expect(screen.queryByText("Created", { selector: "span" })).toBeNull();
+    expect(screen.queryByText("Updated", { selector: "span" })).toBeNull();
   });
 
   it("names the owner of someone else's template, and who else may change it", async () => {
@@ -127,9 +133,11 @@ describe("TemplateDetailPage", () => {
         "This template belongs to Bob. You can copy or download it; only they or a workspace admin can change it.",
       ),
     ).toBeTruthy();
+    expect(screen.getByText("Uploaded by Bob")).toBeTruthy();
+    expect(screen.getByText("Shared with the workspace")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Delete template" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-    expect(screen.getByText("Created:")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.getByText("Created", { selector: "span" })).toBeTruthy();
   });
 
   it("says a template whose owner has left is an admin's to change", async () => {
@@ -139,17 +147,36 @@ describe("TemplateDetailPage", () => {
         "This template belongs to a former member. You can copy or download it; only a workspace admin can change it.",
       ),
     ).toBeTruthy();
+    expect(screen.getByText("Uploaded by former member")).toBeTruthy();
   });
 
   it("says what the template is for, what it creates, and when it was last used", async () => {
     showWith({ ...OWNED, agent_count: 2, last_run_at: "2026-11-14T12:00:00Z" });
-    const info = (label: string) => screen.getByText(`${label}:`).parentElement?.textContent;
-    await screen.findByText("Use case:");
-    expect(info("Use case")).toBe("Use case: Engineering");
-    expect(info("Creates")).toBe("Creates: 2 agents · 1 room");
-    expect(info("Last used")).toMatch(/^Last used: 2026-11-1[45] /);
+    expect(await screen.findByRole("heading", { name: "What it creates" })).toBeTruthy();
+    expect(screen.getByText("2 agents · 1 room")).toBeTruthy();
+    expect(fact("Use case")).toBe("Use caseEngineering");
+    expect(fact("Last used")).toMatch(/^Last used2026-11-1[45] /);
     expect(screen.getByRole("heading", { name: "Standup" })).toBeTruthy();
     expect(screen.getByText("Room")).toBeTruthy();
+  });
+
+  it("says a template whose document could not be read cannot be used", async () => {
+    showWith({ ...OWNED, agent_count: null, room_count: null });
+    expect(
+      await screen.findByText(/This template cannot be used. Its document could not be read. Ask whoever saved it/),
+    ).toBeTruthy();
+  });
+
+  it("shows the document on asking, and copies what is stored", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    showWith(OWNED, { "GET /templates/t-1/content": { status: 200, body: "room:\n  name: stored\n" } });
+    fireEvent.click(await screen.findByRole("button", { name: /Show the document/ }));
+    expect(screen.getByText("Standup.yaml")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("room:\n  name: stored\n"));
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeTruthy();
   });
 
   it("deletes after confirming, and goes back to the Templates page", async () => {
@@ -179,9 +206,21 @@ describe("TemplateDetailPage", () => {
     await waitFor(() => expect(calls.map((c) => c.key)).toContain("DELETE /templates/official:switch-expert"));
   });
 
-  it("goes back to the templates from a labelled link", async () => {
+  it("offers the owner a transfer among the header's actions", async () => {
+    showWith(
+      { ...OWNED, can_edit: true, can_manage: true },
+      { "GET /tenants/ten-1/members": { status: 200, body: [] } },
+    );
+    const transfer = await screen.findByRole("button", { name: "Transfer ownership" });
+    expect(transfer.parentElement).toBe(screen.getByRole("button", { name: "Use template" }).parentElement);
+    fireEvent.click(transfer);
+    const dialog = await screen.findByRole("dialog", { name: "Transfer template" });
+    expect(await within(dialog).findByText("There is no one else in this workspace to give it to.")).toBeTruthy();
+  });
+
+  it("goes back to the templates", async () => {
     showWith(OWNED);
-    fireEvent.click(await screen.findByRole("button", { name: "Back to templates" }));
+    fireEvent.click(await screen.findByRole("button", { name: "All templates" }));
     expect(await screen.findByText("Templates page")).toBeTruthy();
   });
 
@@ -189,7 +228,7 @@ describe("TemplateDetailPage", () => {
     showWith({ id: "t-9", answer: { status: 404, body: { detail: "Template not found: t-9" } } });
     expect(await screen.findByText(NOT_AVAILABLE)).toBeTruthy();
     expect(screen.queryByText(/t-9/)).toBeNull();
-    expect(screen.getByRole("button", { name: "Back to templates" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "All templates" })).toBeTruthy();
   });
 
   it("keeps the server's reason for any other failure", async () => {
@@ -197,21 +236,22 @@ describe("TemplateDetailPage", () => {
     expect(await screen.findByText("database unavailable")).toBeTruthy();
   });
 
-  it("hands Use over to Switch Console", async () => {
-    showWith(EXPERT);
+  it("shows run dialog when Use template is clicked", async () => {
+    showWith(EXPERT, {
+      "GET /templates/official:switch-expert/content": { status: 200, body: "agent:\n  name: expert\n" },
+    });
     fireEvent.click(await screen.findByRole("button", { name: "Use template" }));
-    const dialog = screen.getByRole("dialog", { name: "Use Switch expert" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Open in Switch Console" }));
-    expect(assign).toHaveBeenCalledWith(
-      "switchdash://open/template/official%3Aswitch-expert" +
-        `?server=${encodeURIComponent(window.location.origin)}&workspace=ten-1&use=1`,
-    );
+    const dialog = await screen.findByRole("dialog", { name: "Use Switch expert" });
+    expect(within(dialog).getByText(/Template running from the web is in early development/)).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Run template" })).toBeTruthy();
   });
 
-  it("greys Use where a person should not run the template", async () => {
-    showWith({ ...EXPERT, run_blocked_reason: "Switch Console sets up your switch-buddy for you." });
+  it("greys Use template where a person should not run it, saying why", async () => {
+    const reason = "Switch Console sets up your switch-buddy for you.";
+    showWith({ ...EXPERT, run_blocked_reason: reason });
     const use = await screen.findByRole("button", { name: "Use template" });
     expect(use.getAttribute("aria-disabled")).toBe("true");
+    expect(use.getAttribute("title")).toBe(reason);
     fireEvent.click(use);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
@@ -238,13 +278,18 @@ describe("TemplateDetailPage", () => {
     ).toBeTruthy();
   });
 
-  it("saves a changed use case, and clears one", async () => {
+  it("edits on asking, and saves a cleared use case alone", async () => {
     const mine = { ...OWNED, owner_id: "u-1", can_edit: true, can_manage: true };
     const calls = showWith(mine, {
       "PATCH /templates/t-1": { status: 200, body: { ...mine, use_case: null } },
     });
-    fireEvent.mouseDown(await screen.findByLabelText("Use case"));
-    fireEvent.click(await screen.findByRole("option", { name: "None" }));
+    expect(await screen.findByText("Yours")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("combobox", { name: "Use case" }));
+    await user.click(await screen.findByRole("option", { name: "None" }));
     const save = screen.getByRole("button", { name: "Save" });
     await waitFor(() => expect((save as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 });
     fireEvent.click(save);
@@ -252,5 +297,7 @@ describe("TemplateDetailPage", () => {
     await waitFor(() =>
       expect(calls.filter((c) => c.key === "PATCH /templates/t-1").map((c) => c.body)).toEqual([{ use_case: null }]),
     );
+    expect(await screen.findByText("None", { selector: "div" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
 });

@@ -4,12 +4,15 @@ import { featureFlagsFrom } from "../data/featureFlags";
 import type { SettingsArea } from "../data/settingsLanding";
 import {
   AREAS as MATRIX_AREAS,
+  MENU_FLAGS,
+  type MatrixState,
   PAGES,
   PERSONAS,
   type Persona,
   RAIL as MATRIX_RAIL,
   REDIRECTS,
-  SETTINGS_MENUS,
+  settingsMenu,
+  stateAt,
 } from "./roleMatrix";
 import { AREAS, ROUTES, accessTo, menuOf, railFor } from "./routeTable";
 
@@ -17,15 +20,30 @@ import { AREAS, ROUTES, accessTo, menuOf, railFor } from "./routeTable";
  * target matrix, so when this fails, decide which of the two is wrong; a new
  * page needs its row in `roleMatrix.ts`. */
 
+/** The flags every page of the matrix assumes on. */
+const ASSUMED = [
+  "agent_management",
+  "service_connections",
+  "organization_connector_apps",
+  "gateway_chats",
+  "gateway_onboarding",
+];
+
+/** The flags some pages of the matrix name, each held with it on and off. */
+const NAMED = [
+  ...new Set([
+    ...PAGES.flatMap((row) => (row.flag === undefined ? [] : [row.flag])),
+    ...Object.values(MENU_FLAGS).flatMap((menu) => Object.values(menu)),
+  ]),
+];
+
+/** Every named flag on, and every one off. */
+const FLAG_SETS: readonly (readonly string[])[] = [[...ASSUMED, ...NAMED], ASSUMED];
+
 /** What the server tells the dashboard about each role in a workspace of an
- * organization, on a server with the flags the harness's stack turns on. */
-function capabilitiesOf(persona: Persona): Capabilities {
-  const features = featureFlagsFrom(
-    ["agent_management", "service_connections", "organization_connector_apps"].map((key) => ({
-      key,
-      enabled: true,
-    })),
-  );
+ * organization, on a server with `flags` on. */
+function capabilitiesOf(persona: Persona, flags: readonly string[]): Capabilities {
+  const features = featureFlagsFrom(flags.map((key) => ({ key, enabled: true })));
   return {
     isOperator: persona === "operator",
     administersWorkspace: persona !== "member",
@@ -68,29 +86,39 @@ describe("the role matrix", () => {
     expect(sorted(REDIRECTS.map(({ from, to }) => `${from} -> ${to}`))).toEqual(sorted(redirects));
   });
 
-  it.each(PERSONAS)("lets %s open what the matrix says, and nothing else", (persona) => {
-    const caps = capabilitiesOf(persona);
-    const wrong = [...PAGES, ...MATRIX_AREAS].flatMap((row) => {
-      const expected = row.open.includes(persona);
-      const actual = accessTo(row.path, caps)?.allowed === true;
-      return expected === actual ? [] : [`${row.path}: matrix ${expected}, route table ${actual}`];
-    });
-    expect(wrong).toEqual([]);
-  });
+  describe.each(FLAG_SETS.map((flags) => [flags.join(", "), flags] as const))(
+    "with %s on",
+    (_, flags) => {
+      it.each(PERSONAS)("lets %s open what the matrix says, and nothing else", (persona) => {
+        const caps = capabilitiesOf(persona, flags);
+        const wrong = [...PAGES, ...MATRIX_AREAS].flatMap((row) => {
+          const expected = stateAt(row, persona, new Set(flags));
+          const access = accessTo(row.path, caps);
+          const actual: MatrixState = access?.allowed
+            ? "page"
+            : access?.reason === "not_enabled"
+              ? "not-enabled"
+              : "refused";
+          return expected === actual ? [] : [`${row.path}: matrix ${expected}, route table ${actual}`];
+        });
+        expect(wrong).toEqual([]);
+      });
 
-  it.each(PERSONAS)("shows %s the matrix's rail", (persona) => {
-    const rail = railFor(capabilitiesOf(persona)).map((item) => item.label);
-    expect(rail).toEqual(MATRIX_RAIL[persona]);
-  });
-});
+      it.each(PERSONAS)("shows %s the matrix's rail", (persona) => {
+        const rail = railFor(capabilitiesOf(persona, flags)).map((item) => item.label);
+        expect(rail).toEqual(MATRIX_RAIL[persona]);
+      });
 
-describe.each(PERSONAS)("the settings menus for %s", (persona) => {
-  const caps = capabilitiesOf(persona);
-  const areas: readonly SettingsArea[] = ["workspace", "organization"];
+      describe.each(PERSONAS)("the settings menus for %s", (persona) => {
+        const caps = capabilitiesOf(persona, flags);
+        const areas: readonly SettingsArea[] = ["workspace", "organization"];
 
-  it.each(areas)("match the matrix in the %s area", (area) => {
-    const expected = SETTINGS_MENUS[area][persona];
-    const entered = AREAS[area].access(caps).allowed;
-    expect(entered ? menuOf(area, caps).map((item) => item.label) : null).toEqual(expected);
-  });
+        it.each(areas)("match the matrix in the %s area", (area) => {
+          const expected = settingsMenu(area, persona, new Set(flags));
+          const entered = AREAS[area].access(caps).allowed;
+          expect(entered ? menuOf(area, caps).map((item) => item.label) : null).toEqual(expected);
+        });
+      });
+    },
+  );
 });

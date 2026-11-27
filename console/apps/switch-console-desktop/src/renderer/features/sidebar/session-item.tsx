@@ -1,3 +1,4 @@
+import { SidebarMenuAction, SidebarMenuRow } from '@switch-console/chat-ui/primitives/sidebar';
 import { MessageSquare } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
@@ -14,7 +15,6 @@ import { SessionRoomConnection } from '@renderer/features/switch-rooms/session-r
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
 import { cn } from '@renderer/utils/utils';
-import { SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
 import { depthIndent } from './sidebar-store';
 
 interface SidebarSessionItemProps {

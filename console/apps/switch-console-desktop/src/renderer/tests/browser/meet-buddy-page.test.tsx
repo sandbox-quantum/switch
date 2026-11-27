@@ -43,7 +43,7 @@ vi.mock('@renderer/features/managed-agents/use-managed-agents', () => ({
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { statusFor: () => ({ user: { name: 'Max Tam', email: null } }) },
 }));
-vi.mock('@renderer/features/switch-buddy/meet-buddy-intro', () => ({
+vi.mock('@switch-console/chat-ui/components/meet-buddy-intro', () => ({
   MeetBuddyIntro: ({ after }: { after: React.ReactNode }) => <div>{after}</div>,
 }));
 vi.mock('@renderer/lib/components/agent-icon', () => ({

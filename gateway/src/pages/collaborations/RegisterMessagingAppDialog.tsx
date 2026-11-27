@@ -1,207 +1,275 @@
+import "@switch-console/chat-ui/theme.css";
+import appLevelTokensShot from "@switch-console/chat-ui/assets/slack-setup/app-level-tokens.png";
+import installAppShot from "@switch-console/chat-ui/assets/slack-setup/install-app.png";
 import {
-  Alert,
-  Button,
-  Checkbox,
-  CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-  FormControlLabel,
-  MenuItem,
-  Stack,
-  TextField,
-  Typography,
-} from "@mui/material";
-import { useCallback, useMemo, useState } from "react";
-import { type BridgeDetail, createBridge } from "../../data/api";
-import { useBridgeTypes } from "../../data/hooks";
+  type ConnectedMessagingApp,
+  ConnectMessagingAppDialog,
+  type ConnectMessagingAppHost,
+  type MessagingAppCreated,
+  type MessagingAppWords,
+  type NewMessagingApp,
+  WebhookAddressStep,
+} from "@switch-console/chat-ui/components/connect-messaging-app";
+import { SlackOwnAppGuide, type SlackSetupShot } from "@switch-console/chat-ui/components/slack-own-app-guide";
+import { bridgeConfigFields, privateAddress } from "@switch-console/chat-ui/model/connect-messaging-app";
+import { Button } from "@switch-console/chat-ui/primitives/button";
+import { Dialog, DialogContent } from "@switch-console/chat-ui/primitives/dialog";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { type ReactNode, useState } from "react";
+import { useAuth } from "../../data/AuthContext";
 import {
-  extractDefaults,
-  isProvided,
-  renderOptionFields,
-} from "../agents/optionFields";
+  ApiError,
+  beginAppInstall,
+  beginChatClaim,
+  checkSlackTokens,
+  createBridge,
+  fetchBridges,
+  fetchBridgeTypes,
+  fetchInstallablePlatforms,
+  fetchSlackOwnAppSetup,
+} from "../../data/api";
+import { platformLabel } from "../../theme/format";
+import { useWebBridgeIcons } from "../chats/WebChatHost";
+
+const DOCS_URL = "https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps";
+
+const WORDS: MessagingAppWords = {
+  thisServer: "Switch",
+  thisSwitchServers: "Switch’s",
+  yourServers: "Switch’s",
+  currentDefault: "the current default",
+  onTheServer: "in Switch’s configuration",
+  connection: "messaging app",
+  appName: "Switch",
+};
+
+const SHOTS: Record<SlackSetupShot, string> = {
+  "install-app": installAppShot,
+  "app-level-tokens": appLevelTokensShot,
+};
+
+const messagingAppsQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
 interface Props {
   open: boolean;
+  /** The messaging app to open on, as its bridge type; "" to let the person pick. */
+  initialType: string;
   onClose: () => void;
-  onSuccess: (bridge: BridgeDetail) => void;
+  onSuccess: (app: ConnectedMessagingApp) => void;
 }
 
-function humanize(key: string): string {
-  return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+/** The server's sentence where it wrote one for a person, else the fallback with what went wrong. */
+function describeError(error: unknown, fallback: string): string {
+  const raw = (error instanceof Error ? error.message : String(error)).trim();
+  if (error instanceof ApiError && /^[A-Z].{10,}[.!?]$/.test(raw)) return raw;
+  return raw ? `${fallback} (${raw})` : fallback;
 }
 
-export default function RegisterMessagingAppDialog({
-  open,
-  onClose,
-  onSuccess,
-}: Props) {
-  const { data: bridgeTypes, error: typesError } = useBridgeTypes();
-  const [selectedType, setSelectedType] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  // Values are typed by the schema, not all strings: a boolean field must post
-  // a real boolean, since the backend rejects "" as one.
-  const [config, setConfig] = useState<Record<string, unknown>>({});
-  const [channelCreationEnabled, setChannelCreationEnabled] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function openExternal(url: string): Promise<boolean> {
+  window.open(url, "_blank", "noopener,noreferrer");
+  return Promise.resolve(true);
+}
 
-  const selectedTypeInfo = useMemo(
-    () => bridgeTypes?.find((t) => t.key === selectedType),
-    [bridgeTypes, selectedType],
-  );
-  const configSchema = selectedTypeInfo?.config_schema;
-  // Unknown until the type list has loaded; assume supported so the checkbox
-  // isn't forced off while that request is in flight.
-  const channelCreationSupported = selectedTypeInfo?.channel_creation_supported ?? true;
-
-  const handleTypeChange = useCallback(
-    (key: string) => {
-      // Switching type clears any fields entered for the previous one, then
-      // seeds the new type's defaults — a field left untouched should post what
-      // the schema says it defaults to, not an empty value.
-      setSelectedType(key);
-      const schema = bridgeTypes?.find((t) => t.key === key)?.config_schema;
-      setConfig(extractDefaults(schema as Record<string, unknown> | undefined));
-      setChannelCreationEnabled(true);
-      setError(null);
+/** A tab opened at the click, before anything is awaited: a browser blocks one opened later. Without one, the page takes this tab. */
+function openWhenReady() {
+  const tab = window.open("", "_blank");
+  return {
+    open: (url: string) => {
+      if (tab === null) window.location.href = url;
+      else tab.location.href = url;
+      return Promise.resolve(true);
     },
-    [bridgeTypes],
-  );
+    cancel: () => tab?.close(),
+  };
+}
 
-  const reset = useCallback(() => {
-    setSelectedType("");
-    setDisplayName("");
-    setConfig({});
-    setChannelCreationEnabled(true);
-    setError(null);
-  }, []);
+async function createApp(app: NewMessagingApp): Promise<MessagingAppCreated> {
+  try {
+    const bridge = await createBridge(
+      app.bridgeType,
+      app.displayName,
+      app.connectionConfig,
+      app.channelCreationEnabled,
+      app.setAsDefault,
+    );
+    return {
+      kind: "created",
+      bridge: {
+        id: bridge.bridge_id,
+        displayName: bridge.display_name,
+        receivesWebhooks: bridge.receives_webhooks,
+        webhookUrl: bridge.webhook_url,
+      },
+    };
+  } catch (error) {
+    if (!(error instanceof ApiError)) throw error;
+    if (error.status === 401)
+      return { kind: "refused", message: "Your session expired. Sign in again, then retry." };
+    if (error.status === 403)
+      return { kind: "refused", message: "Connecting a messaging app requires an admin of this workspace." };
+    // Switch checked the details against the platform's own config, so its wording says what is wrong.
+    if (error.status === 400 || error.status === 422)
+      return { kind: "refused", message: `Switch rejected these details: ${error.message}` };
+    throw error;
+  }
+}
 
-  const handleClose = useCallback(() => {
-    if (submitting) return;
-    reset();
-    onClose();
-  }, [submitting, reset, onClose]);
+async function messagingAppTypes() {
+  return ((await fetchBridgeTypes()) ?? []).map((type) => ({
+    key: type.key,
+    fields: bridgeConfigFields(type.config_schema),
+    channelCreationSupported: type.channel_creation_supported,
+    directorySearchSupported: type.directory_search_supported ?? true,
+    docsSlug: type.docs_slug ?? null,
+  }));
+}
 
-  const requiredFields = configSchema?.required ?? [];
-  const canSubmit =
-    !!selectedType &&
-    displayName.trim().length > 0 &&
-    requiredFields.every((f) => isProvided(config[f]));
+function WebConfirmButton(props: { onClick: () => void; disabled: boolean; children: ReactNode }) {
+  return <Button {...props} />;
+}
 
-  const handleSubmit = useCallback(async () => {
-    if (!canSubmit) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      const bridge = await createBridge(
-        selectedType,
-        displayName.trim(),
-        config,
-        channelCreationSupported && channelCreationEnabled,
-      );
-      onSuccess(bridge);
-      reset();
-      onClose();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Registration failed.");
-    } finally {
-      setSubmitting(false);
-    }
-  }, [
-    canSubmit,
-    selectedType,
-    displayName,
-    config,
-    channelCreationSupported,
-    channelCreationEnabled,
-    onSuccess,
-    reset,
-    onClose,
-  ]);
-
+/**
+ * Console's Connect a messaging app dialog, on the web: Switch's own apps in
+ * one click first, then your own app, with Slack's setup walked through and
+ * its tokens checked as they are pasted. A click outside leaves it open, as
+ * in Console; Escape closes it unless a connect is under way.
+ */
+export default function RegisterMessagingAppDialog({ open, initialType, onClose, onSuccess }: Props) {
+  const [guarded, setGuarded] = useState(false);
   return (
-    <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Add messaging app</DialogTitle>
+    <Dialog
+      open={open}
+      onOpenChange={(next, details) => {
+        if (next || details.reason === "outside-press" || (guarded && details.reason === "escape-key")) return;
+        onClose();
+      }}
+    >
       <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
-          {error && <Alert severity="error">{error}</Alert>}
-          {typesError && (
-            <Alert severity="error">Couldn't load the messaging platforms Switch connects to: {typesError}</Alert>
-          )}
-
-          <TextField
-            select
-            label="Type"
-            value={selectedType}
-            onChange={(e) => handleTypeChange(e.target.value)}
-            fullWidth
-            required
-            helperText="The messaging platform to bridge."
-          >
-            {(bridgeTypes ?? []).map((t) => (
-              <MenuItem
-                key={t.key}
-                value={t.key}
-                sx={{ textTransform: "capitalize" }}
-              >
-                {t.key}
-              </MenuItem>
-            ))}
-          </TextField>
-
-          {selectedType && (
-            <>
-              <TextField
-                label="Display name"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                fullWidth
-                required
-              />
-              <Stack spacing={0.5}>
-                <FormControlLabel
-                  control={
-                    <Checkbox
-                      checked={channelCreationSupported && channelCreationEnabled}
-                      disabled={!channelCreationSupported}
-                      onChange={(e) => setChannelCreationEnabled(e.target.checked)}
-                    />
-                  }
-                  label="Allow creating channels from Switch"
-                />
-                {!channelCreationSupported && (
-                  <Typography variant="caption" color="text.secondary">
-                    {humanize(selectedType)} has no way to create channels from
-                    Switch, so this messaging app can only be used with existing
-                    channels.
-                  </Typography>
-                )}
-              </Stack>
-              {renderOptionFields(
-                configSchema as Record<string, unknown> | undefined,
-                config,
-                setConfig,
-                requiredFields,
-              )}
-            </>
-          )}
-        </Stack>
+        {open && (
+          <QueryClientProvider client={messagingAppsQueryClient}>
+            <ConnectApp
+              platform={initialType || undefined}
+              onConnected={(app) => {
+                onSuccess(app);
+                onClose();
+              }}
+              onClose={onClose}
+              setGuarded={setGuarded}
+            />
+          </QueryClientProvider>
+        )}
       </DialogContent>
-      <DialogActions>
-        <Button onClick={handleClose} disabled={submitting}>
-          Cancel
-        </Button>
-        <Button
-          variant="contained"
-          onClick={handleSubmit}
-          disabled={!canSubmit || submitting}
-          startIcon={submitting ? <CircularProgress size={16} /> : undefined}
-        >
-          Add
-        </Button>
-      </DialogActions>
     </Dialog>
   );
+}
+
+function ConnectApp({
+  platform,
+  onConnected,
+  onClose,
+  setGuarded,
+}: {
+  platform: string | undefined;
+  onConnected: (app: ConnectedMessagingApp) => void;
+  onClose: () => void;
+  setGuarded: (guarded: boolean) => void;
+}) {
+  const { session, canAdminTenant } = useAuth();
+  const tenantId = session?.tenant?.id ?? "";
+  const types = useQuery({ queryKey: ["messaging-app-types", tenantId], queryFn: messagingAppTypes });
+  const offers = useQuery({
+    queryKey: ["messaging-app-offers", tenantId],
+    queryFn: async () => {
+      const found = await fetchInstallablePlatforms();
+      return {
+        installable: [...found],
+        claimable: (found.claimable ?? []).map((each) => ({
+          platform: each.platform,
+          connected: each.connected,
+          canAddChat: each.can_add_chat,
+        })),
+      };
+    },
+    enabled: canAdminTenant,
+  });
+  const bridgeIcons = useWebBridgeIcons();
+  const docsUrl = (key: string) => {
+    const slug = types.data?.find((type) => type.key === key)?.docsSlug;
+    return slug ? `${DOCS_URL}/${slug}` : DOCS_URL;
+  };
+
+  const host: ConnectMessagingAppHost = {
+    scope: tenantId,
+    words: WORDS,
+    serverName: session?.tenant?.name ?? null,
+    hasWorkspace: session?.tenant != null,
+    isAdmin: canAdminTenant,
+    blocker: canAdminTenant
+      ? null
+      : "Connecting a messaging app requires an admin of this workspace. You are a member without admin rights, so Switch would refuse it.",
+    types,
+    offers,
+    // Reached at a private address, Switch is most likely not reachable from the internet either.
+    teamsUnreachable: privateAddress(window.location.origin),
+    platformLabel,
+    docsUrl,
+    icons: bridgeIcons,
+    openExternal,
+    openWhenReady,
+    describeError,
+    listBridges: async () =>
+      ((await fetchBridges()) ?? []).map((bridge) => ({
+        id: bridge.bridge_id,
+        type: bridge.bridge_type,
+        displayName: bridge.display_name,
+      })),
+    beginInstall: beginAppInstall,
+    // Install reports are Switch Console's usage data; the dashboard sends none.
+    appInstalled: () => {},
+    beginChatClaim: async (key) => {
+      const claim = await beginChatClaim(key);
+      return { url: claim.url, code: claim.code, botHandle: claim.bot_handle };
+    },
+    createBridge: createApp,
+    setCloseGuard: setGuarded,
+    renderOwnAppGuide: (props) => (
+      <SlackOwnAppGuide
+        {...props}
+        host={{
+          scope: tenantId,
+          thisServer: WORDS.thisServer,
+          setup: async () => {
+            const setup = await fetchSlackOwnAppSetup();
+            return {
+              createUrl: setup.create_url,
+              manifestJson: setup.manifest ? JSON.stringify(setup.manifest, null, 2) : null,
+            };
+          },
+          checkTokens: async ({ botToken, appToken }) => {
+            const checked = await checkSlackTokens(botToken, appToken);
+            return {
+              workspaceId: checked.workspace_id,
+              workspaceName: checked.workspace_name,
+              botName: checked.bot_name,
+            };
+          },
+          docsUrl: docsUrl("slack"),
+          openExternal,
+          describeError,
+          // The picture opens full size in a tab, where Console expands it in place.
+          renderShot: (shot, alt) => (
+            <a href={SHOTS[shot]} target="_blank" rel="noopener noreferrer" className="block">
+              <img src={SHOTS[shot]} alt={alt} className="w-full rounded-lg" />
+            </a>
+          ),
+        }}
+      />
+    ),
+    renderWebhookStep: ({ platform: key, webhookUrl }) => (
+      <WebhookAddressStep label={platformLabel(key)} webhookUrl={webhookUrl} words={WORDS} />
+    ),
+    ConfirmButton: WebConfirmButton,
+  };
+
+  return <ConnectMessagingAppDialog host={host} platform={platform} onConnected={onConnected} onClose={onClose} />;
 }

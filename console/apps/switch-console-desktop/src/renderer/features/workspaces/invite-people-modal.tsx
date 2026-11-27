@@ -1,3 +1,27 @@
+import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  DialogContentArea,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@switch-console/chat-ui/primitives/dialog';
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@switch-console/chat-ui/primitives/select';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { Check, Copy, TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -9,26 +33,7 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useModalContext, type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { AbsoluteTime } from '@renderer/lib/ui/absolute-time';
-import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import {
-  DialogContentArea,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Field, FieldDescription, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/lib/ui/select';
-import { Spinner } from '@renderer/lib/ui/spinner';
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
 import {
   invitationStatus,

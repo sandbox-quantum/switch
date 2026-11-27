@@ -9,7 +9,7 @@ import {
 } from "@mui/material";
 import ArrowBack from "@mui/icons-material/ArrowBack";
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import RoomCreateFormBody from "./RoomCreateFormBody";
 import RoomCreateYamlBody from "./RoomCreateYamlBody";
 
@@ -17,6 +17,8 @@ type CreateMode = "form" | "yaml";
 
 export default function CreateRoomPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const preselectedAgentId = searchParams.get("agent");
   const [mode, setMode] = useState<CreateMode>("form");
 
   return (
@@ -42,7 +44,11 @@ export default function CreateRoomPage() {
       </Stack>
 
       <Paper variant="outlined" sx={{ borderRadius: 2, p: 3 }}>
-        {mode === "form" ? <RoomCreateFormBody /> : <RoomCreateYamlBody />}
+        {mode === "form" ? (
+          <RoomCreateFormBody preselectedAgentId={preselectedAgentId} />
+        ) : (
+          <RoomCreateYamlBody />
+        )}
       </Paper>
     </Box>
   );

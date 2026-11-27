@@ -11,7 +11,7 @@ export default defineConfig({
     // app otherwise resolves an externalized `glob` against a stale transitive
     // copy in the asar (v7, missing fs.realpath) instead of the declared v13.
     // Bundling glob inlines the correct version, matching `dev`.
-    plugins: [externalizeDepsPlugin({ exclude: ['glob'] })],
+    plugins: [externalizeDepsPlugin({ exclude: ['glob', '@switch-console/chat-ui'] })],
     resolve: {
       alias: {
         '@': resolve('src'),
