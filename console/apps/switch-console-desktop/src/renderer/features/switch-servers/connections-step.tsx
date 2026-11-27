@@ -1,19 +1,20 @@
-import { useCallback, useEffect, useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { useCallback, useEffect, useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
 import { SearchInput } from '@renderer/lib/ui/search-input';
-import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { ConnectionIcon } from './connection-icon';
 import { filterConnections } from './connections-filter';
+import { GitHubTokenStep } from './github-token-step';
 import { ManagedGitHubStep } from './managed-github-step';
 import { serverServiceCalls } from './service-calls';
 import { ServiceConnectStep } from './service-connect-step';
@@ -163,11 +164,26 @@ export function ConnectionsStep({
   const catalog = useConnectionCatalog(serverId);
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState<string | null>(null);
+  const [pastingToken, setPastingToken] = useState(false);
   const back = () => {
     setOpen(null);
+    setPastingToken(false);
     void catalog.reload();
   };
 
+  const opened = catalog.connections?.find((connection) => connection.slug === open);
+  const githubToken =
+    open === 'github' ? (opened?.paste.find((way) => way.method === 'token') ?? null) : null;
+  if (opened && githubToken !== null && pastingToken)
+    return (
+      <GitHubTokenStep
+        calls={serverServiceCalls(serverId)}
+        connection={opened}
+        method={githubToken}
+        onBack={() => setPastingToken(false)}
+        onConnected={() => setPastingToken(false)}
+      />
+    );
   if (open === 'github')
     return (
       <ManagedGitHubStep
@@ -175,9 +191,10 @@ export function ConnectionsStep({
         onBack={back}
         onSkip={onSkip}
         onContinue={onContinue}
+        onUseToken={githubToken === null ? undefined : () => setPastingToken(true)}
+        appUnavailable={opened?.sign_in_unavailable_reason ?? null}
       />
     );
-  const opened = catalog.connections?.find((connection) => connection.slug === open);
   if (opened?.key)
     return (
       <ServiceKeyStep

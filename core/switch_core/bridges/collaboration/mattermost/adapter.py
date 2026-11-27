@@ -10,7 +10,14 @@ import threading
 import uuid
 import weakref
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Coroutine,
+    Mapping,
+    Sequence,
+)
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -108,7 +115,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
-from switch_core.outbound import guarded_async_client
+from switch_core.outbound import OutboundPolicy, guarded_async_client
 from switch_core.sessions.contract import TURN_ENDED
 from switch_core.ui_spec import (
     ActionsProps,
@@ -157,6 +164,14 @@ _CONNECT_WAIT_SECONDS = 15.0
 # becomes a room when someone actually writes in it.
 _JOINABLE_MM_CHANNEL_TYPES = frozenset({"O", "P"})
 
+# The channels Mattermost puts every account it adds to a team in, agents' bots
+# included, by the names it gives them. Being in one is not anyone's choice, so
+# it bridges nothing until a room is connected to the channel, whether or not
+# the bot is still in it. Off-Topic can be left; Town Square cannot, by anyone
+# but a guest, so every bot stays in it.
+_TOWN_SQUARE = "town-square"
+_TEAM_DEFAULT_CHANNELS = frozenset({_TOWN_SQUARE, "off-topic"})
+
 # Emoji marking the message an agent is currently working on.
 _REACTION: dict[ActivityMark, str] = {
     "working": "eyes",
@@ -191,6 +206,39 @@ _MATTERMOST_REFUSALS = (
     MethodNotAllowed,
     ContentTooLarge,
 )
+
+# How many posts a read-back asks Mattermost for at a time, newest first.
+_READ_BACK_PAGE = 200
+
+# Failed connections in a row after which a bridge's read-back stops waiting
+# for that bot's socket (`listening`): a bot that cannot connect would
+# otherwise hold it up, and every live post with it.
+_GIVE_UP_LISTENING_AFTER = 3
+
+
+def _posts_since(driver: Any, channel_id: str, since_ms: int) -> list[dict[str, Any]]:
+    """The posts made in the channel after `since_ms` and not deleted, read a
+    page at a time from the newest back. Paged rather than asked with
+    `since`, which caps at a thousand and counts edits too."""
+    found: list[dict[str, Any]] = []
+    page = 0
+    while True:
+        answer = dict(
+            driver.posts.get_posts_for_channel(
+                channel_id, params={"page": page, "per_page": _READ_BACK_PAGE}
+            )
+        )
+        posts = answer.get("posts") or {}
+        newest_first = [posts[post_id] for post_id in answer.get("order") or []]
+        for post in newest_first:
+            if int(post.get("create_at") or 0) <= since_ms:
+                return found
+            if not post.get("delete_at"):
+                found.append(post)
+        if len(newest_first) < _READ_BACK_PAGE:
+            return found
+        page += 1
+
 
 # How far an attachment has got, in the order Mattermost draws its parts. A
 # part that would draw above one already there goes in a new attachment.
@@ -460,9 +508,16 @@ class MattermostAdapter(PlatformAdapter):
     # admin. Mattermost sends every event to every open socket, so a socket
     # in each process would hand each process every post.
     keeps_quiet_unless_listening: ClassVar[bool] = True
+    # Posts reach the bridge over its agents' bots' sockets.
+    listens_through_agent_identities: ClassVar[bool] = True
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         """Sign in as the admin user and find the team, as `start` will.
 
         `url` has been through the outbound policy before this is called, so
@@ -682,6 +737,12 @@ class MattermostAdapter(PlatformAdapter):
         self._seen_post_ids: OrderedDict[str, None] = OrderedDict()
         self._seen_post_ids_max = 1000
         self._seen_lock = threading.Lock()
+        # The bots whose socket has said hello since the adapter started, and
+        # each bot's failed connections in a row, read by `listening`;
+        # written from each socket's own thread.
+        self._listening_bots: set[str] = set()
+        self._failed_connections: dict[str, int] = {}
+        self._listening_lock = threading.Lock()
 
         # (agent_name, post_id) currently carrying the working reaction. A
         # reaction belongs to the bot that added it, so two agents on the same
@@ -2395,6 +2456,119 @@ class MattermostAdapter(PlatformAdapter):
             props.pop(_ATTACHMENTS_PROP, None)
         return props
 
+    def listening(self) -> bool:
+        """Whether every agent's bot has opened its socket, the sockets being
+        where Mattermost delivers posts (`SupportsReadBack`). Opened once is
+        enough: a socket that drops later reconnects on its own. A bot that
+        failed to connect `_GIVE_UP_LISTENING_AFTER` times in a row is not
+        waited for."""
+        bots = {str(bot.get("user_id") or "") for bot in self._agent_bots.values()}
+        with self._listening_lock:
+            return bool(bots) and all(
+                bot in self._listening_bots
+                or self._failed_connections.get(bot, 0) >= _GIVE_UP_LISTENING_AFTER
+                for bot in bots
+            )
+
+    def _connection_failed(self, bot_id: str, agent_name: str) -> None:
+        with self._listening_lock:
+            failed = self._failed_connections.get(bot_id, 0) + 1
+            self._failed_connections[bot_id] = failed
+        if failed == _GIVE_UP_LISTENING_AFTER:
+            logger.warning(
+                "Mattermost bot %s failed to connect %d times in a row; a "
+                "read-back no longer waits for it, and posts only it would "
+                "hear are missed until it connects",
+                agent_name,
+                failed,
+            )
+
+    async def read_back(self, since: datetime, channel_ids: Collection[str]) -> int:
+        """Hand on, in order, what people posted in these channels after
+        `since`, as the bots' sockets would have (`SupportsReadBack`):
+        Mattermost sends nothing again to a socket that was not connected. A
+        channel with no post since is not read for posts.
+
+        What was handed on already is handed on again rather than skipped:
+        it may be a live post waiting for this read-back, and a reply read
+        back before it would lose its thread. A post or a command handed on
+        twice is written once."""
+        driver = self._admin_driver
+        if driver is None:
+            raise RuntimeError("Cannot read back Mattermost: adapter not started")
+        loop = asyncio.get_running_loop()
+        since_ms = int(since.timestamp() * 1000)
+
+        def _read(channel_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+            channel = dict(driver.channels.get_channel(channel_id))
+            if int(channel.get("last_post_at") or 0) <= since_ms:
+                return channel, []
+            return channel, _posts_since(driver, channel_id, since_ms)
+
+        people: dict[str, bool] = {}
+        handed = 0
+        for channel_id in channel_ids:
+            try:
+                channel, said = await loop.run_in_executor(None, _read, channel_id)
+            except Exception as e:
+                logger.warning(
+                    "Could not read back Mattermost channel %s: %s", channel_id, e
+                )
+                continue
+            posts = sorted(
+                (post for post in said if not post.get("type")),
+                key=lambda post: int(post.get("create_at") or 0),
+            )
+            for post in posts:
+                try:
+                    if not await self._said_by_a_person(post, people, loop):
+                        continue
+                    self._first_sighting(post.get("id", ""))
+                    handing_on = await self._hand_on(
+                        post,
+                        mm_channel_type=str(channel.get("type") or ""),
+                        channel_handle=str(channel.get("name") or ""),
+                        channel_name=str(channel.get("display_name") or "") or None,
+                        agent_name=None,
+                    )
+                    if handing_on is not None:
+                        await handing_on
+                        handed += 1
+                except Exception:
+                    logger.exception(
+                        "Could not hand on Mattermost post %s read back from "
+                        "channel %s",
+                        post.get("id"),
+                        channel_id,
+                    )
+        return handed
+
+    async def _said_by_a_person(
+        self,
+        post: dict[str, Any],
+        people: dict[str, bool],
+        loop: asyncio.AbstractEventLoop,
+    ) -> bool:
+        """Whether a post read back was a person's, and not a bot's or an
+        integration's: the bridge's own bots may not all be known here yet,
+        and one of their posts handed on would come back as a person's.
+        `people` keeps the answer for each sender."""
+        props = post.get("props") or {}
+        if str(props.get("from_webhook", "")).lower() == "true" or (
+            str(props.get("from_bot", "")).lower() == "true"
+        ):
+            return False
+        user_id = str(post.get("user_id") or "")
+        if user_id in self._bridge_bot_ids or user_id == self._admin_user_id:
+            return False
+        if user_id not in people:
+            assert self._admin_driver is not None
+            user = await loop.run_in_executor(
+                None, self._admin_driver.users.get_user, user_id
+            )
+            people[user_id] = not user.get("is_bot", False)
+        return people[user_id]
+
     async def find_request_card(
         self,
         channel_id: str,
@@ -2935,10 +3109,7 @@ class MattermostAdapter(PlatformAdapter):
         )
         return self._to_channel_type(channel.get("type", ""))
 
-    async def channel_deeplink(self, external_channel_id: str) -> str | None:
-        """`mattermost://<host>/<team>/channels/<name>` — opens the channel in
-        the Mattermost desktop app. Mattermost channel URLs key off the channel
-        *name* (slug), not its id, so resolve the name (cached) from the id."""
+    async def _resolve_channel_name(self, external_channel_id: str) -> str | None:
         if not external_channel_id or not self._admin_driver or not self._main_loop:
             return None
         name = self._channel_name_cache.get(external_channel_id)
@@ -2957,11 +3128,31 @@ class MattermostAdapter(PlatformAdapter):
             if not name:
                 return None
             self._channel_name_cache[external_channel_id] = name
+        return name
+
+    async def channel_deeplink(self, external_channel_id: str) -> str | None:
+        """`mattermost://<host>/<team>/channels/<name>` — opens the channel in
+        the Mattermost desktop app. Mattermost channel URLs key off the channel
+        *name* (slug), not its id, so resolve the name (cached) from the id."""
+        name = await self._resolve_channel_name(external_channel_id)
+        if not name:
+            return None
         # Prefer the public URL so the link resolves in the user's client; the
         # internal `url` may be a private/tailnet address they can't reach.
         base_url = self._config.public_url or self._config.url
         host = re.sub(r"^https?://", "", base_url).rstrip("/")
         return f"mattermost://{host}/{self._config.team_name}/channels/{name}"
+
+    async def channel_web_url(self, external_channel_id: str) -> str | None:
+        """`https://<host>/<team>/channels/<name>` — web-safe link to the
+        channel when the configured URL uses HTTPS."""
+        name = await self._resolve_channel_name(external_channel_id)
+        if not name:
+            return None
+        base_url = (self._config.public_url or self._config.url).rstrip("/")
+        if not base_url.startswith("https://"):
+            return None
+        return f"{base_url}/{self._config.team_name}/channels/{name}"
 
     async def home_deeplink(self) -> str | None:
         """`mattermost://<host>/<team>` — the team's home in the desktop app.
@@ -3390,6 +3581,7 @@ class MattermostAdapter(PlatformAdapter):
                 except Exception as e:
                     reason = str(e)
                     backoff_next = min(backoff * 2, 30)
+                    self._connection_failed(bot_id, name)
                 else:
                     # It returns only once an established connection closed.
                     reason = "connection closed"
@@ -3431,7 +3623,8 @@ class MattermostAdapter(PlatformAdapter):
 
         Also runs for every known agent on startup, so a channel joined while the
         bridge was down is picked up rather than waiting for the next message in
-        it.
+        it, and a bot that could not be taken out of Off-Topic last time is
+        taken out now.
         """
         loop = self._main_loop
         if self._on_agent_joined is None or self._admin_driver is None or loop is None:
@@ -3454,6 +3647,9 @@ class MattermostAdapter(PlatformAdapter):
             mm_type = str(channel.get("type", ""))
             if not channel_id or mm_type not in _JOINABLE_MM_CHANNEL_TYPES:
                 continue
+            if self._unconnected_team_default(channel_id, str(channel.get("name", ""))):
+                await self._leave_team_default(channel, agent_name, bot_id)
+                continue
             try:
                 await self._on_agent_joined(
                     InboundAgentJoin(
@@ -3471,6 +3667,66 @@ class MattermostAdapter(PlatformAdapter):
                     channel_id,
                     agent_name,
                 )
+
+    def _unconnected_team_default(self, channel_id: str, channel_name: str) -> bool:
+        """Whether this is one of the team's default channels with no room
+        connected to it, which a bot's membership must not bridge."""
+        return (
+            channel_name in _TEAM_DEFAULT_CHANNELS
+            and channel_id not in self._bridged_channel_ids()
+        )
+
+    async def _leave_team_default(
+        self, channel: dict[str, Any], agent_name: str, bot_id: str
+    ) -> None:
+        """Take an agent's bot out of a default channel nobody connected.
+
+        Mattermost put it there when it was added to the team. Leaving keeps
+        the channel's chatter off the bot's socket; whether the channel is
+        bridged does not depend on it, since a default channel with no room
+        bridges nothing whoever is in it (`_unconnected_team_default`). So a
+        leave that fails is tried again the next time the bridge starts, and
+        meanwhile nothing is bridged. Town Square cannot be left, so the bot
+        stays in it. Either is connected by a room made for it in Switch, or a
+        `!` command such as `!invite-agent` run in it.
+        """
+        channel_id = str(channel.get("id", ""))
+        label = str(channel.get("display_name", "")) or channel_id
+        if channel.get("name") == _TOWN_SQUARE:
+            logger.debug(
+                "Not bridging %s for agent %s: Mattermost keeps every team member "
+                "in it, and no room is connected to it",
+                label,
+                agent_name,
+            )
+            return
+        loop = self._main_loop
+        if loop is None or self._admin_driver is None:
+            raise RuntimeError("Cannot leave a channel: adapter not started")
+        try:
+            await loop.run_in_executor(
+                None,
+                self._admin_driver.channels.remove_channel_member,
+                channel_id,
+                bot_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not take agent %s's bot out of %s, which Mattermost put it "
+                "in when it joined the team (%s). The channel is not bridged, and "
+                "leaving it is tried again when the bridge next starts.",
+                agent_name,
+                label,
+                e,
+            )
+            return
+        logger.info(
+            "Took agent %s's bot out of %s, which Mattermost put it in when it "
+            "joined the team and no room is connected to. Run a ! command such "
+            "as !invite-agent in the channel to bridge it.",
+            agent_name,
+            label,
+        )
 
     async def _ensure_admin_bot(self) -> None:
         """Provision the dedicated Switch Admin bot used to post admin/system
@@ -3775,6 +4031,14 @@ class MattermostAdapter(PlatformAdapter):
 
         event_type = event.get("event")
 
+        if event_type == "hello":
+            # The socket is open: Mattermost greets each one as it does.
+            bot_id = str((event.get("broadcast") or {}).get("user_id") or "")
+            with self._listening_lock:
+                self._listening_bots.add(bot_id)
+                self._failed_connections.pop(bot_id, None)
+            return
+
         if event_type == "user_added":
             await self._handle_user_added(event)
             return
@@ -3815,20 +4079,52 @@ class MattermostAdapter(PlatformAdapter):
         if user_id in self._bridge_bot_ids or user_id == self._admin_user_id:
             return
 
-        post_id = post.get("id", "")
-        if not self._first_sighting(post_id):
+        if not self._first_sighting(post.get("id", "")):
             return
 
+        loop = self._main_loop
+        if loop is None:
+            raise RuntimeError("Cannot handle posted event: adapter not started")
+        handing_on = await self._hand_on(
+            post,
+            mm_channel_type=data.get("channel_type", ""),
+            channel_handle=str(data.get("channel_name", "")),
+            channel_name=str(data.get("channel_display_name", "")) or None,
+            agent_name=agent_name,
+        )
+        if handing_on is not None:
+            self._dispatch(handing_on, loop)
+
+    async def _hand_on(
+        self,
+        post: dict[str, Any],
+        *,
+        mm_channel_type: str,
+        channel_handle: str,
+        channel_name: str | None,
+        agent_name: str | None,
+    ) -> Coroutine[Any, Any, None] | None:
+        """What handing a person's post on to the bridge is, for the caller
+        to run where it runs the bridge's work: a command, or a message with
+        its files. Its sender is looked up on the loop this runs on. None
+        when there is no handler for it."""
+        if self._admin_driver is None:
+            raise RuntimeError("Cannot handle posted event: adapter not started")
+        user_id = post.get("user_id", "")
+        post_id = post.get("id", "")
         channel_id = post.get("channel_id", "")
         message = post.get("message", "")
+        if not message.strip().startswith("!") and self._unconnected_team_default(
+            channel_id, channel_handle
+        ):
+            # A bot is in the team's default channels whether or not anyone
+            # wanted it there: always Town Square, and Off-Topic until it is
+            # taken out, which can fail. Chatter there makes no room. A `!`
+            # command is someone talking to Switch, and connects it the way it
+            # would any channel.
+            return None
         # Mattermost sets root_id to the thread root for replies, "" otherwise.
         root_id = post.get("root_id", "") or None
-        mm_channel_type = data.get("channel_type", "")
-        channel_name = str(data.get("channel_display_name", "")) or None
-
-        loop = self._main_loop
-        if loop is None or self._admin_driver is None:
-            raise RuntimeError("Cannot handle posted event: adapter not started")
 
         ws_loop = asyncio.get_event_loop()
         user_is_bot = False
@@ -3877,7 +4173,7 @@ class MattermostAdapter(PlatformAdapter):
             parts = stripped.split(None, 1)
             command = parts[0].lstrip("!")
             args = parts[1].strip() if len(parts) > 1 else ""
-            coro = self._on_command(
+            return self._on_command(  # type: ignore[return-value]
                 InboundCommand(
                     channel_id=channel_id,
                     channel_type=channel_type,
@@ -3891,29 +4187,27 @@ class MattermostAdapter(PlatformAdapter):
                     channel_name=channel_name,
                 )
             )
-            self._dispatch(coro, loop)  # type: ignore[arg-type]
-            return
 
-        if self._on_message:
-            attachments, attachment_failures = await self._fetch_attachments(
-                post.get("file_ids", []), ws_loop
-            )
-            inbound = InboundMessage(
-                channel_id=channel_id,
-                channel_type=channel_type,
-                sender_id=user_id,
-                sender_name=username,
-                content=message,
-                message_ref=post_id,
-                root_id=root_id,
-                agent_name=agent_name,
-                channel_name=channel_name,
-                attachments=attachments,
-                attachment_failures=attachment_failures,
-                sender_is_app=sender_is_app,
-            )
-            coro = self._on_message(inbound)
-            self._dispatch(coro, loop)  # type: ignore[arg-type]
+        if self._on_message is None:
+            return None
+        attachments, attachment_failures = await self._fetch_attachments(
+            post.get("file_ids", []), ws_loop
+        )
+        inbound = InboundMessage(
+            channel_id=channel_id,
+            channel_type=channel_type,
+            sender_id=user_id,
+            sender_name=username,
+            content=message,
+            message_ref=post_id,
+            root_id=root_id,
+            agent_name=agent_name,
+            channel_name=channel_name,
+            attachments=attachments,
+            attachment_failures=attachment_failures,
+            sender_is_app=sender_is_app,
+        )
+        return self._on_message(inbound)  # type: ignore[return-value]
 
     def _handle_post_takeback(self, event_type: str, event: dict[str, Any]) -> None:
         """A post deleted or edited on Mattermost. Every bot in the channel
@@ -4145,6 +4439,12 @@ class MattermostAdapter(PlatformAdapter):
         if agent_name:
             if not self._on_agent_joined:
                 logger.error("No on agent joined available for bridge")
+                return
+            if self._unconnected_team_default(channel_id, str(channel.get("name", ""))):
+                # Mattermost adds every account added to the team to these, and
+                # another bot overheard it; which add this is cannot be told
+                # from the event. The channel is connected by a room made for
+                # it, or a `!` command run in it.
                 return
             coro = self._on_agent_joined(
                 InboundAgentJoin(

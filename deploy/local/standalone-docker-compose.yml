@@ -20,6 +20,13 @@
 #   SWITCH_IMAGE_NAMESPACE  (default sandbox-quantum)
 #   SWITCH_VERSION          (REQUIRED — no default, on purpose)
 #
+# Published ports bind to loopback unless told otherwise. SWITCH_BIND_ADDR is
+# the interface for Switch's own ports, the API (`switch`, 8000) and the
+# dashboard (`gateway`, 3000): set it to make the server reachable by a team.
+# Postgres stays on loopback whatever it says, since its login here is the
+# schema owner. POSTGRES_BIND_ADDR moves it, for whoever knowingly wants it off
+# this machine.
+#
 # SWITCH_VERSION has no fallback. It used to default to `latest`, so a missing
 # or misspelt env var silently floated the whole stack to whatever had most
 # recently been published — a different switch-core on every `up`, with nothing
@@ -46,9 +53,9 @@ x-switch-contract:
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
     ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:${POSTGRES_HOST_PORT:-5432}:5432"
+      - "${POSTGRES_BIND_ADDR:-127.0.0.1}:${POSTGRES_HOST_PORT:-5432}:5432"
     environment:
       # The container's bootstrapped superuser is the SCHEMA OWNER
       # (DB_OWNER_USER), not the runtime role Switch serves requests as
@@ -71,7 +78,7 @@ services:
       retries: 10
 
   init-db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
     # No profile here on purpose: switch alone needs the runtime role it creates.
     environment:
       PGPASSWORD: ${DB_OWNER_PASSWORD}

@@ -991,3 +991,57 @@ async def test_an_official_template_the_workspace_removed_is_gone_for_agents(too
         await _as(
             tools["agent_id"], delete_template, template_id="official:deploy-watch-room"
         )
+
+
+LONG_PATTERN_TEMPLATE = ROOM_TEMPLATE.replace(
+    "topic: { type: string, description: What the room is about }",
+    "topic: { type: string, pattern: '" + "a" * 600 + "' }",
+)
+
+
+@pytest.mark.asyncio
+async def test_saving_a_template_with_a_pattern_over_the_cap_is_refused(tools):
+    with pytest.raises(AgentRefused, match="at most 500 are allowed") as e:
+        await _as(
+            tools["agent_id"],
+            save_template,
+            name="long",
+            description="",
+            yaml=LONG_PATTERN_TEMPLATE,
+        )
+    assert e.value.reason == "invalid"
+
+
+@pytest.mark.asyncio
+async def test_updating_a_template_to_a_pattern_over_the_cap_is_refused(tools):
+    saved = await _as(
+        tools["agent_id"],
+        save_template,
+        name="standup",
+        description="",
+        yaml=ROOM_TEMPLATE,
+    )
+    with pytest.raises(AgentRefused, match="at most 500 are allowed"):
+        await _as(
+            tools["agent_id"],
+            update_template,
+            template_id=saved["id"],
+            yaml=LONG_PATTERN_TEMPLATE,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_stored_template_with_a_pattern_over_the_cap_still_lists_and_reads(
+    tools,
+):
+    template_id = await _stored(
+        tools,
+        tools["user_id"],
+        "old",
+        LONG_PATTERN_TEMPLATE,
+        read_visibility="public",
+    )
+    ids = {r["id"] for r in await _as(tools["agent_id"], list_templates)}
+    assert template_id in ids
+    described = await _as(tools["agent_id"], get_template, template_id=template_id)
+    assert described["name"] == "old"

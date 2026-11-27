@@ -1,6 +1,6 @@
 {
   "name": "@sandboxaq/switch-agent-runtime",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "private": true,
   "description": "Switch agent protocol client, and the Switch tool surface a session host serves",
   "license": "Apache-2.0",
@@ -35,7 +35,7 @@
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.32.2"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

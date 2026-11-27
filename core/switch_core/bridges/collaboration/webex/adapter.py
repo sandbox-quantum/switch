@@ -31,6 +31,7 @@ from pydantic import Field, field_validator
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
+    MessagePartlySent,
     PlatformAdapter,
     PrivateNoticeRefused,
     RequestCard,
@@ -96,6 +97,7 @@ from switch_core.bridges.collaboration.webex.text import (
     read_message,
     render_mentions,
 )
+from switch_core.outbound import OutboundPolicy
 from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
@@ -317,7 +319,12 @@ class WebexAdapter(PlatformAdapter):
         return None
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         config = WebexConnectionConfig.model_validate(connection_config)
         async with httpx.AsyncClient(timeout=15.0) as http:
             me = await cls._identify(WebexClient(config.bot_token, http))
@@ -846,31 +853,78 @@ class WebexAdapter(PlatformAdapter):
     ) -> str | None:
         """Post `parts` in order; the first one's id is the message's.
 
+        A refusal of the first part is raised, when nothing has been posted. A
+        later part refused ends the run: the parts already posted stand, the
+        space is told the rest is missing, and `MessagePartlySent` is raised.
+        """
+        first: str | None = None
+        parent = thread_root_id
+        for index, part in enumerate(parts):
+            try:
+                sent, parent = await self._post_part(channel_id, part, parent)
+            except WebexApiError as exc:
+                if first is None:
+                    raise
+                logger.warning(
+                    "Only %d of %d parts of a message reached Webex space %s: %s",
+                    index,
+                    len(parts),
+                    channel_id,
+                    exc,
+                )
+                await self._note_truncation(channel_id, parent, index, len(parts))
+                raise MessagePartlySent(
+                    platform="Webex",
+                    first_ref=first,
+                    delivered=index,
+                    total=len(parts),
+                ) from exc
+            first = first or str(sent.get("id") or "") or None
+        return first
+
+    async def _post_part(
+        self, channel_id: str, part: str, parent: str | None
+    ) -> tuple[dict[str, Any], str | None]:
+        """Post one part under `parent`; what Webex answered, and the parent
+        the next part goes under.
+
         Webex threads are one level deep and refuse a reply to a reply with a
         400. A 400 on a reply whose parent is itself a reply is taken as that
         and the reply goes under the parent's root; any other 400 is raised.
         """
-        first: str | None = None
-        parent = thread_root_id
-        for part in parts:
-            body: dict[str, Any] = {"roomId": channel_id, "markdown": part}
-            if parent:
-                body["parentId"] = parent
+        body: dict[str, Any] = {"roomId": channel_id, "markdown": part}
+        if parent:
+            body["parentId"] = parent
+        try:
+            return await self._client.post_message(body), parent
+        except WebexApiError as exc:
+            if not parent or exc.status != 400:
+                raise
+            root = await self._thread_root(parent)
+            if root is None:
+                raise
+            body["parentId"] = root
             try:
-                sent = await self._client.post_message(body)
-            except WebexApiError as exc:
-                if not parent or exc.status != 400:
-                    raise
-                root = await self._thread_root(parent)
-                if root is None:
-                    raise
-                parent = body["parentId"] = root
-                try:
-                    sent = await self._client.post_message(body)
-                except WebexApiError as retry_exc:
-                    raise retry_exc from exc
-            first = first or str(sent.get("id") or "") or None
-        return first
+                return await self._client.post_message(body), root
+            except WebexApiError as retry_exc:
+                raise retry_exc from exc
+
+    async def _note_truncation(
+        self, channel_id: str, parent: str | None, delivered: int, total: int
+    ) -> None:
+        notice = (
+            f"_Only {delivered} of {total} parts of this message could be "
+            "delivered; Webex refused the rest._"
+        )
+        try:
+            await self._post_part(channel_id, notice, parent)
+        except WebexApiError as exc:
+            logger.error(
+                "Could not tell Webex space %s that a message is cut short; "
+                "nothing there says so: %s",
+                channel_id,
+                exc,
+            )
 
     async def _thread_root(self, message_id: str) -> str | None:
         """The root `message_id` is a reply under, or None when it is not a
@@ -952,7 +1006,7 @@ class WebexAdapter(PlatformAdapter):
             # A caption too long for the file's message goes on after it.
             try:
                 await self._post(channel_id, rest, thread_root_id)
-            except WebexApiError as exc:
+            except (WebexApiError, MessagePartlySent) as exc:
                 logger.warning(
                     "Webex took file %s but refused the rest of its caption: %s",
                     ref,

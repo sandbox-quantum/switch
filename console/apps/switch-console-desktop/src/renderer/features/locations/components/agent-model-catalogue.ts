@@ -99,6 +99,10 @@ function variantFieldState(
   // The model itself is already flagged on its own field; not repeated here.
   if (!model) return {};
 
+  if (model.variants === null) {
+    return { note: `This host doesn't say which reasoning variants ${modelValue} accepts.` };
+  }
+
   if (model.variants.length === 0) {
     return {
       disabled: true,

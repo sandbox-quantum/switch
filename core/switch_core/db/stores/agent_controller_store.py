@@ -36,6 +36,7 @@ class ControllerConnection:
     connection_id: str | None
     connection_process_id: str | None
     disconnected_at: datetime | None
+    disconnect_reason: str | None
     open_connection_id: str | None
     open_process_id: str | None
 
@@ -46,6 +47,7 @@ _CONNECTION_COLUMNS = (
     AgentController.connection_id,
     AgentController.connection_process_id,
     AgentController.disconnected_at,
+    AgentController.disconnect_reason,
     AgentController.open_connection_id,
     AgentController.open_process_id,
 )
@@ -64,6 +66,7 @@ def _connection_hash() -> ColumnElement[int]:
         func.coalesce(AgentController.connection_id, ""),
         func.coalesce(AgentController.connection_process_id, ""),
         func.coalesce(cast(AgentController.disconnected_at, Text), ""),
+        func.coalesce(AgentController.disconnect_reason, ""),
         func.coalesce(AgentController.open_connection_id, ""),
         func.coalesce(AgentController.open_process_id, ""),
     )
@@ -362,6 +365,26 @@ class AgentControllerStore:
             raise LookupError(f"No such controller: {controller_id}")
         return int(revision)
 
+    async def lock_previous_report(
+        self, session: AsyncSession, tenant_id: str, controller_id: str
+    ) -> tuple[datetime | None, dict[str, Any] | None]:
+        """When the controller's last accepted report arrived, and that report,
+        with the row locked until the caller's transaction ends, so two reports
+        racing each other can't both count from the same moment."""
+        row = (
+            await session.execute(
+                select(AgentController.last_seen_at, AgentController.status)
+                .where(
+                    AgentController.tenant_id == tenant_id,
+                    AgentController.id == controller_id,
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if row is None:
+            return None, None
+        return row[0], row[1]
+
     async def record_status(
         self,
         session: AsyncSession,
@@ -619,6 +642,7 @@ class AgentControllerStore:
         tenant_id: str,
         controller_id: str,
         revoked_at: datetime,
+        revoked_by: str | None = None,
     ) -> None:
         await session.execute(
             update(AgentController)
@@ -626,7 +650,22 @@ class AgentControllerStore:
                 AgentController.tenant_id == tenant_id,
                 AgentController.id == controller_id,
             )
-            .values(revoked_at=revoked_at, api_key_id=None)
+            .values(revoked_at=revoked_at, api_key_id=None, revoked_by=revoked_by)
+            .execution_options(synchronize_session=False)
+        )
+
+    async def clear_revoked_by(
+        self, session: AsyncSession, tenant_id: str, controller_id: str
+    ) -> None:
+        """A later revoke for another reason: the hosted block is no longer why
+        it's revoked, so no lift may wake its box."""
+        await session.execute(
+            update(AgentController)
+            .where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.id == controller_id,
+            )
+            .values(revoked_by=None)
             .execution_options(synchronize_session=False)
         )
 

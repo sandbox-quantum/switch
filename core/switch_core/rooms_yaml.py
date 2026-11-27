@@ -29,6 +29,7 @@ Export emits resolved rooms and never emits ``params:``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -37,6 +38,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+import regex
 import yaml
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
@@ -55,6 +57,7 @@ from switch_core.room_invites import (
 from switch_core.room_policy import visible_from_outside
 from switch_core.room_service import RoleSpec, RoomCreateConfig
 from switch_core.telemetry import TelemetryService, emit_after_commit
+from switch_core.template_yaml import load_template_yaml
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -80,6 +83,16 @@ logger = logging.getLogger(__name__)
 KICKOFF_JOIN_TIMEOUT = 30.0
 
 PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
+
+# A string param's `pattern` is written by the template's author, who can also
+# supply the value matched against it, and a backtracking regular expression
+# can take exponential time. Every match is cut off: a value that cannot be
+# checked in time is refused, never let through. A value matched is bounded
+# when it is given; the pattern's own length only when a template is saved
+# (`template_lint`), so one stored before the bound still loads.
+PARAM_PATTERN_MAX_LENGTH = 500
+PARAM_PATTERN_VALUE_MAX_LENGTH = 10_000
+PARAM_PATTERN_TIMEOUT_SECONDS = 0.1
 
 # Param types whose value names something the server already has. They
 # interpolate as plain strings; the difference is that the server checks the
@@ -209,8 +222,8 @@ class ParamSpec(BaseModel):
             if self.type != "string":
                 raise ValueError("'pattern' applies to params of type string")
             try:
-                re.compile(self.pattern)
-            except re.error as e:
+                regex.compile(self.pattern, flags=regex.VERSION0)
+            except regex.error as e:
                 raise ValueError(
                     f"'pattern' is not a valid regular expression: {e}"
                 ) from e
@@ -221,15 +234,38 @@ class ParamSpec(BaseModel):
         return self
 
 
+def _check_pattern(pattern: str, value: str, name: str) -> None:
+    """Raise unless `value` wholly matches `pattern`, checked in bounded time."""
+    if len(value) > PARAM_PATTERN_VALUE_MAX_LENGTH:
+        raise ValueError(
+            f"param {name!r}: the value is {len(value)} characters long; at most "
+            f"{PARAM_PATTERN_VALUE_MAX_LENGTH} can be checked against its pattern"
+        )
+    try:
+        matched = regex.fullmatch(
+            pattern,
+            value,
+            flags=regex.VERSION0,
+            timeout=PARAM_PATTERN_TIMEOUT_SECONDS,
+        )
+    except TimeoutError as e:
+        raise ValueError(
+            f"param {name!r}: checking the value against the pattern {pattern!r} "
+            "took too long; the template's pattern needs simplifying"
+        ) from e
+    if matched is None:
+        raise ValueError(
+            f"param {name!r}: {value!r} does not match the pattern {pattern!r}"
+        )
+
+
 def coerce_param(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
     """Coerce a raw input value to the declared type."""
     t = spec.type
     if t == "string":
         s = str(value)
-        if spec.pattern is not None and re.fullmatch(spec.pattern, s) is None:
-            raise ValueError(
-                f"param {name!r}: {s!r} does not match the pattern {spec.pattern!r}"
-            )
+        if spec.pattern is not None:
+            _check_pattern(spec.pattern, s, name)
         return s
     if t in ENTITY_PARAM_TYPES or t in CONSOLE_PARAM_TYPES:
         return str(value)
@@ -700,7 +736,7 @@ class RoomYamlService:
         intentional (the template author owns the namespace).
         """
         try:
-            data = yaml.safe_load(text)
+            data = load_template_yaml(text)
         except yaml.YAMLError as e:
             raise ValueError(f"Invalid YAML: {e}") from e
         if not isinstance(data, dict):
@@ -781,6 +817,18 @@ class RoomYamlService:
         return ParsedTemplate(
             spec=spec, kickoff=kickoff, params=declared, values=resolved
         )
+
+    async def read_template(
+        self,
+        text: str,
+        *,
+        inputs: dict[str, Any] | None,
+        builtins: dict[str, str],
+    ) -> ParsedTemplate:
+        """``parse_template`` on a worker thread, for a request handler: a
+        template of the largest size allowed still takes long enough to read
+        that it must not hold up the event loop."""
+        return await asyncio.to_thread(self.parse_template, text, inputs, builtins)
 
     @staticmethod
     def _group_spec(body: dict[str, Any]) -> GroupSpec:
@@ -935,7 +983,7 @@ class RoomYamlService:
         error. Chains of the Console's types are the Console's to resolve.
         """
         try:
-            data = yaml.safe_load(text)
+            data = await asyncio.to_thread(load_template_yaml, text)
             # A version 2 param's `if:` is the template engine's, not the spec's.
             declared = {
                 name: ParamSpec.model_validate(
@@ -1078,7 +1126,7 @@ class RoomYamlService:
         fails loudly later when it matters. A template naming no bridge lands
         on the default one, same as provisioning."""
         try:
-            data = yaml.safe_load(text)
+            data = await asyncio.to_thread(load_template_yaml, text)
         except yaml.YAMLError:
             return None
         if not isinstance(data, dict):

@@ -1,21 +1,16 @@
+import { agentInitials } from '@switch-console/chat-ui/model/agent-avatar';
+import { personColour } from '@switch-console/chat-ui/model/person-colour';
 import { useQuery } from '@tanstack/react-query';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { rpc } from '@renderer/lib/ipc';
 import { cn } from '@renderer/utils/utils';
-import { agentInitials } from '@shared/core/agents/agent-avatar';
-import { personColour } from '@shared/core/people/person-colour';
 import {
   knownAgentTypeDisplayName,
   providerDisplayName,
 } from '@shared/core/providers/agent-provider-registry';
 import type { RemoteAgentSummary } from '@shared/core/switch-servers/switch-servers';
-
-/*
- * The pieces a room's members are drawn with, shared by the room's side panel
- * and its settings page.
- */
 
 /** Query key for one room's own settings — shared so a save can write the
  * server's answer straight back into what the page is reading. */
@@ -36,10 +31,30 @@ export function useRoomDetail(workspaceId: string | null, roomId: string, enable
   });
 }
 
-/**
- * A person's initials disc, in their colour (see `personColour`): people have
- * no picture in Switch. `userId` is their Switch user when known.
- */
+/** An agent's own picture, beside the human participants' initials discs. */
+export function AgentMark({
+  agentId,
+  workspaceId,
+  remoteById,
+}: {
+  agentId: string;
+  workspaceId: string | null;
+  remoteById: Map<string, RemoteAgentSummary>;
+}) {
+  const remote = remoteById.get(agentId) ?? null;
+  return (
+    <span className="flex size-7 shrink-0 items-center justify-center">
+      <AgentAvatar
+        agentId={agentId}
+        name={agentNameFor(agentId, workspaceId, remoteById)}
+        iconUrl={remote?.iconUrl ?? null}
+        serverId={workspaceId && workspacesStore.serverIdFor(workspaceId)}
+        size={26}
+      />
+    </span>
+  );
+}
+
 export function PersonMark({
   name,
   userId,
@@ -58,29 +73,6 @@ export function PersonMark({
       style={personColour(userId ?? name)}
     >
       {agentInitials(name)}
-    </span>
-  );
-}
-
-/** An agent's own picture, beside the human participants' initials discs. */
-export function AgentMark({
-  agentId,
-  workspaceId,
-  remoteById,
-}: {
-  agentId: string;
-  workspaceId: string | null;
-  remoteById: Map<string, RemoteAgentSummary>;
-}) {
-  const remote = remoteById.get(agentId) ?? null;
-  return (
-    <span className="flex size-7 shrink-0 items-center justify-center">
-      <AgentAvatar
-        name={agentNameFor(agentId, workspaceId, remoteById)}
-        iconUrl={remote?.iconUrl ?? null}
-        serverId={workspaceId && workspacesStore.serverIdFor(workspaceId)}
-        size={26}
-      />
     </span>
   );
 }

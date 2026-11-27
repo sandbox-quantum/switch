@@ -99,6 +99,19 @@ class MessageTransport(Protocol):
 
     # ── Outbound ──────────────────────────────────────────────────────────────
 
+    def admit_message(self, authored: str | None) -> None:
+        """Let this connection's participant send one message, of which they
+        wrote `authored` (None for files alone), or raise why not:
+        `MessageTooLong`, or `SendRateLimited` once their allowance is spent
+        (`send_limits.py`).
+
+        Called once per message where it enters Switch, before Switch Trust
+        reads it or a file of it is stored, so a refused message costs
+        neither. Every metered send is admitted first: the send holds the
+        rows to the length limit again and takes nothing more from the
+        allowance."""
+        ...
+
     async def send_message(
         self,
         room_id: str,
@@ -110,15 +123,33 @@ class MessageTransport(Protocol):
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
+        client_txn_id: str | None = None,
     ) -> SendResult:
         """Post a text message. Raises `TransportError` if it is not accepted.
+
+        `client_txn_id`, when given, is the sender's key for this message: a
+        second send under the same key from the same client returns the first
+        message's result and posts nothing.
 
         `metered` says whether the message counts toward the tenant's usage. It
         is false for what Switch posts on a participant's behalf — greetings,
         command replies, automatic refusals — which the participant never chose
         to say. It is an argument rather than something read from the content,
         because a sender controls the content.
+
+        `authored` is what the sender wrote, where Switch has written into
+        `body` too (a Switch Trust note, a line for a file it could not relay)
+        or changed it (a redaction). A metered message is held to the length
+        limit on that, not on `body` (`send_limits.py`). None when `body` is
+        all the sender's. A metered message was admitted first
+        (`admit_message`).
         """
+        ...
+
+    async def sent_under(self, room_id: str, client_txn_id: str) -> str | None:
+        """The event id this client already sent under `client_txn_id`, if any:
+        what a second send under the key would return, without sending."""
         ...
 
     async def send_event(
@@ -145,13 +176,15 @@ class MessageTransport(Protocol):
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
     ) -> SendResult:
         """Post an event pointing at an already-uploaded `uri`.
 
         `group` marks this as one part of a multi-attachment message —
         `{"id": ..., "index": i, "total": n}` — for transports that cannot
-        carry several files on one event. `metered` and `extra_content` are as
-        for `send_message`.
+        carry several files on one event. `metered`, `extra_content` and
+        `authored` (what the sender wrote of the caption) are as for
+        `send_message`.
         """
         ...
 

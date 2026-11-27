@@ -1,5 +1,3 @@
-import type { ProviderCustomConfig } from '@shared/core/app-settings';
-
 // ---------------------------------------------------------------------------
 // Install methods — mirrors INSTALL_METHODS in @switch-console/core/deps/capability.ts
 // ---------------------------------------------------------------------------
@@ -25,6 +23,14 @@ export type InstallOption = {
   recommended?: boolean;
   updateCommand?: string;
   uninstallCommand?: string;
+  /** See `lineMigration` on InstallOption in @switch-console/core: an update that replaces an earlier release line. */
+  lineMigration?: {
+    below: string;
+    removeCommand: string;
+    restoreCommand: string;
+    summary: string;
+    precheck?: { command: string; blockedMessage: string };
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -137,7 +143,29 @@ export type AgentUpdateError =
   | { type: 'unknown-dependency'; id: string }
   | { type: 'no-update-strategy'; id: string }
   | InstallCommandError
-  | { type: 'not-detected-after-update'; id: string };
+  | { type: 'not-detected-after-update'; id: string }
+  | { type: 'line-migration-blocked'; id: string; message: string }
+  | {
+      type: 'line-migration-unremoved';
+      id: string;
+      previousVersion: string;
+      cause: InstallCommandError;
+    }
+  | {
+      type: 'line-migration-failed';
+      id: string;
+      restoredVersion: string;
+      cause: InstallCommandError;
+    }
+  | {
+      type: 'line-migration-unrestored';
+      id: string;
+      previousVersion: string;
+      cause: InstallCommandError;
+      restoreError: InstallCommandError;
+      installCommand: string;
+      restoreCommand: string;
+    };
 
 export type AgentUninstallError =
   | { type: 'unknown-dependency'; id: string }
@@ -196,16 +224,6 @@ export type AgentIconAsset = {
 };
 
 // ---------------------------------------------------------------------------
-// Settings
-// ---------------------------------------------------------------------------
-
-export type AgentSettings = {
-  value: ProviderCustomConfig;
-  defaults: ProviderCustomConfig;
-  overrides: Partial<ProviderCustomConfig>;
-};
-
-// ---------------------------------------------------------------------------
 // Top-level DTOs sent over IPC
 // ---------------------------------------------------------------------------
 
@@ -240,7 +258,4 @@ export type AgentInstallationStatus = {
 };
 
 /** Combined payload — used for gradual renderer migration. */
-export type AgentPayload = AgentMetadata &
-  Omit<AgentInstallationStatus, 'id'> & {
-    settings: AgentSettings;
-  };
+export type AgentPayload = AgentMetadata & Omit<AgentInstallationStatus, 'id'>;

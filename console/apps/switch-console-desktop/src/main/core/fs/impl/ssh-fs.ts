@@ -37,6 +37,9 @@ interface SftpError extends Error {
   code?: number;
 }
 
+/** What ssh2 throws for an SFTP extension the server did not advertise. */
+const UNSUPPORTED_EXTENSION = 'Server does not support this extended request';
+
 /**
  * Allowed image extensions for readImage
  */
@@ -164,14 +167,6 @@ export class SshFileSystem implements FileSystemProvider {
           // Skip hidden files if not included
           if (!options?.includeHidden && item.filename.startsWith('.')) {
             continue;
-          }
-
-          // Apply filter if provided
-          if (options?.filter) {
-            const filterRegex = new RegExp(options.filter);
-            if (!filterRegex.test(item.filename)) {
-              continue;
-            }
           }
 
           const entryPath = this.relativePath(`${fullPath}/${item.filename}`);
@@ -400,6 +395,11 @@ export class SshFileSystem implements FileSystemProvider {
       await this.sftpDone(fullPath, (cb) => sftp.ext_openssh_rename(temporary, fullPath, cb));
     } catch (error) {
       await this.sftpDone(temporary, (cb) => sftp.unlink(temporary, cb)).catch(() => {});
+      if (error instanceof Error && error.message === UNSUPPORTED_EXTENSION) {
+        throw new Error(
+          `The SSH server's SFTP does not support posix-rename@openssh.com, which Switch Console needs to replace ${fullPath} without exposing its contents. OpenSSH's sftp-server supports it.`
+        );
+      }
       throw error;
     }
   }
@@ -619,19 +619,6 @@ export class SshFileSystem implements FileSystemProvider {
     return result.stdout.trim();
   }
 
-  async glob(pattern: string, options?: { cwd?: string; dot?: boolean }): Promise<string[]> {
-    const cwd = options?.cwd ? this.resolveRemotePath(options.cwd) : this.remotePath;
-    const dotSetup = options?.dot ? 'shopt -s dotglob;' : '';
-    const command = `${dotSetup} shopt -s nullglob; cd ${quoteShellArg(cwd)} && printf '%s\\n' ${pattern}`;
-    try {
-      const result = await this.exec(command);
-      if (result.exitCode !== 0) return [];
-      return result.stdout.trim().split('\n').filter(Boolean);
-    } catch {
-      return [];
-    }
-  }
-
   async copyLocalFile(localAbsPath: string, destRelPath: string): Promise<void> {
     const sftp = await this.getSftp();
     const remoteFull = this.resolveRemotePath(destRelPath);
@@ -739,14 +726,6 @@ export class SshFileSystem implements FileSystemProvider {
         if (isNaN(lineNum)) continue;
 
         const relPath = this.relativePath(filePath);
-
-        // Apply file pattern filter if provided
-        if (options?.filePattern) {
-          const patternRegex = new RegExp(options.filePattern);
-          if (!patternRegex.test(relPath)) {
-            continue;
-          }
-        }
 
         seenFiles.add(filePath);
 

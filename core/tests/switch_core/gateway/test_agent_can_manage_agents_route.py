@@ -112,6 +112,9 @@ async def test_each_change_is_recorded_in_the_audit_log(
         (AuditAction.AGENT_MANAGEMENT_GRANTED, owner.id),
         (AuditAction.AGENT_MANAGEMENT_REVOKED, owner.id),
     ]
+    assert events[0].details is not None
+    assert events[0].details["by_owner"] is True
+    assert events[0].details["acting_agent_id"] is None
 
 
 @pytest.mark.parametrize("role", ["user", "admin"])

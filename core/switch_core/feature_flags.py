@@ -53,7 +53,8 @@ SERVICE_CONNECTIONS = "service_connections"
 # messages reach nobody, as before.
 FOLLOW_THE_CONVERSATION = "follow_the_conversation"
 
-# Decision routing: in a room that turned it on (`!auto-route on`), a person's
+# Decision routing: in a room with auto-route on (`!auto-route on`, or
+# `DECISION_AUTO_ROUTE_DEFAULT_ON` in a room that has not chosen), a person's
 # message that no rule delivered to any agent is sent, once it is saved, to
 # the decision service its workspace uses (`decision/settings.py`: the
 # workspace's choice, else `DECISION_ENDPOINT_URL`), which picks the one agent
@@ -81,6 +82,14 @@ SWITCH_BUDDY = "switch_buddy"
 # ALWAYS_ON_FEATURE_FLAGS.
 GROUP_CHATS = "group_chats"
 
+# Awake-time budgets on hosted agents. Off until every hosted
+# box is split (v12.2's roll), because on an unsplit box the agents share the
+# controller's user and could under-report the awake time a budget sums.
+# Off, the budgets route refuses an
+# `awake_minutes` budget, `BudgetGuard` ignores any such row, and Console
+# doesn't offer one. Awake time is still counted and shown either way.
+HOSTED_AWAKE_BUDGETS = "hosted_awake_budgets"
+
 # switch-buddy's chat on a bridge: Console offers to move the buddy's welcome
 # to a private channel with the person on their team's chat app (a chat
 # created with `bridgeId`, resumed with `resumeOnly`). Like group chats, turn
@@ -102,6 +111,19 @@ ORGANIZATION_CONNECTOR_APPS = "organization_connector_apps"
 # see ALWAYS_ON_FEATURE_FLAGS.
 GATEWAY_V2 = "gateway_v2"
 
+# Chats in the dashboard: a Chats page listing the person's chats and the
+# rooms they are in with agents, opened and answered on the web as in Switch
+# Console. Core has nothing of its own behind it; the dashboard reads it and
+# uses the `/chats` routes Console already uses.
+GATEWAY_CHATS = "gateway_chats"
+
+# Getting started in the dashboard: on a server with cloud machines, a person
+# who signs in gets their cloud machine started, connects an AI provider to it
+# and meets switch-buddy there, all on the web. Core warms the person's cloud
+# machine on sign-in; the dashboard reads the flag and uses the routes Console
+# uses.
+GATEWAY_ONBOARDING = "gateway_onboarding"
+
 # Messaging platforms beyond Slack, Mattermost, Teams, Discord and Telegram:
 # WhatsApp, Google Chat, Zulip, Signal, Matrix, Rocket.Chat, Webex and SMS. With it
 # off their adapters are not registered, so they are missing from the platform
@@ -121,6 +143,9 @@ ADDITIONAL_AGENT_PROVIDERS = "additional_agent_providers"
 # time (scripts/e2e_surface.py) turn the dependants off with it.
 FLAG_REQUIRES: dict[str, frozenset[str]] = {
     DECISION_ROUTING: frozenset({FOLLOW_THE_CONVERSATION}),
+    # Getting started opens the welcome chat in the dashboard's Chats, with
+    # switch-buddy, on the person's cloud machine.
+    GATEWAY_ONBOARDING: frozenset({GATEWAY_CHATS, SWITCH_BUDDY, HOSTED_AGENTS}),
 }
 
 
@@ -146,6 +171,10 @@ ALWAYS_ON_FEATURE_FLAGS: frozenset[str] = frozenset(
 )
 
 # Every flag the server recognises.
+# Flags only hosted agents v2 has, absent upstream: a list of flags leaves
+# them out with v2 off, so it is upstream's exactly.
+V2_ONLY_FLAGS: frozenset[str] = frozenset({HOSTED_AWAKE_BUDGETS})
+
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
         ECOSYSTEM_SHOW_OWNERS,
@@ -158,9 +187,12 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         AGENT_CHATS,
         SWITCH_BUDDY,
         GROUP_CHATS,
+        HOSTED_AWAKE_BUDGETS,
         BUDDY_SLACK_HANDOFF,
         ORGANIZATION_CONNECTOR_APPS,
         GATEWAY_V2,
+        GATEWAY_CHATS,
+        GATEWAY_ONBOARDING,
         ADDITIONAL_MESSAGING_PLATFORMS,
         ADDITIONAL_AGENT_PROVIDERS,
     }

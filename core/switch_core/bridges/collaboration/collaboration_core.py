@@ -18,7 +18,7 @@ from collections.abc import (
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, TypeVar
 
 from sqlalchemy.exc import IntegrityError
@@ -36,6 +36,7 @@ from switch_core.bridges.collaboration.adapter import (
     MessagePartlySent,
     PlatformAdapter,
     PrivateNoticeRefused,
+    SupportsReadBack,
     SupportsSharedConnection,
     agent_identity,
 )
@@ -73,7 +74,7 @@ from switch_core.clients.admin_messages import (
     AdminMessageType,
     platform_on_behalf_of,
 )
-from switch_core.clients.mentions import mention_regex, strip_emphasis
+from switch_core.clients.mentions import mention_regex, mentionable_text
 from switch_core.db.models import Agent, BridgeMessageMap, Client, ExternalUser
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
@@ -81,12 +82,15 @@ from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.room_store import (
     LINKED_CHANNEL_NAME_KEY,
     RoomStore,
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
+from switch_core.delivery.send_limits import MessageRefused, SendRateLimited
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
@@ -124,6 +128,7 @@ from switch_core.transport import (
     TransportError,
     writes_derived_from,
 )
+from switch_core.transport.cursors import BACKLOG_MAX_AGE
 from switch_core.trust.attachments import AttachmentsVerdict, check_attachments
 from switch_core.trust.client import (
     NullTrustClient,
@@ -157,6 +162,55 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+_LOG_ID = re.compile(r"[A-Za-z0-9._:@-]{1,128}")
+
+
+def _log_platform(bridge: object) -> str:
+    """The platform name for a hand-in failure's log line. Read defensively: a warning must
+    never be what breaks the hand-in it reports, and some tests build the core
+    with `__new__` and set only the fields they use."""
+    platform = getattr(bridge, "_bridge_type", None)
+    return platform if isinstance(platform, str) and platform else "<unknown>"
+
+
+_NO_ROOM_EVERY_S = 3600.0
+_NO_ROOM_MAX_CHANNELS = 4096
+#: (platform, channel) -> (when its last no-room WARN was logged, drops since).
+_no_room_seen: dict[tuple[str, str], tuple[float, int]] = {}
+
+
+def _warn_no_room(platform: str, channel_id: str, message_ref: str) -> None:
+    """A post dropped because its channel has no room: at most one WARN per
+    channel an hour, with how many were dropped since the last one, so a bot
+    sitting in channels that aren't Switch rooms can't fill the log."""
+    key = (platform, channel_id)
+    now = time.monotonic()
+    last = _no_room_seen.get(key)
+    if last is not None and now - last[0] < _NO_ROOM_EVERY_S:
+        _no_room_seen[key] = (last[0], last[1] + 1)
+        return
+    if last is None and len(_no_room_seen) >= _NO_ROOM_MAX_CHANNELS:
+        _no_room_seen.pop(next(iter(_no_room_seen)))
+    _no_room_seen[key] = (now, 0)
+    logger.warning(
+        "[BRIDGE-IN] hand-in dropped: platform=%s channel=%s post=%s reason=no_room "
+        "dropped_since_last=%d",
+        platform,
+        _log_id(channel_id),
+        _log_id(message_ref),
+        last[1] if last is not None else 0,
+    )
+
+
+def _log_id(value: object) -> str:
+    """A platform id as a log field: kept when it looks like an id, else
+    `<other>`, so a log line never carries text a sender chose."""
+    if isinstance(value, str) and _LOG_ID.fullmatch(value):
+        return value
+    return "<none>" if value is None else "<other>"
+
 
 # (bridge type, agent name, failure) of identity provisioning failures already
 # logged as a warning by this process; see `_sync_agent_identities`.
@@ -200,6 +254,30 @@ _UNPOSTED_CLAIM_LAPSES_AFTER = timedelta(
 # another process has just written, before giving up on telling whose it is.
 # That process writes the `ExternalUser` right after the client.
 _HUMAN_ACTOR_MINTING_SECONDS = 2.0
+
+# How far before the last holder let go of a bridge its next holder reads
+# back from: it stops listening a moment before it lets go, and the
+# platform's clock is not the database's.
+_READ_BACK_MARGIN = timedelta(seconds=30)
+
+# The same, for the read-back once the platform's delivery has settled
+# (`PlatformAdapter.listening_settles_seconds`): only the platform's clock
+# against this process's.
+_SETTLING_MARGIN = timedelta(seconds=5)
+
+# How long a bridge taken over waits for its platform's live events to reach
+# it before it says it is still waiting (it reads back once they do, so
+# nothing said falls between the two); how often it looks; how long a live
+# message waits for the read-back under way; and how long a bridge let go of
+# before its read-back ran reads back as it stops, inside the hand-over's own
+# budget (`main._HAND_OVER_SECONDS`).
+_READ_BACK_WAIT_SECONDS = 60.0
+_READ_BACK_POLL_SECONDS = 0.25
+_READ_BACK_HOLD_SECONDS = 30.0
+_READ_BACK_ON_STOP_SECONDS = 5.0
+
+# Set inside a read-back, so what it hands on is not held behind itself.
+_READING_BACK: ContextVar[bool] = ContextVar("bridge_reading_back", default=False)
 
 
 def _is_thread_reply(content: Mapping[str, object]) -> bool:
@@ -363,6 +441,11 @@ class CollaborationCore:
     _activity_publisher: AgentSessionActivityPublisher | None = None
     _approval_answers: ApprovalAnswers | None = None
     _active: bool = True
+    _read_back_owed: datetime | None = None
+    _read_back_task: asyncio.Task[None] | None = None
+    _read_back_done: asyncio.Event | None = None
+    _identities_begun: asyncio.Event | None = None
+    _receipts = MessagingEventReceiptStore()
 
     def __init__(
         self,
@@ -663,11 +746,22 @@ class CollaborationCore:
                     with tenant_scope(tenant_id), log_context(room_id=room_id):
                         try:
                             await handler(event)
-                        except Exception:
-                            # Counted here and re-raised unchanged: whoever handles
-                            # it above still does. An inbound handler that fails is
-                            # a message a person sent and nobody received, which is
-                            # invisible from the platform's side.
+                        except Exception as exc:
+                            # Counted and logged here, then re-raised unchanged:
+                            # whoever handles it above still does. An inbound
+                            # handler that fails is a message a person sent and
+                            # nobody received, which is invisible from the
+                            # platform's side (one WARN, ids and the error's type
+                            # only, never the message or the error text).
+                            logger.warning(
+                                "[BRIDGE-IN] hand-in failed: platform=%s event=%s "
+                                "channel=%s post=%s error=%s",
+                                _log_platform(self),
+                                kind,
+                                _log_id(event.channel_id),
+                                _log_id(getattr(event, "message_ref", None)),
+                                type(exc).__name__,
+                            )
                             metrics().increment(
                                 BRIDGE_ERRORS,
                                 {
@@ -681,6 +775,13 @@ class CollaborationCore:
         return traced
 
     async def start(self) -> None:
+        try:
+            await self._start()
+        except BaseException:
+            await self._drop_read_back()
+            raise
+
+    async def _start(self) -> None:
         await self._load_channel_map()
         await self._load_existing_human_actors()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
@@ -703,7 +804,7 @@ class CollaborationCore:
         # Provisioning that ran at start unattached would have failed, so it is
         # re-run on attach.
         if isinstance(self._adapter, SupportsSharedConnection):
-            self._adapter.set_on_attached(self._provision_identities_on_attach)
+            self._adapter.set_on_attached(self._on_shared_connection_attached)
         # Always, not only where approval cards are drawn: a link prompt's
         # buttons (CHOO-4121) come back this way on every platform with any.
         self._adapter.set_interaction_handler(
@@ -721,8 +822,12 @@ class CollaborationCore:
             request_sync=self._resync_members_requested,
         )
         await self._adapter.start(
-            on_message=self._traced("message", self._handle_inbound_message),
-            on_command=self._traced("command", self._handle_inbound_command),
+            on_message=self._traced(
+                "message", self._held_for_read_back(self._handle_post)
+            ),
+            on_command=self._traced(
+                "command", self._held_for_read_back(self._handle_inbound_command)
+            ),
             on_agent_joined=self._traced(
                 "agent_joined", self._handle_agent_joined_channel
             ),
@@ -731,6 +836,12 @@ class CollaborationCore:
             ),
             on_app_joined=self._traced("app_joined", self._handle_app_joined_channel),
         )
+        # Once the channels and the adapter's callbacks are in place: a shared
+        # connection can be listening already, and a read-back before then
+        # reads no channel. Live messages wait for it from the takeover on
+        # (`read_back_from`), as a platform can deliver while its adapter is
+        # still starting (Discord does while it syncs its commands).
+        self._start_read_back()
         if self._active:
             await self._ensure_channel_captures()
             if self._activity_publisher is not None:
@@ -747,6 +858,7 @@ class CollaborationCore:
         # an attach while the adapter started may have begun a run already.
         if not self._awaiting_shared_connection():
             self._provision_identities_on_attach()
+            self._identities_under_way()
         # Not awaited either: one platform read per channel, and nothing waits
         # on it. Only where the bridge is held: one process is enough.
         if self._active:
@@ -756,6 +868,198 @@ class CollaborationCore:
             # People who joined or left while the bridge was down, or before
             # Switch was in the channel at all, are only found by asking.
             self._sync_members_soon(None)
+
+    def read_back_from(self, since: datetime) -> None:
+        """Read back what was said in the bridge's channels while no process
+        listened, which was since `since` (`SupportsReadBack`). Set before
+        `start`, by the process taking the bridge over. Live messages wait
+        from now until it is done."""
+        if not self._active or not isinstance(self._adapter, SupportsReadBack):
+            return
+        self._read_back_owed = since
+        self._read_back_done = asyncio.Event()
+        self._identities_begun = asyncio.Event()
+
+    def _start_read_back(self) -> None:
+        """In the background, once: a channel's history is a platform call,
+        and the bridge is online without it."""
+        since = self._read_back_owed
+        if since is None or self._read_back_task is not None:
+            return
+        self._read_back_task = asyncio.create_task(self._read_back(since))
+
+    def _identities_under_way(self) -> None:
+        if self._identities_begun is not None:
+            self._identities_begun.set()
+
+    async def _read_back(self, since: datetime) -> None:
+        """Once the platform's live events reach the bridge, so whatever is
+        said after the read arrives live; first its agents' identities, where
+        those are what listens. Cancelled, by a stop, it leaves the messages
+        it holds to the read-back the stop makes."""
+        assert isinstance(self._adapter, SupportsReadBack)
+        if self._adapter.listens_through_agent_identities:
+            assert self._identities_begun is not None
+            await self._identities_begun.wait()
+            identities = self._identity_task
+            if identities is not None and not identities.done():
+                await asyncio.wait({identities})
+        if not await self._until_listening(self._adapter):
+            self._read_back_owed = None
+            logger.warning(
+                "Bridge %s's platform events did not reach it within %s, so it "
+                "reads nothing back; anything said while no process listened, "
+                "since %s, %s",
+                self._bridge_id,
+                BACKLOG_MAX_AGE,
+                since.isoformat(),
+                self._unread(),
+            )
+            self._let_held_go()
+            return
+        listening_from = datetime.now(UTC)
+        await self._read_back_now(since)
+        self._let_held_go()
+        await self._read_back_once_settled(listening_from)
+
+    async def _read_back_once_settled(self, listening_from: datetime) -> None:
+        """Once more, `listening_settles_seconds` after the platform's events
+        began to reach the bridge, for what it said in between and did not yet
+        deliver. Live messages do not wait for this one: what it finds was
+        missed, and anything it reads twice is written once."""
+        settles = self._adapter.listening_settles_seconds
+        if settles <= 0:
+            return
+        await asyncio.sleep(settles)
+        await self._read_back_now(listening_from, margin=_SETTLING_MARGIN)
+
+    def _unread(self) -> str:
+        """What becomes of what was said while no process listened and is not
+        read back."""
+        if self._adapter.sends_missed_events_again:
+            return "arrives late, when the platform sends it again"
+        return "is lost"
+
+    async def _read_back_now(
+        self, since: datetime, *, margin: timedelta = _READ_BACK_MARGIN
+    ) -> None:
+        """From `margin` before `since`, for what the last holder may have
+        missed as it stopped, and at most `BACKLOG_MAX_AGE` back: older than
+        that is no longer being waited for."""
+        assert isinstance(self._adapter, SupportsReadBack)
+        start = max(since - margin, datetime.now(UTC) - BACKLOG_MAX_AGE)
+        reading = _READING_BACK.set(True)
+        try:
+            handed = await self._adapter.read_back(start, sorted(self._channel_to_room))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "Could not read back what was said in bridge %s's channels since "
+                "%s, while no process listened; anything said then %s",
+                self._bridge_id,
+                start.isoformat(),
+                self._unread(),
+                exc_info=True,
+            )
+            return
+        finally:
+            _READING_BACK.reset(reading)
+        self._read_back_owed = None
+        if handed:
+            logger.info(
+                "Read back %d message(s) said in bridge %s's channels since %s",
+                handed,
+                self._bridge_id,
+                start.isoformat(),
+            )
+
+    async def _until_listening(self, adapter: SupportsReadBack) -> bool:
+        """Whether the platform's live events reach the adapter, waiting for
+        them up to `BACKLOG_MAX_AGE`, past which nothing read back would
+        still be waited for; said once if they take longer than
+        `_READ_BACK_WAIT_SECONDS`."""
+        waited_from = time.monotonic()
+        said = False
+        while not adapter.listening():
+            waited = time.monotonic() - waited_from
+            if waited >= BACKLOG_MAX_AGE.total_seconds():
+                return False
+            if not said and waited >= _READ_BACK_WAIT_SECONDS:
+                said = True
+                logger.warning(
+                    "Bridge %s's platform events have not reached it after "
+                    "%.0fs; it reads back what was said while no process "
+                    "listened once they do",
+                    self._bridge_id,
+                    _READ_BACK_WAIT_SECONDS,
+                )
+            await asyncio.sleep(_READ_BACK_POLL_SECONDS)
+        return True
+
+    def _let_held_go(self) -> None:
+        if self._read_back_done is not None:
+            self._read_back_done.set()
+
+    async def _drop_read_back(self) -> None:
+        """The bridge did not start: nothing reads back here, and nothing
+        waits for it."""
+        task, self._read_back_task = self._read_back_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self._let_held_go()
+
+    async def _read_back_before_stopping(self) -> None:
+        """A bridge let go of before its read-back ran reads back now, within
+        `_READ_BACK_ON_STOP_SECONDS`: the next holder reads back only from
+        when this one let go. Then the messages it held go."""
+        owed, self._read_back_owed = self._read_back_owed, None
+        try:
+            if owed is not None and isinstance(self._adapter, SupportsReadBack):
+                async with asyncio.timeout(_READ_BACK_ON_STOP_SECONDS):
+                    await self._read_back_now(owed)
+        except TimeoutError:
+            logger.warning(
+                "Bridge %s was let go of before it read back what was said "
+                "since %s, and reading it back as it stopped took longer than "
+                "%.0fs; what it did not reach %s",
+                self._bridge_id,
+                owed.isoformat() if owed is not None else "",
+                _READ_BACK_ON_STOP_SECONDS,
+                self._unread(),
+            )
+        finally:
+            self._let_held_go()
+
+    def _held_for_read_back(
+        self, handle: Callable[[_InboundEventT], Awaitable[object]]
+    ) -> Callable[[_InboundEventT], Awaitable[object]]:
+        """`handle`, waiting first for the read-back under way, if any: it is
+        what the platform delivers as it arrives."""
+
+        async def held(event: _InboundEventT) -> object:
+            await self._after_read_back()
+            return await handle(event)
+
+        return held
+
+    async def _after_read_back(self) -> None:
+        """A message arriving live while the bridge reads back what was said
+        before it waits for that, up to `_READ_BACK_HOLD_SECONDS`, so it lands
+        after it in the room."""
+        done = self._read_back_done
+        if done is None or done.is_set() or _READING_BACK.get():
+            return
+        try:
+            await asyncio.wait_for(done.wait(), _READ_BACK_HOLD_SECONDS)
+        except TimeoutError:
+            logger.warning(
+                "Bridge %s is still reading back after %.0fs; handing on a live "
+                "message before what it has not read yet",
+                self._bridge_id,
+                _READ_BACK_HOLD_SECONDS,
+            )
 
     @property
     def active(self) -> bool:
@@ -803,7 +1107,14 @@ class CollaborationCore:
             for task in list(self._member_sync_tasks):
                 task.cancel()
             self._member_sync_tasks.clear()
-            await self._adapter.stop()
+            reading, self._read_back_task = self._read_back_task, None
+            try:
+                if reading is not None and not reading.done():
+                    reading.cancel()
+                    await asyncio.gather(reading, return_exceptions=True)
+                await self._read_back_before_stopping()
+            finally:
+                await self._adapter.stop()
 
     # ── Startup loading ──────────────────────────────────────────────────────
 
@@ -878,6 +1189,11 @@ class CollaborationCore:
 
             if client:
                 self._human_user_ids.add(client.transport_user_id)
+
+    def _on_shared_connection_attached(self) -> None:
+        """A shared connection attached: what waited for it can run now."""
+        self._provision_identities_on_attach()
+        self._identities_under_way()
 
     def _provision_identities_on_attach(self) -> None:
         """Run identity provisioning when a shared connection attaches.
@@ -1544,7 +1860,7 @@ class CollaborationCore:
         a message Switch never mapped) goes to the room's agent when it has
         exactly one, the rule a mention of the bot follows.
         """
-        body = strip_emphasis(content)
+        body = mentionable_text(content)
         async with self._session_factory() as session:
             agents = [
                 agent
@@ -1590,6 +1906,56 @@ class CollaborationCore:
         )
         await self._adapter.admin_message(msg.channel_id, notice, thread_root_id)
 
+    async def _handle_post(self, msg: InboundMessage) -> str | None:
+        """`_handle_inbound_message`, once for each post, however often it is
+        handed on: read back after the bridge moved, or sent again by the
+        platform.
+
+        A copy of a post handled all the way through returns the event it
+        became and does nothing else, so a card answer, a guidance reply, a
+        Switch Trust check and its notice, or an upload does not run twice. A
+        copy of a post whose handling failed or is still under way is handled
+        again, as before, and its rows are written once (`_post_source`).
+        """
+        receipt_id = await self._take_post(msg)
+        if receipt_id is None:
+            logger.info(
+                "[BRIDGE-IN] post %s in channel %s was handled already; not "
+                "handling it again",
+                msg.message_ref,
+                msg.channel_id,
+            )
+            return await self._event_for_external_post(msg.message_ref)
+        relayed = await self._handle_inbound_message(msg)
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            await self._receipts.mark_handled(session, receipt_id=receipt_id)
+            await self._receipts.prune(session)
+            await session.commit()
+        return relayed
+
+    async def _take_post(self, msg: InboundMessage) -> str | None:
+        """The receipt this copy of a post is handled under, or None when a
+        copy before it was handled all the way through. Claimed and committed
+        before any of the handling, so a copy that comes after it is refused."""
+        source = _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            receipt = await self._receipts.claim(
+                session, platform=self._bridge_type, external_event_id=source
+            )
+            if receipt is not None:
+                await session.commit()
+                return receipt.id
+            taken = await self._receipts.find(
+                session, platform=self._bridge_type, external_event_id=source
+            )
+        if taken is None or taken.handled_at is not None:
+            return None
+        return taken.id
+
     async def _handle_inbound_message(self, msg: InboundMessage) -> str | None:
         """Write a platform message into its room as its sender, and return
         the event it became, or None when it was not relayed.
@@ -1597,7 +1963,10 @@ class CollaborationCore:
         A room that is frozen or archived takes no posts
         (`room_read_only.py`): the router refuses the row, and the sender is
         told their message did not reach the room (`_tell_read_only`), as
-        they are told of a Switch Trust block.
+        they are told of a Switch Trust block. A message too long or sent
+        faster than the sender's allowance is refused before Switch Trust
+        reads it or a file of it is stored (`send_limits.py`), and the sender
+        is told (`_tell_message_refused`).
         """
         logger.debug(
             "[BRIDGE-IN] channel=%s sender=%s content=%s",
@@ -1623,6 +1992,12 @@ class CollaborationCore:
             await self._remember_lobby_sender(msg.sender_id, msg.sender_name)
             await self._handle_lobby_message(msg)
             return None
+        if process_hosted_v2() and await self._already_handed_in(msg):
+            # A second copy of a post already in its room (a bridge that hears
+            # each post on several connections, or fetches missed posts after
+            # a reconnect) is not a second message. Hosted agents v2 only: with
+            # it off the inbound path is main's, with no extra read.
+            return None
         # An answer typed in words, or a word that a card is waiting. It does
         # not consume the message: the room still sees what was said.
         answered_card = await self._handle_text_answer(msg)
@@ -1640,6 +2015,7 @@ class CollaborationCore:
                         channel_name=msg.channel_name,
                     )
             if room_ids is None:
+                _warn_no_room(_log_platform(self), msg.channel_id, msg.message_ref)
                 return None
 
         room_id, transport_room_id = room_ids
@@ -1662,9 +2038,28 @@ class CollaborationCore:
             transport_room_id=transport_room_id,
         )
         if human_actor is None:
+            logger.warning(
+                "[BRIDGE-IN] hand-in dropped: platform=%s channel=%s post=%s "
+                "room=%s reason=no_sender_identity",
+                _log_platform(self),
+                _log_id(msg.channel_id),
+                _log_id(msg.message_ref),
+                room_id,
+            )
             return None
 
         content = self._adapter.translate_inbound(msg.content)
+        # What the person wrote, which is what the length limit is held to:
+        # the `@name`, notes and Switch Trust annotation added below are
+        # Switch's, and the room makes space for them (`send_limits.py`).
+        authored = content
+        # Before Switch Trust reads it or a file of it is stored, so a
+        # message refused for its length or pace costs neither.
+        try:
+            human_actor.admit_message(authored)
+        except MessageRefused as refused:
+            await self._tell_message_refused(msg, refused, transport_room_id)
+            return None
 
         # Bridge threads inbound: if the external post replied into a thread,
         # resolve that external root to the room event we bridged for it.
@@ -1685,7 +2080,7 @@ class CollaborationCore:
             mention_target = await self._reply_target(room_id, thread_root_id, content)
 
         if mention_target is not None and (
-            mention_regex(mention_target).search(strip_emphasis(content)) is None
+            mention_regex(mention_target).search(mentionable_text(content)) is None
         ):
             content = f"@{mention_target} {content}"
         logger.debug(
@@ -1758,7 +2153,11 @@ class CollaborationCore:
                         thread_root_id=thread_root_id,
                         metered=True,
                         extra_content=_inbound_extra_content(msg, check),
+                        authored=authored,
                     )
+            except MessageRefused as refused:
+                await self._tell_message_refused(msg, refused, transport_room_id)
+                return None
             except RoomReadOnly as refused:
                 await self._tell_read_only(msg, refused)
                 return None
@@ -1889,16 +2288,17 @@ class CollaborationCore:
         source = _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
         group_id = str(uuid.uuid5(uuid.NAMESPACE_URL, source)) if total > 1 else None
         _mark_sending()
-        for index, attachment in enumerate(msg.attachments):
-            media_uri = await human_actor.upload_media(
-                attachment.data, attachment.mimetype, attachment.filename
-            )
-            msgtype = (
-                "m.image" if attachment.mimetype.startswith("image/") else "m.file"
-            )
-            # Numbered from the post and the file's place in it, as the text
-            # above is, so a second delivery of the post writes no file twice.
-            try:
+        try:
+            for index, attachment in enumerate(msg.attachments):
+                media_uri = await human_actor.upload_media(
+                    attachment.data, attachment.mimetype, attachment.filename
+                )
+                msgtype = (
+                    "m.image" if attachment.mimetype.startswith("image/") else "m.file"
+                )
+                # Numbered from the post and the file's place in it, as the
+                # text above is, so a second delivery of the post writes no
+                # file twice.
                 with writes_derived_from(human_actor.client_id, f"{source}\x1f{index}"):
                     event_id = await human_actor.send_media(
                         transport_room_id,
@@ -1916,19 +2316,26 @@ class CollaborationCore:
                         ),
                         metered=True,
                         extra_content=_inbound_extra_content(msg, caption_check),
+                        authored=authored if index == 0 else None,
                     )
-            except RoomReadOnly as refused:
-                await self._tell_read_only(msg, refused)
-                return None
-            if event_id is None:
-                logger.error(
-                    "[BRIDGE-IN] failed to relay attachment %s from %s into room %s",
-                    attachment.filename,
-                    msg.sender_name,
-                    transport_room_id,
-                )
-            if index == 0:
-                first_event_id = event_id
+                if event_id is None:
+                    logger.error(
+                        "[BRIDGE-IN] failed to relay attachment %s from %s into "
+                        "room %s",
+                        attachment.filename,
+                        msg.sender_name,
+                        transport_room_id,
+                    )
+                if index == 0:
+                    first_event_id = event_id
+        except MessageRefused as refused:
+            # Admitted above, so only a row longer than any may be: the
+            # caption with what Switch wrote into it (`require_row_length`).
+            await self._tell_message_refused(msg, refused, transport_room_id)
+            return None
+        except RoomReadOnly as refused:
+            await self._tell_read_only(msg, refused)
+            return None
 
         if first_event_id is not None:
             # As for a text-only message, the sender hears what Switch Trust
@@ -1957,6 +2364,48 @@ class CollaborationCore:
             )
         return first_event_id
 
+    async def _tell_message_refused(
+        self, msg: InboundMessage, refused: MessageRefused, transport_room_id: str
+    ) -> None:
+        """Tell the sender why Switch did not write their message into the
+        room: too long, or sent too fast. A sender over their allowance is told
+        once for a run of refusals, until their allowance has refilled, not
+        once for every message refused in it; each refusal is counted either
+        way (`SendRateLimited.first`)."""
+        if isinstance(refused, SendRateLimited) and not refused.first:
+            return
+        logger.warning(
+            "[BRIDGE-IN] message from %s not relayed into room %s: %s",
+            msg.sender_name,
+            transport_room_id,
+            refused.reason,
+        )
+        await self._post_sender_notice(
+            msg,
+            f"🚫 Your message was not delivered to the room. {refused}",
+            AdminMessageType.MESSAGE_REFUSED,
+        )
+
+    async def _tell_command_refused(
+        self, cmd: InboundCommand, refused: MessageRefused, transport_room_id: str
+    ) -> None:
+        """Tell the sender why Switch did not run their command: it came
+        faster than their allowance (`SendLimits.admit_command`), or its
+        arguments were too long. Told once for a run of refusals, as for a
+        message (`_tell_message_refused`)."""
+        if isinstance(refused, SendRateLimited) and not refused.first:
+            return
+        logger.warning(
+            "[BRIDGE-IN] command %s from %s not run in room %s: %s",
+            cmd.command,
+            cmd.sender_name,
+            transport_room_id,
+            refused.reason,
+        )
+        await self._adapter.answer_command(
+            cmd, f"🚫 Your `{cmd.command}` command was not run. {refused}"
+        )
+
     async def _tell_read_only(self, msg: InboundMessage, refused: RoomReadOnly) -> None:
         logger.warning(
             "[BRIDGE-IN] message from %s in channel %s not relayed: the room is %s",
@@ -1973,7 +2422,8 @@ class CollaborationCore:
     ) -> None:
         """Tell the sender, and only the sender, what happened to their
         message: what Switch Trust did with it (blocked, redacted, flagged, or
-        not fully checked), or that its room takes no posts.
+        not fully checked), that its room takes no posts, or that Switch
+        refused it (`_tell_message_refused`).
 
         Each of these is about what one person wrote, so it goes to them the
         way the platform allows (`private_notice_delivery`). Where it has no
@@ -2071,6 +2521,13 @@ class CollaborationCore:
         alone. A command typed in a channel may reach the apps of other Switch
         servers in the same workspace as well, so there only a server with
         something to say about the account answers.
+
+        A command post runs once, however often it is handed on: read back
+        after the bridge moved, or sent again by the platform. Unlike a room
+        command, nothing it writes is written from the post, and a second run
+        is not harmless: its code is used up by then, and a link made since
+        would be undone. The post is claimed in the transaction that runs it,
+        so a run that fails leaves it to run again.
         """
         only_here = cmd.reply_ref is not None or cmd.channel_type in (
             "direct",
@@ -2080,6 +2537,25 @@ class CollaborationCore:
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
+            receipt_id: str | None = None
+            if cmd.message_ref is not None:
+                receipt = await self._receipts.claim(
+                    session,
+                    platform=self._bridge_type,
+                    external_event_id=_post_source(
+                        self._bridge_id, cmd.channel_id, cmd.message_ref
+                    ),
+                )
+                if receipt is None:
+                    logger.info(
+                        "Did not run %s from %s in channel %s again: that post "
+                        "has run it already",
+                        cmd.command,
+                        cmd.sender_name,
+                        cmd.channel_id,
+                    )
+                    return
+                receipt_id = receipt.id
             account = await self._external_user_store.get_by_external_id(
                 session, self._bridge_id, cmd.sender_id
             )
@@ -2115,6 +2591,10 @@ class CollaborationCore:
                     wanted=cmd.args,
                     only_here=only_here,
                 )
+            if receipt_id is not None:
+                await self._receipts.mark_handled(session, receipt_id=receipt_id)
+                await self._receipts.prune(session)
+                await session.commit()
         if reply is None:
             logger.info(
                 "Left %s from %s in channel %s unanswered: nothing on this server "
@@ -2218,6 +2698,9 @@ class CollaborationCore:
                 event_id = await human_actor.send_event(
                     transport_room_id, "com.switch.command", content
                 )
+        except MessageRefused as refused:
+            await self._tell_command_refused(cmd, refused, transport_room_id)
+            return
         except RoomReadOnly as refused:
             logger.warning(
                 "Command %s from %s in channel %s not run: the room is %s",
@@ -4526,6 +5009,29 @@ class CollaborationCore:
                 ),
             )
             await session.commit()
+
+    async def _already_handed_in(self, msg: InboundMessage) -> bool:
+        """Whether this platform post is already an event in its room.
+
+        Keyed by the post's id and its channel: a platform whose message ids
+        are only unique within a chat cannot then mistake one chat's post for
+        another's.
+        """
+        if not msg.message_ref:
+            return False
+        async with self._session_factory() as session:
+            mapping = await self._bridge_message_map_store.get_by_external_post_id(
+                session, self._bridge_id, msg.message_ref
+            )
+        if mapping is None or mapping.external_channel_id != msg.channel_id:
+            return False
+        logger.info(
+            "Platform post %s in channel %s is already in its room; not handing "
+            "it in again",
+            msg.message_ref,
+            msg.channel_id,
+        )
+        return True
 
     async def _event_for_external_post(self, external_post_id: str) -> str | None:
         async with self._session_factory() as session:

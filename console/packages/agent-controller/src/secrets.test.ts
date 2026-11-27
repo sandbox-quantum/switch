@@ -132,6 +132,42 @@ describe('OS keychain stores', () => {
     expect(await store.get(SEALING_KEY)).toBe('b64:not-encoded-by-hand');
   });
 
+  it('keeps a data directory with quotes, spaces or a newline to one security -i command', async () => {
+    const stored = new Map<string, string>();
+    const { calls, run } = runner((call) => {
+      const account = call.args[call.args.indexOf('-a') + 1];
+      if (call.args[0] === 'find-generic-password') {
+        const value = stored.get(account);
+        return value === undefined
+          ? new CommandFailure(call.file, call.args, 44, 'not found', 'exit 44')
+          : { stdout: `${value}\n` };
+      }
+      if (call.args[0] === 'delete-generic-password') {
+        stored.delete(account);
+        return { stdout: '' };
+      }
+      for (const line of (call.input ?? '').split('\n').filter(Boolean)) {
+        const words = /^add-generic-password -U -s \S+ -a "([^"]*)" -w "([^"]*)"$/.exec(line);
+        if (!words) throw new Error(`security -i would not read: ${line}`);
+        stored.set(words[1], words[2]);
+      }
+      return { stdout: '' };
+    });
+    const dataDir = `/data/it's "odd"\\dir\nadd-generic-password -U -s x -a "${SEALING_KEY}@/data" -w "taken"`;
+    const store = new KeychainSecretStore(dataDir, run);
+    await store.set(CONTROLLER_CREDENTIAL, 'swcc_secret-value');
+    expect(calls[0].input?.split('\n')).toHaveLength(2);
+    expect(stored.size).toBe(1);
+    expect(await store.get(CONTROLLER_CREDENTIAL)).toBe('swcc_secret-value');
+    expect(await store.get(SEALING_KEY)).toBeNull();
+    await store.delete(CONTROLLER_CREDENTIAL);
+    expect(stored.size).toBe(0);
+
+    const spaced = '/Users/a/Library/Application Support/Switch/agent-controller';
+    await new KeychainSecretStore(spaced, run).set(CONTROLLER_CREDENTIAL, 'swcc_other');
+    expect(calls.at(-1)?.input).toContain(`-a "${CONTROLLER_CREDENTIAL}@${spaced}"`);
+  });
+
   it('reads an entry stored as plain text before values were encoded', async () => {
     const { run } = runner(() => ({ stdout: 'swcc_secret-value\n' }));
     expect(await new KeychainSecretStore('/data', run).get(CONTROLLER_CREDENTIAL)).toBe(

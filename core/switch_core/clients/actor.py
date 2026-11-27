@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict, Unpack
+from typing import TYPE_CHECKING, ClassVar, Literal, TypedDict, Unpack, cast
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -220,6 +220,13 @@ class Actor[ConfigT: ClientConfig]:
 
     # ── Writing ────────────────────────────────────────────────────────────────
 
+    def admit_message(self, authored: str | None) -> None:
+        """Let this participant send one message, of which they wrote
+        `authored`, or raise `MessageRefused` saying why not
+        (`MessageTransport.admit_message`). Called before Switch Trust reads
+        it or a file of it is stored, and before the metered send."""
+        self._transport.admit_message(authored)
+
     async def send_message(
         self,
         room_id: str,
@@ -230,6 +237,8 @@ class Actor[ConfigT: ClientConfig]:
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
+        client_txn_id: str | None = None,
     ) -> str | None:
         try:
             result = await self._transport.send_message(
@@ -241,11 +250,26 @@ class Actor[ConfigT: ClientConfig]:
                 mentions=mentions,
                 thread_root_id=thread_root_id,
                 extra_content=extra_content,
+                authored=authored,
+                # Only when keyed, so a transport that predates keys is unchanged.
+                **(
+                    {"client_txn_id": client_txn_id}
+                    if client_txn_id is not None
+                    else {}
+                ),
             )
         except TransportError as exc:
             logger.error("Failed to send message to %s: %s", room_id, exc)
             return None
         return result.event_id
+
+    async def sent_under(self, room_id: str, client_txn_id: str) -> str | None:
+        """The event id this client already sent under `client_txn_id`, if
+        any. None from a transport that predates keys."""
+        lookup = getattr(self._transport, "sent_under", None)
+        if lookup is None:
+            return None
+        return cast("str | None", await lookup(room_id, client_txn_id))
 
     async def send_event(
         self, room_id: str, event_type: str, content: dict[str, object]
@@ -282,6 +306,7 @@ class Actor[ConfigT: ClientConfig]:
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
     ) -> str | None:
         """Send an m.image / m.file event pointing at an uploaded media URI.
 
@@ -296,6 +321,9 @@ class Actor[ConfigT: ClientConfig]:
         carrying several files is sent as n events sharing a group id, which
         receivers coalesce back into one logical message. Absent the field, an
         event is simply a group of one.
+
+        `authored` is what the sender wrote of `caption`, where Switch wrote
+        into it too (`MessageTransport.send_message`).
         """
         try:
             result = await self._transport.send_media(
@@ -311,6 +339,7 @@ class Actor[ConfigT: ClientConfig]:
                 thread_root_id=thread_root_id,
                 group=group,
                 extra_content=extra_content,
+                authored=authored,
             )
         except TransportError as exc:
             logger.error("Failed to send media to %s: %s", room_id, exc)

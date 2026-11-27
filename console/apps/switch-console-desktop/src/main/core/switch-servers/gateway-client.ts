@@ -1,4 +1,9 @@
 import type { SealedLogin } from '@switch-console/agent-providers';
+import {
+  type BridgeConfigSchema,
+  bridgeConfigFields,
+} from '@switch-console/chat-ui/model/connect-messaging-app';
+import { roomAccessForChannel } from '@switch-console/chat-ui/model/room-access';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import { z } from 'zod';
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
@@ -81,7 +86,6 @@ import {
   type AddressingPolicy,
   type AddTeamsTeamResult,
   type AgentRenameOutcome,
-  type BridgeConfigField,
   type BridgeDirectoryUser,
   type BridgePerson,
   type ChannelRetirement,
@@ -136,7 +140,6 @@ import {
   type RoomResourceKind,
   type NewRoomChannel,
   type RoomAccess,
-  roomAccessForChannel,
   DEFAULT_DIRECTORY_SEARCH_HINT,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
@@ -297,6 +300,9 @@ type FetchOptions = {
   body?: unknown;
   /** A multipart body, sent as is; `fetch` sets its boundary. Excludes `body`. */
   formData?: FormData;
+  /** The route answers with a file someone uploaded, of any type, so a page
+   * that comes back successfully is that file, not another server answering. */
+  servesFiles?: true;
 };
 
 /**
@@ -445,7 +451,7 @@ export async function gatewayRequest(
     if (options.authenticated) noteSessionEnded(server.id);
     throw new GatewayError('unauthorized', 'Switch session expired — please sign in again.', 401);
   }
-  if (answeredWithPage(response)) {
+  if (answeredWithPage(response, options.servesFiles === true)) {
     throw new NoManagementApiError(server.name, server.url, response.status);
   }
   // Only a call made without a session can blame the address: a signed-in
@@ -468,10 +474,11 @@ function isHtmlResponse(response: Response): boolean {
  * answer the management API gives is JSON, its 404 included, so a page that
  * comes back successfully (a catch-all serving a web app) or as a 404 (a proxy
  * with no route for the path) is not from it. A proxy's 502 page means the
- * server is down, which the caller reports as it is.
+ * server is down, which the caller reports as it is. A route that serves
+ * uploaded files answers a page that someone uploaded with 200.
  */
-function answeredWithPage(response: Response): boolean {
-  return isHtmlResponse(response) && (response.ok || response.status === 404);
+function answeredWithPage(response: Response, servesFiles: boolean): boolean {
+  return isHtmlResponse(response) && ((response.ok && !servesFiles) || response.status === 404);
 }
 
 /** The `retryable` beside `detail` in a coded refusal, or undefined without one. */
@@ -2253,61 +2260,6 @@ export async function beginMessagingAppInstall(
   return json.authorize_url;
 }
 
-/** Field names that hold a credential and must be masked on input. Mirrors the
- * operator dashboard's `isSecretField`, widened to catch `*_private_key` (the
- * Teams bridge's Graph encryption key), which its bare `api_key` alternation
- * misses. */
-const SECRET_FIELD_RE = /token|password|secret|api[_-]?key|private[_-]?key|credential/i;
-
-/** JSON Schema as Pydantic's `model_json_schema()` emits it for a bridge config. */
-type BridgeConfigSchemaProperty = {
-  title?: string;
-  description?: string;
-  format?: string;
-  type?: string;
-  default?: unknown;
-  /** Pydantic emits `bool | None` as `anyOf: [{type:"boolean"},{type:"null"}]`
-   * rather than a top-level `type`, so look through it. */
-  anyOf?: Array<{ type?: string }>;
-};
-
-type BridgeConfigSchema = {
-  properties?: Record<string, BridgeConfigSchemaProperty>;
-  required?: string[];
-};
-
-function primitiveType(prop: BridgeConfigSchemaProperty): string | undefined {
-  if (prop.type) return prop.type;
-  return prop.anyOf?.find((variant) => variant.type && variant.type !== 'null')?.type;
-}
-
-function humanizeFieldKey(key: string): string {
-  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function toConfigFields(schema: BridgeConfigSchema): BridgeConfigField[] {
-  const required = new Set(schema.required ?? []);
-  // Object key order follows the Pydantic model's field order, which puts the
-  // required credentials before the optional tuning knobs — worth preserving,
-  // so the form reads the way the platform's setup docs do.
-  return Object.entries(schema.properties ?? {}).map(([key, prop]) => {
-    const kind = primitiveType(prop) === 'boolean' ? 'boolean' : 'string';
-    const fallback = kind === 'boolean' ? false : null;
-    return {
-      key,
-      label: prop.title ?? humanizeFieldKey(key),
-      description: prop.description ?? null,
-      required: required.has(key),
-      secret: prop.format === 'password' || SECRET_FIELD_RE.test(key),
-      kind,
-      default:
-        typeof prop.default === 'string' || typeof prop.default === 'boolean'
-          ? prop.default
-          : fallback,
-    };
-  });
-}
-
 /**
  * The bridge types a server can register, with the credential fields each needs
  * (`GET /collaborations/types`).
@@ -2342,7 +2294,7 @@ export async function fetchBridgeTypes(server: SwitchServer): Promise<RemoteBrid
     docsSlug: t.docs_slug ?? null,
     iconSvg: t.icon_svg ?? null,
     receivesWebhooks: t.receives_webhooks ?? false,
-    fields: toConfigFields(t.config_schema ?? {}),
+    fields: bridgeConfigFields(t.config_schema ?? {}),
     // Absent on a server predating the capability — every platform could be
     // registered to create channels before it existed, so default true.
     channelCreationSupported: t.channel_creation_supported ?? true,
@@ -4601,6 +4553,8 @@ export async function getConnectionCatalog(
     status: !entry.enabled ? 'coming_soon' : entry.status === 'active' ? 'connected' : entry.status,
     unavailable_reason: entry.enabled ? entry.unavailable_reason : null,
     unavailable_code: entry.enabled ? knownUnavailableCode(entry.unavailable_code) : null,
+    sign_in_unavailable_reason: entry.enabled ? entry.sign_in_unavailable_reason : null,
+    server_setup_needed: entry.enabled && entry.server_setup_needed,
     read_only_reason: entry.enabled ? entry.read_only_reason : null,
     pass_through: entry.pass_through,
     token_lifetime: entry.token_lifetime,
@@ -4634,6 +4588,8 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         connectable: entry.enabled && entry.slug === 'github',
         unavailable_reason: null,
         unavailable_code: null,
+        sign_in_unavailable_reason: null,
+        server_setup_needed: false,
         read_only_reason: null,
         pass_through: false,
         token_lifetime: null,

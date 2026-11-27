@@ -6,9 +6,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PROVIDER_RUNTIMES } from '@switch-console/agent-providers';
+import { BUDDY_ICON_URL } from '@switch-console/chat-ui/model/switch-buddy';
 import { load } from 'js-yaml';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 
 const runTemplateDocument = vi.hoisted(() => vi.fn());
 const report = vi.hoisted(() => vi.fn());

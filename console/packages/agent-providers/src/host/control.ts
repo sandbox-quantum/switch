@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
@@ -9,9 +9,16 @@ import {
   type AttachmentTransfers,
   attachmentChunkSchema,
   ControlError,
+  transferIdSchema,
 } from './attachment-transfers';
 import { readJournalSnapshot } from './journal-snapshot';
-import { ensureSharedProcess, liveSupervisor, sharedSessionRoot, type Supervision } from './launch';
+import {
+  ensureSharedProcess,
+  liveSupervisor,
+  sharedSessionRoot,
+  type Supervision,
+  type SupervisionBox,
+} from './launch';
 import { replaceFile } from './replace-file';
 import {
   SessionHostFailedError,
@@ -65,6 +72,12 @@ export const controlMessageSchema = z.union([
   z.object({ forget: z.string().min(1) }),
   /** Start the session a message to this room would start, before the message is sent. */
   z.object({ warm: z.object({ roomId: z.string().min(1) }) }),
+  /** Box mode: the launcher hands this host the one-time ticket for its next hub hello. */
+  z.object({
+    hubTicket: z.string().regex(/^[0-9a-f]{32}$/),
+    /** HMAC of the ticket under this launch's push key: a ticket without a good one is ignored. */
+    mac: z.string().regex(/^[0-9a-f]{64}$/),
+  }),
   /**
    * A session's buffered reasoning, from its host. It rides on a `health`
    * message because a sidecar that predates it closes the connection on any
@@ -88,7 +101,7 @@ export const controlMessageSchema = z.union([
   /** A session read from its journal, whether or not its host is running. */
   z.object({ journal: z.string().min(1) }),
   z.object({ attachment: attachmentChunkSchema }),
-  z.object({ attachmentCancel: z.string().min(1) }),
+  z.object({ attachmentCancel: transferIdSchema }),
 ]);
 export type ControlMessage = z.infer<typeof controlMessageSchema>;
 
@@ -119,6 +132,8 @@ export class ControlPeer {
 }
 
 export type ControlContext = {
+  /** Box mode only (`box/supervision`): saved supervisor ids are judged, and sessions listed across users. */
+  box?: Pick<SupervisionBox, 'judge'>;
   agentId: string;
   links: SessionLinks;
   ensure: EnsureSession;
@@ -144,6 +159,13 @@ export async function handleControlMessage(
   dispatching: () => void
 ): Promise<unknown> {
   const { links, watcher } = context;
+  if ('hubTicket' in message) {
+    // The confirmation, or a refusal that says nothing about why. Off a box,
+    // nothing takes a ticket.
+    const taken = watcher.giveHubTicket(message.hubTicket, message.mac);
+    if (taken === null) throw new Error('Ticket not taken.');
+    return taken;
+  }
   // The sessions directory is shared by every agent on the machine.
   const named = namedSession(message);
   const owner = named === null ? null : await sessionOwner(named);
@@ -161,7 +183,7 @@ export async function handleControlMessage(
         context.transfers.consume(sent.data.body.attachments.map((a) => a.attachmentId));
     }
     // Waits for a host that is starting, not for one nothing is running.
-    const running = await liveSupervisor(sessionRoot);
+    const running = await liveSupervisor(sessionRoot, context.box);
     return links.dispatch(sessionRoot, message.request, running ? REQUEST_WAIT_MS : 0, dispatching);
   }
   if ('subscribe' in message) {
@@ -216,11 +238,37 @@ export async function handleControlMessage(
     }
     return null;
   }
-  if ('list' in message) return listSessions(context.agentId);
+  if ('list' in message) return listSessions(context.agentId, context.box !== undefined);
   if ('journal' in message) return readJournalSnapshot(message.journal);
   if ('attachment' in message) return context.transfers.receive(message.attachment);
   if ('attachmentCancel' in message) return context.transfers.cancel(message.attachmentCancel);
+  await assertOwnEnsure(context.agentId, message.ensure.config);
   return context.ensure(message.ensure);
+}
+
+const ensureTargetSchema = z.object({
+  session: z.object({ sessionId: z.string().min(1), agentId: z.string().min(1) }),
+});
+
+/**
+ * An `ensure` names its session inside the configuration it carries, so the
+ * ownership check above does not see it. It may start or reattach only a
+ * session of this host's agent: its configuration must name the agent, and a
+ * session already saved must be the agent's. (Launching then refuses a saved
+ * configuration naming a different agent from the one asked for, which covers
+ * a config being written while this reads it.)
+ */
+async function assertOwnEnsure(agentId: string, config: unknown): Promise<void> {
+  const target = ensureTargetSchema.safeParse(config);
+  if (!target.success)
+    throw new ControlError(
+      'invalid_config',
+      'The configuration to start names no session and agent; nothing was started.'
+    );
+  const { sessionId } = target.data.session;
+  if (target.data.session.agentId !== agentId) throw notOwnSession(agentId, sessionId);
+  const owner = await sessionOwner(sessionId);
+  if (owner !== null && owner !== agentId) throw notOwnSession(agentId, sessionId);
 }
 
 export type EnsureSession = (input: {
@@ -337,6 +385,13 @@ function lines(socket: Socket | Duplex, onLine: (line: string) => void): void {
 }
 
 /** Serve Console's requests for the sessions under `context.links` until `signal` aborts. */
+/** Whether `presented` is the control secret, compared in constant time. */
+function isSecret(presented: string, secret: string): boolean {
+  const given = Buffer.from(presented);
+  const expected = Buffer.from(secret);
+  return given.length === expected.length && timingSafeEqual(given, expected);
+}
+
 export async function serveControl(
   root: string,
   context: ControlContext,
@@ -363,7 +418,7 @@ export async function serveControl(
         return;
       }
       if (!authenticated) {
-        if (!('token' in parsed) || parsed.token !== token) {
+        if (!('token' in parsed) || !isSecret(parsed.token, token)) {
           socket.destroy();
           return;
         }
@@ -559,6 +614,14 @@ export class ControlClient {
       .string()
       .nullable()
       .parse(await this.call({ warm: { roomId } }));
+  }
+
+  /** Hands the host the one-time ticket for its next hub hello. */
+  async giveHubTicket(ticket: string, mac: string): Promise<string> {
+    return z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .parse(await this.call({ hubTicket: ticket, mac }));
   }
 
   /** The sidecar's room watcher: its connection state and placements. */

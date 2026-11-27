@@ -1,3 +1,5 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { ExternalLink, Plus, Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
@@ -10,18 +12,17 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
-import { Button } from '@renderer/lib/ui/button';
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupButton,
   InputGroupInput,
 } from '@renderer/lib/ui/input-group';
-import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
-import type {
-  ConnectionAgent,
-  ConnectionCatalogEntry,
+import {
+  type ConnectionAgent,
+  type ConnectionCatalogEntry,
+  githubThroughApp,
 } from '@shared/core/switch-servers/connection-catalog';
 import { agentLinkFor, openAgentConnections } from './agent-links';
 import {
@@ -164,6 +165,7 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
               <>
                 <span className="flex size-7 shrink-0 items-center justify-center">
                   <AgentAvatar
+                    agentId={agent.agent_id}
                     name={agent.name}
                     iconUrl={iconFor(agent.agent_id)}
                     serverId={serverId}
@@ -252,7 +254,7 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
           Turn it on for an agent from the agent&apos;s Connections.
         </p>
       )}
-      {connection.slug === 'github' && usedBy.length > 0 && (
+      {githubThroughApp(connection) && usedBy.length > 0 && (
         <p className="text-xs text-foreground-muted">
           Each agent has its own repositories and access, changed from its Connections.
         </p>
@@ -285,7 +287,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
   notice: string | null;
 }) {
   const name = connection.name;
-  const isGitHub = connection.slug === 'github';
+  const isGitHub = githubThroughApp(connection);
   const reload = useReloadConnectors(workspaceId);
   const github = useGitHubConnection(workspaceId, isGitHub);
   const [choice, setChoice] = useState<GitHubGrantChoice | null>(null);
@@ -410,6 +412,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
                 )}
               >
                 <AgentAvatar
+                  agentId={agent.agent_id}
                   name={agent.name}
                   iconUrl={iconFor(agent.agent_id)}
                   serverId={serverId}

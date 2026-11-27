@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -11,8 +12,10 @@ from pydantic import Field, field_validator
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.agent_display_name import ZERO_WIDTH_SPACE
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
+    MessagePartlySent,
     PlatformAdapter,
     RequestCard,
     RichContent,
@@ -21,6 +24,7 @@ from switch_core.bridges.collaboration.adapter import (
 )
 from switch_core.bridges.collaboration.google_chat.auth import (
     GoogleAuthManager,
+    validate_token_uri,
 )
 from switch_core.bridges.collaboration.google_chat.cards import (
     render_request_card,
@@ -54,8 +58,14 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     RetireOutcome,
 )
+from switch_core.outbound import OutboundPolicy
 
 logger = logging.getLogger(__name__)
+
+# The opening of a Google Chat mention, `<users/ID>` for one person and
+# `<users/all>` for everyone in the space, which Google Chat resolves from the
+# text alone. Switch writes neither, so one in a body came from somewhere else.
+_RAW_MENTION = re.compile(r"<(?=users/)", re.IGNORECASE)
 
 
 class GoogleChatConnectionConfig(BridgeConnectionConfig):
@@ -121,6 +131,13 @@ class GoogleChatConnectionConfig(BridgeConnectionConfig):
             raise ValueError("service_account_json missing required 'client_email'.")
         if not data.get("private_key"):
             raise ValueError("service_account_json missing required 'private_key'.")
+        if "token_uri" in data:
+            try:
+                validate_token_uri(data["token_uri"])
+            except BridgeCredentialError as exc:
+                raise ValueError(
+                    f"service_account_json 'token_uri' is invalid: {exc}"
+                ) from exc
         return v
 
     @property
@@ -176,6 +193,10 @@ class GoogleChatAdapter(PlatformAdapter):
         self._tenant_id: str | None = None
         self._bridge_id: str | None = None
 
+    def set_outbound_policy(self, policy: OutboundPolicy) -> None:
+        super().set_outbound_policy(policy)
+        self.auth_manager.set_outbound_policy(policy)
+
     def set_session_factory(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -201,7 +222,12 @@ class GoogleChatAdapter(PlatformAdapter):
             await self.workspace_events_mgr.ensure_space_subscription(space_name)
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         """Verify Service Account parsing, token minting, Pub/Sub subscription access, and Chat API reachability."""
         config = GoogleChatConnectionConfig.model_validate(connection_config)
         auth = GoogleAuthManager(
@@ -210,6 +236,7 @@ class GoogleChatAdapter(PlatformAdapter):
             user_client_secret=config.user_client_secret,
             user_refresh_token=config.user_refresh_token,
         )
+        auth.set_outbound_policy(outbound_policy)
         auth.validate_service_account_structure()
 
         client_kwargs: dict[str, Any] = {}
@@ -306,17 +333,64 @@ class GoogleChatAdapter(PlatformAdapter):
         chunks = split_message_chunks(formatted)
         first_ref: str | None = None
 
-        for chunk in chunks:
-            res = await self.client.create_message(
-                space_id=channel_id,
-                text=chunk,
-                thread_name=thread_root_id,
-            )
+        for index, chunk in enumerate(chunks):
+            try:
+                res = await self.client.create_message(
+                    space_id=channel_id,
+                    text=chunk,
+                    thread_name=thread_root_id,
+                )
+            except (BridgeOperationError, httpx.HTTPError) as exc:
+                if first_ref is None:
+                    raise
+                await self._note_truncation(
+                    channel_id, thread_root_id, index, len(chunks), exc
+                )
+                raise MessagePartlySent(
+                    platform="Google Chat",
+                    first_ref=first_ref,
+                    delivered=index,
+                    total=len(chunks),
+                ) from exc
             msg_name = res.get("name")
             if first_ref is None and msg_name:
                 first_ref = msg_name
 
         return first_ref
+
+    async def _note_truncation(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        delivered: int,
+        total: int,
+        refusal: Exception,
+    ) -> None:
+        """Say in the space that a split message stopped part way, after the
+        parts that arrived."""
+        logger.error(
+            "Only %d of %d parts of a message reached Google Chat space %s: %s",
+            delivered,
+            total,
+            channel_id,
+            refusal,
+        )
+        try:
+            await self.client.create_message(
+                space_id=channel_id,
+                text=(
+                    f"_Only {delivered} of {total} parts of this message could be "
+                    "delivered; Google Chat refused the rest._"
+                ),
+                thread_name=thread_root_id,
+            )
+        except (BridgeOperationError, httpx.HTTPError) as exc:
+            logger.error(
+                "Could not tell Google Chat space %s that a message is cut short; "
+                "nothing there says so: %s",
+                channel_id,
+                exc,
+            )
 
     async def update_message(
         self,
@@ -451,4 +525,8 @@ class GoogleChatAdapter(PlatformAdapter):
         return text
 
     def _render_outbound(self, text: str) -> str:
-        return markdown_to_google_chat(text)
+        """Markdown as Google Chat formatting, with any mention already in it
+        shown as written: a zero-width space after its `<` leaves it legible
+        and unresolved, so text an agent echoed cannot notify a person, or the
+        whole space with `<users/all>`."""
+        return _RAW_MENTION.sub("<" + ZERO_WIDTH_SPACE, markdown_to_google_chat(text))

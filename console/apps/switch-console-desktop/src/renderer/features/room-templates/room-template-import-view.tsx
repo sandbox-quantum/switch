@@ -1,18 +1,22 @@
-import Editor from '@monaco-editor/react';
-import { ArrowRight, Save, Upload, FileText } from 'lucide-react';
-import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
-import { homeRedirect } from '@renderer/features/switch-servers/home-target';
-import { ServerPage } from '@renderer/features/switch-servers/server-page';
-import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
-import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { prefillForSave } from '@renderer/features/templates/agent-template-data';
+import { ServerPage } from '@switch-console/chat-ui/components/server-page';
 import {
   TEMPLATE_ACCESS_OPTIONS,
   type TemplateAccess,
   visibilityOf,
-} from '@renderer/features/templates/template-visibility';
+} from '@switch-console/chat-ui/model/template-visibility';
+import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
+import { ArrowRight, Save, Upload, FileText } from 'lucide-react';
+import { observer } from 'mobx-react-lite';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
+import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { prefillForSave } from '@renderer/features/templates/agent-template-data';
 import { unsaidMessage } from '@renderer/features/templates/use/use-template-model';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -21,13 +25,15 @@ import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
-import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
-import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 
 // ── Source step ─────────────────────────────────────────────────────────────
+
+// Monaco is bundled with the app (`@renderer/lib/monaco`), and loaded the first
+// time the editor shows rather than with the window.
+const Editor = lazy(async () => {
+  await import('@renderer/lib/monaco');
+  return import('@monaco-editor/react');
+});
 
 function readFileAsText(file: File, onText: (text: string) => void): void {
   const reader = new FileReader();
@@ -106,27 +112,35 @@ function SourceStep({
             onDrop={handleDrop}
             className={`overflow-hidden rounded-md border border-border transition-colors ${dragging ? 'ring-primary ring-2' : ''}`}
           >
-            <Editor
-              height={editorHeight}
-              language="yaml"
-              theme="vs-dark"
-              value={yamlText}
-              onChange={(v) => onYamlChange(v ?? '')}
-              options={{
-                minimap: { enabled: false },
-                lineNumbers: 'on',
-                folding: true,
-                tabSize: 2,
-                fontSize: 13,
-                scrollBeyondLastLine: false,
-                wordWrap: 'on',
-                automaticLayout: true,
-                renderLineHighlight: 'none',
-                overviewRulerLanes: 0,
-                hideCursorInOverviewRuler: true,
-                scrollbar: { vertical: 'auto', horizontal: 'auto' },
-              }}
-            />
+            <Suspense
+              fallback={
+                <div className="p-3 text-sm text-foreground-muted" style={{ height: editorHeight }}>
+                  Loading…
+                </div>
+              }
+            >
+              <Editor
+                height={editorHeight}
+                language="yaml"
+                theme="vs-dark"
+                value={yamlText}
+                onChange={(v) => onYamlChange(v ?? '')}
+                options={{
+                  minimap: { enabled: false },
+                  lineNumbers: 'on',
+                  folding: true,
+                  tabSize: 2,
+                  fontSize: 13,
+                  scrollBeyondLastLine: false,
+                  wordWrap: 'on',
+                  automaticLayout: true,
+                  renderLineHighlight: 'none',
+                  overviewRulerLanes: 0,
+                  hideCursorInOverviewRuler: true,
+                  scrollbar: { vertical: 'auto', horizontal: 'auto' },
+                }}
+              />
+            </Suspense>
           </div>
         </Field>
       </FieldGroup>

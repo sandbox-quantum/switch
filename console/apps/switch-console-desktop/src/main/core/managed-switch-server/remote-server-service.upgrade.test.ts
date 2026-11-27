@@ -56,6 +56,7 @@ vi.mock('@main/core/telemetry/managed-server', () => ({
 vi.mock('@main/core/switch-servers/delete-server-agents', () => ({
   deleteAgentsForServer: vi.fn(),
 }));
+vi.mock('./follow-server-address', () => ({ followManagedServerAddress: vi.fn() }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   listManagedServers: m.servers,
   getRemoteManagedServer: vi.fn(),

@@ -1625,15 +1625,22 @@ class AgentConnectionRegistry:
         self._by_id[row.id] = copy
         self._by_agent.setdefault(row.agent_id, set()).add(row.id)
 
-    def drop_copies_held_by(self, process_ids: set[str]) -> set[str]:
+    def drop_copies_held_by(
+        self, process_ids: set[str], *, moving_until: dict[str, float]
+    ) -> set[str]:
         """Forget the connections these processes held, agents' and
-        controllers': their leases lapsed. Returns the agents that lost one."""
+        controllers': they stopped holding their leases. A controller moving
+        from one that shut down still reads as connected until the time
+        `moving_until` gives that process (`ControllerPresence.moving`).
+        Returns the agents that lost a connection."""
         agents: set[str] = set()
         for conn in list(self._by_id.values()):
             if conn.held_by in process_ids:
                 self._forget(conn.id)
                 agents.add(conn.agent_id)
-        for controller_id in self.controllers.forget_processes(process_ids):
+        for controller_id in self.controllers.forget_processes(
+            process_ids, moving_until=moving_until
+        ):
             agents |= self.controllers.agents_of(controller_id)
         return agents
 

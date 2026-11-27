@@ -232,7 +232,7 @@ def test_qwen_on_llama_cpp_is_the_alternative() -> None:
     assert "SYSTEMONE_URL" not in env
 
     server = by_name["model-server"]
-    assert server["image"] == "ghcr.io/ggml-org/llama.cpp:server-cuda"
+    assert server["image"].startswith("ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:")
     assert env_of(server) == {
         "MODEL_PATH": "/models/Qwen3.5-4B-Q4_K_M.gguf",
         "LLAMA_API_KEY": None,

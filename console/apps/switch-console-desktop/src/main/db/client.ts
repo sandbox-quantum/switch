@@ -1,6 +1,8 @@
 import { existsSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { log } from '@main/lib/logger';
+import { makeDatabaseFilesOwnerOnly } from './database-file';
 import { resolveDatabasePath } from './path';
 import * as schema from './schema';
 
@@ -17,6 +19,15 @@ const databasePath = resolveDatabasePath();
  * opening, which creates the file.
  */
 export const databaseExistedAtStart = existsSync(databasePath);
+
+try {
+  makeDatabaseFilesOwnerOnly(databasePath);
+} catch (error) {
+  log.warn('Could not make the database readable by this user alone', {
+    databasePath,
+    error: String(error),
+  });
+}
 
 // WAL is switched on by initializeDatabase, not here: switching writes to the
 // file, and a database from a newer build must be refused before anything does.

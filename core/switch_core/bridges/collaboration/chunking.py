@@ -18,15 +18,30 @@ opener's info string contains no backtick (so a one-line span such as
 ```npm test``` opens nothing), while a tilde opener's may contain anything. A
 closing fence is a run of the opener's own character at least as long as the
 opener, followed only by whitespace.
+
+A fence run longer than a quarter of the limit cannot be closed and reopened
+and still leave room for the code, so a block opened by one is split like
+plain text, with its fences indented so that they open and close nothing:
+every part fits and renders whole, at the cost of the block reading as
+prose.
+
+A line wrapped in pieces never yields a piece that reads as a fence: a piece
+that would start with a fence run is indented past the three spaces a fence
+may have.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 
 _TICK = "`"
 _TILDE = "~"
 _MAX_FENCE_INDENT = 3
+# A fence run at a position, after any spaces a cut there would strip.
+_FENCE_RUN_AT = re.compile(r" *(?:```|~~~)")
+# Indented this far, a line is never a fence, opening or closing.
+_INERT_LEAD = " " * (_MAX_FENCE_INDENT + 1)
 
 
 @dataclass(frozen=True)
@@ -93,33 +108,64 @@ def _first_cut_floor(line: str) -> int:
     return len(line) - len(text) + run + tail + 1
 
 
-def _hard_wrap(line: str, budget: int) -> list[str]:
+def _hard_cut(rest: str, budget: int, floor: int) -> int:
+    """Where to cut `rest` when no space will do: the latest point at or
+    before `budget` that leaves the next piece not starting with a fence run,
+    or `budget` itself when every point would. Always at least 1, so the
+    caller makes progress."""
+    lowest = max(1, floor) if floor <= budget else 1
+    for cut in range(budget, lowest - 1, -1):
+        if not _FENCE_RUN_AT.match(rest, cut):
+            return cut
+    return budget
+
+
+def _hard_wrap(line: str, budget: int, *, in_code: bool) -> list[str]:
     """Break one over-long line, preferring a space over cutting a word.
 
     No piece reads as a fence the line was not: the first keeps what makes
-    the line plain text, and no later piece starts with a fence run."""
+    the line plain text, and no later piece starts with a fence run. Where
+    that cannot be done, a run of fence characters longer than `budget` say,
+    the piece is indented past the three spaces a fence may have, so it reads
+    as text (or code) and opens or closes nothing. `in_code` says whether the
+    line is inside a fenced block, where a first piece shaped like an opener
+    could close the block rather than open one."""
     budget = max(1, budget)
     if len(line) <= budget:
         return [line]
 
+    floor = _first_cut_floor(line)
+    keeps_role = in_code or _opening_fence(line) is None
+    lead = _inert_lead(line, budget) if floor > budget and keeps_role else ""
+    if lead:
+        floor = 0
     pieces: list[str] = []
     rest = line
-    floor = _first_cut_floor(line)
-    while len(rest) > budget:
-        cut = rest.rfind(" ", floor, budget + 1)
-        while cut > 0 and _marker_run(rest[cut:].lstrip(" ")) >= 3:
+    while True:
+        room = budget - len(lead)
+        if len(rest) <= room:
+            pieces.append(lead + rest)
+            return pieces
+        cut = rest.rfind(" ", floor, room + 1)
+        while cut > 0 and _FENCE_RUN_AT.match(rest, cut):
             cut = rest.rfind(" ", floor, cut)
         if cut <= 0:
-            cut = budget
-            lowest = floor if floor <= budget else 1
-            while cut > lowest and _marker_run(rest[cut:].lstrip(" ")) >= 3:
-                cut -= 1
-        pieces.append(rest[:cut])
+            cut = _hard_cut(rest, room, floor)
+        pieces.append(lead + rest[:cut])
         rest = rest[cut:].lstrip(" ")
+        if not rest:
+            return pieces
         floor = 0
-    if rest:
-        pieces.append(rest)
-    return pieces
+        lead = _inert_lead(rest, budget)
+
+
+def _inert_lead(rest: str, budget: int) -> str:
+    """The indentation that stops a piece starting `rest` reading as a fence:
+    none when it does not start with a fence run, and none when the budget
+    is too small to carry it and any text besides."""
+    if not _FENCE_RUN_AT.match(rest) or budget <= len(_INERT_LEAD):
+        return ""
+    return _INERT_LEAD
 
 
 class _Splitter:
@@ -132,6 +178,10 @@ class _Splitter:
         # Index in `buf` of the line that opened `fence`: the source's own
         # opener, or the reopener a split put at the top of this part.
         self.opened_at: int | None = None
+        # A block whose fence is too long to close and reopen within the
+        # limit. It is split like plain text, and tracked only so that its
+        # lines are not taken for fences and its closer is recognised.
+        self.loose: _Fence | None = None
 
     def _reopener(self, fence: _Fence) -> str:
         # An info string so long it would crowd the code out of every part is
@@ -181,7 +231,24 @@ class _Splitter:
             self._start([self._reopener(fence)])
         self.opened_at = 0
 
+    def _feed_loose(self, raw: str) -> None:
+        """Feed a line of a loose block. Its fences, and any line in it that
+        is shaped like one, are indented so that none opens or closes a block
+        in a part that cannot also hold the rest of it."""
+        if _fence_text(raw) is not None and _FENCE_RUN_AT.match(raw):
+            raw = _INERT_LEAD + raw
+        for piece in _hard_wrap(raw, self.limit, in_code=True):
+            if self.buf and not self._fits(piece, 0):
+                self._flush()
+            self._append(piece)
+
     def feed(self, raw: str) -> None:
+        if self.loose is not None:
+            if _closes(raw, self.loose):
+                self.loose = None
+            self._feed_loose(raw)
+            return
+
         before = self.fence
         if before is not None and _closes(raw, before):
             if self._fits(raw, 0):
@@ -196,6 +263,10 @@ class _Splitter:
             return
 
         after = before if before is not None else _opening_fence(raw)
+        if before is None and after is not None and len(after.marker) > self.limit // 4:
+            self.loose = after
+            self._feed_loose(raw)
+            return
         open_fence = before or after
         overhead = 0
         if open_fence is not None:
@@ -208,7 +279,7 @@ class _Splitter:
             )
             opener = max(len(self._reopener(open_fence)), carried)
             overhead = opener + len(open_fence.marker) + 2
-        pieces = _hard_wrap(raw, self.limit - overhead)
+        pieces = _hard_wrap(raw, self.limit - overhead, in_code=before is not None)
         reserve = len(after.marker) + 1 if after is not None else 0
         for piece in pieces:
             if not self._fits(piece, reserve):

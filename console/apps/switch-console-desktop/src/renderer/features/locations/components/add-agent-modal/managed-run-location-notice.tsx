@@ -1,20 +1,18 @@
+import { CanManageAgentsToggle } from '@switch-console/chat-ui/components/agent-permissions';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleAlert, Server } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { TurnOnMachine } from '@renderer/features/machines/turn-on-machine';
 import {
   advancedConfigFromForm,
   MODEL_FIELD,
 } from '@renderer/features/managed-agents/managed-agent-changes';
 import { useAdvancedConfigSchema } from '@renderer/features/managed-agents/use-managed-agents';
-import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 import { invalidateHostProviderReadiness } from '@renderer/lib/components/provider-connection-status';
 import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@renderer/lib/ui/button';
-import { Field } from '@renderer/lib/ui/field';
-import { Switch } from '@renderer/lib/ui/switch';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AdvancedConfigField } from '@shared/core/managed-agents/managed-agents';
 import { type AgentProviderId, getProvider } from '@shared/core/providers/agent-provider-registry';
@@ -25,7 +23,11 @@ import { newAgentMachineNotice } from './managed-run-location';
 
 const NO_SCHEMA: AdvancedConfigField[] = [];
 
-/** Under the run location: whether the new agent runs managed there, and turning the machine on when it cannot yet. */
+/**
+ * Under the run location: whether the new agent runs managed there, and
+ * turning the machine on when it cannot yet. Only the person turns it on,
+ * with the button and its confirmation: this form also opens from links.
+ */
 export function ManagedRunLocationNotice({
   machine,
   label,
@@ -43,22 +45,7 @@ export function ManagedRunLocationNotice({
 }) {
   const queryClient = useQueryClient();
   const [enabling, setEnabling] = useState(false);
-  const [autoTried, setAutoTried] = useState<string | null>(null);
   const notice = newAgentMachineNotice(machine, { label, sshHost });
-  const canEnable = notice.kind === 'blocked' && notice.enable !== null;
-  const where = `${serverId}:${workspaceId}:${sshHost ?? 'this-computer'}`;
-  const enableRef = useRef(enable);
-  enableRef.current = enable;
-
-  // A machine that can be set up for managed agents is set up as soon as it is
-  // chosen, as the automatic move to managed would: on a server with agent
-  // management that is how agents run, so asking first only stands in the way.
-  // Tried once per machine; if it fails, the button below is the way to retry.
-  useEffect(() => {
-    if (!canEnable || autoTried === where) return;
-    setAutoTried(where);
-    void enableRef.current();
-  }, [canEnable, where, autoTried]);
 
   if (enabling)
     return (
@@ -107,15 +94,14 @@ export function ManagedRunLocationNotice({
       <div className="flex min-w-0 flex-col gap-1.5">
         <span>{notice.text}</span>
         {notice.enable && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="w-fit"
-            disabled={enabling}
-            onClick={() => void enable()}
-          >
-            {enabling ? 'Turning on…' : notice.enable.label}
-          </Button>
+          <TurnOnMachine
+            serverId={serverId}
+            label={label}
+            sshHost={sshHost}
+            buttonLabel={notice.enable.label}
+            busy={enabling}
+            onConfirm={() => void enable()}
+          />
         )}
       </div>
     </div>
@@ -219,28 +205,5 @@ export function CanManageAgentsField({
   checked: boolean;
   onChange: (checked: boolean) => void;
 }) {
-  return (
-    <Field>
-      <label className="-mx-2 flex cursor-pointer items-start justify-between gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-[var(--sel-soft)]">
-        <span className="flex flex-col gap-0.5">
-          <span className="flex items-center gap-1.5 text-sm">
-            Can manage agents
-            <InfoTooltip
-              label="More info about managing agents"
-              content="The agent can see your machines and managed agents, and create agents that run on your machines and belong to you. Agents it creates do not get this permission."
-            />
-          </span>
-          <span className="text-xs text-foreground-muted">
-            Let this agent create agents on your machines.
-          </span>
-        </span>
-        <Switch
-          className="mt-0.5"
-          aria-label="Can manage agents"
-          checked={checked}
-          onCheckedChange={onChange}
-        />
-      </label>
-    </Field>
-  );
+  return <CanManageAgentsToggle machineWord="machine" checked={checked} onChange={onChange} />;
 }

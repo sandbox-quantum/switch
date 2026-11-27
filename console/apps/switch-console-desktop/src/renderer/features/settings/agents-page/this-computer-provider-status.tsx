@@ -1,13 +1,14 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, CircleAlert, Loader2, RefreshCw } from 'lucide-react';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { ReportedProviderLine } from '@renderer/lib/components/provider-status-row';
 import { reportedHeadline } from '@renderer/lib/components/reported-provider';
+import { reprobeThisComputer } from '@renderer/lib/stores/use-agent-installation-statuses';
 import {
   recheckThisComputer,
   useThisComputerReport,
 } from '@renderer/lib/stores/use-this-computer-report';
-import { Button } from '@renderer/lib/ui/button';
 import { getProvider, type AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { reportedProvider } from './this-computer-status';
 
@@ -26,7 +27,11 @@ export function ThisComputerProviderStatus({
 }) {
   const queryClient = useQueryClient();
   const report = useThisComputerReport();
-  const recheck = useMutation({ mutationFn: () => recheckThisComputer(queryClient) });
+  // Console's own check too, so an install fixed in a terminal shows up below.
+  const recheck = useMutation({
+    mutationFn: () =>
+      Promise.all([recheckThisComputer(queryClient), reprobeThisComputer(queryClient)]),
+  });
   const reported = reportedProvider(report.data, providerId);
 
   // Neither check is shown until it is known whether there is a report, so

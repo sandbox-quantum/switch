@@ -592,3 +592,31 @@ room:
     result = lint_template(text)
     (warning,) = [w for w in result.warnings if "'{agent}'" in w.message]
     assert "ambiguous" in warning.message
+
+
+class TestPatternBounds:
+    """A param's pattern, and a default checked against it, are bounded when
+    a template is saved, and the bound blocks the save."""
+
+    def _doc(self, pattern: str, default: str | None = None) -> str:
+        spec = f"    type: string\n    pattern: '{pattern}'\n"
+        if default is not None:
+            spec += f"    default: '{default}'\n"
+        return f'params:\n  team:\n{spec}room:\n  name: "{{team}}"\n'
+
+    def test_a_pattern_within_the_bound_is_fine(self) -> None:
+        assert not lint_template(self._doc("a" * 500)).blocked
+
+    def test_a_longer_pattern_blocks(self) -> None:
+        result = lint_template(self._doc("a" * 600))
+        assert result.blocked
+        (finding,) = [f for f in result.errors if f.code == "pattern_too_long"]
+        assert finding.subject == "team"
+        assert "600 characters" in finding.message
+
+    def test_a_default_too_long_to_check_blocks(self) -> None:
+        result = lint_template(self._doc(".*", default="x" * 10_001))
+        assert result.blocked
+        assert [f.code for f in result.errors if f.blocking] == [
+            "pattern_default_too_long"
+        ]

@@ -174,20 +174,26 @@ class _AgentRegistry:
 
     The *system*-client half is the real service (`_registry` below), because
     that lookup is where the cross-tenant bug lived and a stand-in would have
-    reimplemented the fix rather than exercised it. Resolving an agent to its
-    running client is not tenant-sensitive (an agent id is unique across the
-    deployment), and building real `AgentActor`s to say so would add a
-    transport to a test about bindings.
+    reimplemented the fix rather than exercised it. Building real
+    `AgentActor`s for the agent half would add a transport to a test about
+    bindings; the registry's own tenant filter is tested against the real
+    service in `clients/test_client_lifecycle_agent_lookup.py`. Each agent's
+    client is held under its tenant, and the tenants asked for are recorded.
     """
 
-    def __init__(self, agents: dict[str, _RunningClient]) -> None:
+    def __init__(self, agents: dict[str, tuple[str, _RunningClient]]) -> None:
         self._agents = agents
+        self.asked: list[tuple[str, str]] = []
 
     def get_by_type(self, client_type: str, tenant_id: str) -> list[_RunningClient]:
         return []
 
-    def get_by_agent_id(self, agent_id: str) -> _RunningClient | None:
-        return self._agents.get(agent_id)
+    def get_tenant_agent(self, agent_id: str, tenant_id: str) -> _RunningClient | None:
+        self.asked.append((agent_id, tenant_id))
+        found = self._agents.get(agent_id)
+        if found is None or found[0] != tenant_id:
+            return None
+        return found[1]
 
     def get(self, client_id: str) -> _RunningClient | None:
         return None
@@ -663,7 +669,12 @@ class TestBindingsOnTheRoomsOwnTenant:
             session_factory,
             store=store,
             clients=_AgentRegistry(
-                {"agent-b": _RunningClient("client-b", "@agent-b:switch.local")}
+                {
+                    "agent-b": (
+                        TENANT_B,
+                        _RunningClient("client-b", "@agent-b:switch.local"),
+                    )
+                }
             ),
             matrix=_FakeProvisioning(),
         )
@@ -752,6 +763,90 @@ class TestBindingsOnTheRoomsOwnTenant:
         assert isinstance(raised.value.orig, TenantNotBoundError)
 
 
+class TestAnotherTenantsAgent:
+    """An agent id from another tenant is answered as an unknown one.
+
+    The running registry holds every tenant's clients, so before the lookup
+    named the room's tenant, another tenant's agent got past it and failed
+    later, on the membership write's composite foreign key, as an error of a
+    different kind: enough to tell that the id exists elsewhere.
+    """
+
+    async def _arrange(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        async with session_factory() as session:
+            await _seed_room(
+                session,
+                tenant_id=TENANT_ZERO_ID,
+                room_id="room-zero",
+                transport_room_id="!zero:switch.local",
+            )
+            await session.commit()
+        async with tenant_session(session_factory, TENANT_B) as session:
+            await _seed_tenant_b(session)
+            await _seed_agent(
+                session, tenant_id=TENANT_B, agent_id="agent-b", client_id="client-b"
+            )
+            await session.commit()
+
+    def _registry(self) -> _AgentRegistry:
+        return _AgentRegistry(
+            {
+                "agent-b": (
+                    TENANT_B,
+                    _RunningClient("client-b", "@agent-b:switch.local"),
+                )
+            }
+        )
+
+    async def _refusal(self, svc: RoomService, agent_id: str) -> str:
+        with pytest.raises(ValueError) as raised:
+            await svc.add_agents_to_room("room-zero", agent_ids=[agent_id])
+        return str(raised.value).replace(agent_id, "<id>")
+
+    async def test_adding_it_fails_exactly_as_adding_an_unknown_agent(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._arrange(session_factory)
+        store = _TenantRecordingRoomStore()
+        registry = self._registry()
+        provisioning = _FakeProvisioning()
+        svc = _service(
+            session_factory, store=store, clients=registry, matrix=provisioning
+        )
+
+        foreign = await self._refusal(svc, "agent-b")
+        unknown = await self._refusal(svc, "agent-nobody")
+
+        assert foreign == unknown
+        assert registry.asked == [
+            ("agent-b", TENANT_ZERO_ID),
+            ("agent-nobody", TENANT_ZERO_ID),
+        ]
+        assert store.tenants_for("add_agents") == []
+        assert provisioning.invited == []
+        async with session_factory() as session:
+            rows = (await session.execute(select(room_agents.c.agent_id))).all()
+        assert rows == []
+
+    async def test_removing_it_fails_exactly_as_removing_an_unknown_agent(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._arrange(session_factory)
+        svc = _service(
+            session_factory,
+            store=_TenantRecordingRoomStore(),
+            clients=self._registry(),
+            matrix=_FakeProvisioning(),
+        )
+
+        messages = []
+        for agent_id in ("agent-b", "agent-nobody"):
+            with pytest.raises(ValueError) as raised:
+                await svc.remove_agents_from_room("room-zero", [agent_id])
+            messages.append(str(raised.value).replace(agent_id, "<id>"))
+        assert messages[0] == messages[1]
+
+
 class TestTheStandInMatchesTheRealSignature:
     """`_AgentRegistry` covers the half of `ClientLifecycleService` these
     tests do not use for real.
@@ -764,4 +859,9 @@ class TestTheStandInMatchesTheRealSignature:
     def test_get_by_type_takes_a_tenant(self) -> None:
         real = inspect.signature(ClientLifecycleService.get_by_type)
         stand_in = inspect.signature(_AgentRegistry.get_by_type)
+        assert list(real.parameters) == list(stand_in.parameters)
+
+    def test_get_tenant_agent_takes_a_tenant(self) -> None:
+        real = inspect.signature(ClientLifecycleService.get_tenant_agent)
+        stand_in = inspect.signature(_AgentRegistry.get_tenant_agent)
         assert list(real.parameters) == list(stand_in.parameters)

@@ -1,17 +1,22 @@
-import { FolderOpen, Play } from 'lucide-react';
-import React from 'react';
-import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
-import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
-import { Switch } from '@renderer/lib/ui/switch';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
+} from '@switch-console/chat-ui/primitives/select';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
+import { FolderOpen, Play } from 'lucide-react';
+import React from 'react';
+import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
+import { rpc } from '@renderer/lib/ipc';
 import { configureSoundPlayer, soundPlayer } from '@renderer/utils/soundPlayer';
 import { cn } from '@renderer/utils/utils';
 import type { NotificationSettings } from '@shared/core/app-settings';

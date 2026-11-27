@@ -18,6 +18,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     AgentIdentity,
+    MessagePartlySent,
     PlatformAdapter,
     RichContent,
     RichContentFailed,
@@ -53,7 +54,7 @@ from switch_core.bridges.collaboration.rocketchat.rest import (
     RocketChatApiError,
     RocketChatRest,
 )
-from switch_core.outbound import guarded_async_client
+from switch_core.outbound import OutboundPolicy, guarded_async_client
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +241,12 @@ class RocketChatAdapter(PlatformAdapter):
     activity_reactions_per_agent: ClassVar[bool] = False
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         """Ask Rocket.Chat who the token belongs to (`me`), as `start` will.
 
         `server_url` has been through the outbound policy before this is
@@ -966,10 +972,12 @@ class RocketChatAdapter(PlatformAdapter):
         the first part's id. Every part goes where the first went, in order.
 
         Raises if the first part is refused, when nothing has been posted. A
-        later part refused is logged, and the parts already posted stand.
+        later part refused ends the run: the parts already posted stand, the
+        room is told the rest is missing, and `MessagePartlySent` is raised.
         """
+        parts = split_markdown(text, _MAX_MESSAGE)
         first: str | None = None
-        for part in split_markdown(text, _MAX_MESSAGE):
+        for index, part in enumerate(parts):
             body: dict[str, Any] = {"roomId": channel_id, "text": part, **identity}
             if thread_root_id:
                 body["tmid"] = thread_root_id
@@ -979,14 +987,36 @@ class RocketChatAdapter(PlatformAdapter):
                 if first is None:
                     raise
                 logger.error(
-                    "Rocket.Chat refused the rest of a long message in room %s "
-                    "after its first part was posted: %s",
+                    "Only %d of %d parts of a message reached Rocket.Chat room %s: %s",
+                    index,
+                    len(parts),
                     channel_id,
                     error,
                 )
-                return first
+                notice = (
+                    f"_Only {index} of {len(parts)} parts of this message could be "
+                    "delivered; Rocket.Chat refused the rest._"
+                )
+                await self._note_truncation({**body, "text": notice})
+                raise MessagePartlySent(
+                    platform="Rocket.Chat",
+                    first_ref=first,
+                    delivered=index,
+                    total=len(parts),
+                ) from error
             first = first or str(posted["message"]["_id"])
         return first
+
+    async def _note_truncation(self, body: dict[str, Any]) -> None:
+        try:
+            await self._api.post("chat.postMessage", body)
+        except (RocketChatApiError, httpx.HTTPError) as error:
+            logger.error(
+                "Could not tell Rocket.Chat room %s that a message is cut short; "
+                "nothing there says so: %s",
+                body["roomId"],
+                error,
+            )
 
     @staticmethod
     def _not_posted(channel_id: str, error: Exception) -> str | None:

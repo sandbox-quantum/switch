@@ -27,6 +27,7 @@ const CATALOGUE: ModelCatalogueResult = {
   models: [
     { id: 'ollama/gemma4:latest', variants: [] },
     { id: 'google/gemini-2.5-flash', variants: ['high', 'max'] },
+    { id: 'anthropic/claude-fable-5-2', variants: null },
   ],
 };
 
@@ -116,6 +117,18 @@ describe('fieldCatalogueState', () => {
 
       expect(state.disabled).toBe(true);
       expect(state.note).toContain('no reasoning variants');
+    });
+
+    it('stays a plain box for a model whose variants the host cannot list', () => {
+      const state = fieldCatalogueState(
+        variantField,
+        { model: 'anthropic/claude-fable-5-2', variant: 'high' },
+        CATALOGUE
+      );
+
+      expect(state).toEqual({
+        note: "This host doesn't say which reasoning variants anthropic/claude-fable-5-2 accepts.",
+      });
     });
 
     it('warns when a value left over from another model would be ignored', () => {

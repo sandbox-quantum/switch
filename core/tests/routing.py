@@ -15,6 +15,7 @@ routed once, by the process that wrote it.
 
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -59,6 +60,7 @@ from switch_core.decision.client import DynamicDecisionClient
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
 from switch_core.delivery.router import MessageRouter
+from switch_core.delivery.send_limits import SendLimits
 from switch_core.messages.notify import MessageListener
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.transport.ephemeral import EphemeralBus
@@ -203,6 +205,7 @@ def router_on(
     conversation: ConversationSettings | None = None,
     announcer: Announcer | None = None,
     decisions: DynamicDecisionClient | None = None,
+    send_limits: SendLimits | None = None,
 ) -> MessageRouter:
     """A router on the test database with real stores. A test that has no
     agent in its rooms can write through it with nothing else set up.
@@ -247,6 +250,18 @@ def router_on(
         ),
         decisions=decisions,
         decision_max_age_seconds=120,
+        send_limits=send_limits if send_limits is not None else unlimited_sends(),
+    )
+
+
+def unlimited_sends() -> SendLimits:
+    """The server's message length limit, and a rate no test reaches: a test
+    of the rate makes its own."""
+    return SendLimits(
+        max_message_chars=64 * 1024,
+        burst=1_000_000,
+        per_second=1_000_000.0,
+        clock=time.monotonic,
     )
 
 

@@ -260,6 +260,96 @@ function dropFileIndex(connection: BetterSqlite3.Database): void {
     .run(FILE_INDEX_VERSION);
 }
 
+const PROVIDER_CONFIGS_KEY = 'providerConfigs';
+const PROVIDER_CONFIGS_SCRUB_KEY = 'provider_configs_scrub';
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** What a saved `providerConfigs` value held, by name only: never a value. */
+function providerConfigNames(raw: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { unreadable: true };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { unreadable: true };
+  const providers = Object.entries(parsed as Record<string, unknown>).map(([provider, config]) => {
+    const fields = config && typeof config === 'object' ? (config as Record<string, unknown>) : {};
+    const env =
+      fields.env && typeof fields.env === 'object' ? Object.keys(fields.env as object) : [];
+    return {
+      provider,
+      envNames: env.filter((name) => ENV_NAME.test(name)),
+      otherEnvEntries: env.filter((name) => !ENV_NAME.test(name)).length,
+      extraArgs: typeof fields.extraArgs === 'string' && fields.extraArgs.trim() !== '',
+    };
+  });
+  return { providers };
+}
+
+/**
+ * Deletes the per-provider "Environment variables" and "Additional parameters"
+ * earlier builds saved in `app_settings` and never applied to a launch. They
+ * were plaintext and the obvious place to paste an API key, so the database is
+ * vacuumed and its WAL truncated afterwards: a deleted row otherwise lingers in
+ * free space, and an edited one in older copies of its page. Until that has
+ * succeeded a `kv` marker stays behind and the next launch tries again.
+ */
+export function dropProviderConfigs(connection: BetterSqlite3.Database): void {
+  const scrubLog = log.child({ component: 'db-migration' });
+  const row = connection
+    .prepare(`SELECT value FROM app_settings WHERE key = ?`)
+    .get(PROVIDER_CONFIGS_KEY) as { value: string } | undefined;
+  const pending =
+    connection.prepare(`SELECT 1 FROM kv WHERE key = ?`).get(PROVIDER_CONFIGS_SCRUB_KEY) !==
+    undefined;
+  if (!row && !pending) return;
+
+  if (row) {
+    const previous = connection.pragma('secure_delete', { simple: true }) as number;
+    connection.pragma('secure_delete = ON');
+    try {
+      connection.transaction(() => {
+        connection.prepare(`DELETE FROM app_settings WHERE key = ?`).run(PROVIDER_CONFIGS_KEY);
+        connection
+          .prepare(
+            `INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, 'pending', unixepoch())`
+          )
+          .run(PROVIDER_CONFIGS_SCRUB_KEY);
+      })();
+    } finally {
+      connection.pragma(`secure_delete = ${previous}`);
+    }
+    scrubLog.warn(
+      'Deleted the saved provider environment variables and additional parameters, which no launch ever applied',
+      { event: 'provider_settings_dropped', ...providerConfigNames(row.value) }
+    );
+  }
+
+  try {
+    connection.exec('VACUUM');
+  } catch (error) {
+    scrubLog.error(
+      'Could not vacuum the database after deleting the saved provider settings; older copies of their values may remain in it until the next launch tries again',
+      { event: 'provider_settings_scrub_failed', stage: 'vacuum', error: String(error) }
+    );
+    return;
+  }
+  const [checkpoint] = connection.pragma('wal_checkpoint(TRUNCATE)') as {
+    busy: number;
+    log: number;
+    checkpointed: number;
+  }[];
+  if (!checkpoint || checkpoint.busy !== 0) {
+    scrubLog.error(
+      'Could not checkpoint the database after deleting the saved provider settings; their values may remain in the write-ahead log until the next launch tries again',
+      { event: 'provider_settings_scrub_failed', stage: 'checkpoint', checkpoint }
+    );
+    return;
+  }
+  connection.prepare(`DELETE FROM kv WHERE key = ?`).run(PROVIDER_CONFIGS_SCRUB_KEY);
+}
+
 /**
  * Runs all pending migrations against the provided SQLite connection (or the
  * app's shared singleton when called without arguments). Call this once in
@@ -283,5 +373,6 @@ export async function initializeDatabase(
   conn.pragma('journal_mode = WAL');
   ensureSearchIndex(conn);
   dropFileIndex(conn);
+  dropProviderConfigs(conn);
   return conn;
 }

@@ -23,9 +23,10 @@ per workspace, beside the time of the report). That table is global, so the
 sampler reads every machine without binding a tenant, and nothing new is
 stored beyond counts.
 
-Every series carries `backend`, the kind of machine: `vm` for every cloud
-machine this server makes (`V1_BACKEND`), so a later kind of machine adds to
-the same series rather than new ones.
+The series both kinds of machine can fill carry `backend`, the kind of
+machine from its row: `vm` for a v1 machine (`V1_BACKEND`) and `box` for a
+hosted agents v2 box (`BOX_BACKEND`). The rest (restarts, the valve, the
+provider gateway and the like) only boxes report, and carry no `backend`.
 Nothing here runs without `OTLP_ENDPOINT`: no registry is installed then, and
 the sampler isn't started.
 """
@@ -47,20 +48,40 @@ from sqlalchemy.orm import Session, SessionTransaction
 
 from switch_core.observability.catalogue import (
     CONTROLLER_CREDENTIAL_REFUSALS,
+    HOSTED_AGENT_OOM_KILLS,
+    HOSTED_AGENT_RESTARTS_10M,
     HOSTED_AGENTS,
     HOSTED_AGENTS_STOPPED,
+    HOSTED_BOX_ANON_MEMORY,
+    HOSTED_BOX_EVICTIONS,
     HOSTED_BOX_MEMORY_USED,
+    HOSTED_BOX_REMOVALS,
     HOSTED_BOXES_EXPECTED,
     HOSTED_BOXES_REPORTING,
+    HOSTED_BOXES_VALVE_MEMORY,
+    HOSTED_CLAIM_REFUSED,
     HOSTED_CLOUD_ERRORS,
     HOSTED_CONTROLLER_ERRORS,
     HOSTED_CONTROLLER_RESTARTS,
     HOSTED_DISK_USED,
+    HOSTED_GATEWAY,
+    HOSTED_GUARD_STOPS,
     HOSTED_MACHINE_EVENTS,
+    HOSTED_OPERATOR_BOXES_LIVE,
+    HOSTED_OPERATOR_CEILING,
+    HOSTED_POOL_BOXES,
+    HOSTED_POOL_CLAIMS,
+    HOSTED_POOL_REAP_REFUSED,
+    HOSTED_POOL_REFILL_SECONDS,
+    HOSTED_POOL_RETIRED,
+    HOSTED_POOL_SIZE,
     HOSTED_PROVIDER_LOGIN_PROBLEMS,
     HOSTED_PROVISION_SECONDS,
     HOSTED_RECONCILER_SILENCE,
     HOSTED_SESSIONS,
+    HOSTED_START_SECONDS,
+    HOSTED_VALVE_PARKS,
+    HOSTED_WAITING_FOR_ROOM,
     OBSERVABILITY_SAMPLE_FAILURES,
 )
 from switch_core.observability.metrics import GaugeReading, metrics
@@ -80,20 +101,28 @@ PROCESS_STATES = (
 )
 SESSION_STATES = ("active", "waking", "parked", "none")
 STOP_REASONS = ("out_of_memory", "crash_loop", "other")
+# What a box's valve can report about memory, and the provider gateway's
+# counts: boxes only.
+VALVE_STATES = ("unprotected", "failing")
+SESSION_KINDS = ("running", "max")
+GATEWAY_KINDS = ("agents", "refused", "capped_boxes")
 # The providers a controller runs (`agent-providers`), and the login states a
 # report can carry that mean a provider can't be used. `unknown` (the check
 # could not tell) is not counted. Anything else is `other`.
 PROVIDERS = ("claude", "codex", "opencode", "cursor", "antigravity")
 LOGIN_PROBLEMS = ("missing", "expired")
-# The kinds of cloud machine. Only `vm` today: a later kind is added here, and
-# anything else is left out of the gauges, and `other` on a counter.
-BACKENDS = ("vm",)
-# Every cloud machine this server makes is a v1 VM: there is no other kind yet.
+# The kinds of cloud machine (`cloud_machines.backend`): a v1 machine and a
+# hosted agents v2 box. Anything else is left out of the gauges, and `other`
+# on a counter.
+BACKENDS = ("vm", "box")
 V1_BACKEND = "vm"
+BOX_BACKEND = "box"
 
 # The controller refusal codes (`management.reason_codes`) a refused
-# credential is counted by, plus the hosted controller service's own two. Any
-# other code is counted as `other`.
+# credential is counted by, plus the hosted controller service's own two. With
+# hosted agents v2 on, also a lockout's two words and `controller_token` (a
+# controller's own bearer offered on the operator API). Any other code is
+# counted as `other`.
 REFUSAL_REASONS = frozenset(
     {
         "missing_credential",
@@ -104,11 +133,25 @@ REFUSAL_REASONS = frozenset(
         "enrollment_code_invalid",
         "missing",
         "wrong",
+        "locked_out",
+        "lockout_started",
+        "controller_token",
         "other",
     }
 )
-# The kinds of route a credential is refused on. Anything else is `other`.
-REFUSAL_ROUTES = frozenset({"agent", "management", "controller", "hosted_controller"})
+# The kinds of route a credential is refused on, including the cloud
+# controller service's provisioner and operator routes. Anything else is
+# `other`.
+REFUSAL_ROUTES = frozenset(
+    {
+        "agent",
+        "management",
+        "controller",
+        "hosted_controller",
+        "hosted_provisioner",
+        "hosted_operator",
+    }
+)
 # Cloud machine changes, each with its fixed words: the claim's change, the
 # failure, what woke it, why it stopped, and `new` or `restart` for ready.
 # Anything else is `other`.
@@ -123,17 +166,25 @@ MACHINE_EVENTS: dict[str, frozenset[str]] = {
             # A machine started again (a wake or a restart) that didn't connect
             # within the timeout, apart from a first launch's `never_connected`.
             "wake_failed",
+            # A machine that needs attention and has never been ready: its
+            # launch was refused (the controller's own checks) or never came up.
+            "launch_refused",
+            # The box scaler gave up waiting for room: every machine full.
+            "no_room",
             "owner_left",
             "needs_attention",
             "reported",
             # An error observed while the machine is wanted stopped, retained
             # or deleted.
             "stop_failed",
+            # A v2 box the scaler found missing from the cluster after it was
+            # made, that Core didn't ask for again (`box_provision.box_missing`).
+            "box_missing",
         }
     ),
     "woken": frozenset({"message", "agent_placed", "owner"}),
     # `admin`: an operator holds it stopped (`switch-cloud-machine stop`).
-    "stopped": frozenset({"idle", "owner", "retained", "admin"}),
+    "stopped": frozenset({"idle", "owner", "retained", "admin", "gave_up"}),
 }
 
 # A report older than this counts as gone, so a silent machine's agents drop
@@ -156,6 +207,13 @@ def _count(value: Any) -> int:
     """A count from a report: a non-negative int, clamped; anything else 0."""
     if isinstance(value, bool) or not isinstance(value, int):
         return 0
+    return max(0, min(value, MAX_COUNT))
+
+
+def _optional_count(value: Any) -> int | None:
+    """A count a report may leave out: None when absent or not an int."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
     return max(0, min(value, MAX_COUNT))
 
 
@@ -186,16 +244,22 @@ def route_kind(path: str) -> str:
 
 
 def box_summary(
-    machine: Mapping[str, Any], agents: Any, providers: Any = None
+    machine: Mapping[str, Any],
+    agents: Any,
+    providers: Any = None,
+    backend: str = V1_BACKEND,
 ) -> dict[str, Any]:
     """A status report reduced to counts and fixed words: what the gauges read.
 
     `machine` is the report's `machine` object and `agents` its `agents` list,
     as stored. No id, name, path or free text is copied: each value is a
-    bounded int or a word from a fixed set.
+    bounded int, a bool, or a word from a fixed set. The restart, memory,
+    valve and gateway figures only a box sends, so they are kept only for a
+    `backend` of `box`: a v1 machine's summary is the same as without them.
     """
     by_state: dict[str, int] = {}
     stopped = dict.fromkeys(STOP_REASONS, 0)
+    restarts = oom_kills = waiting = 0
     for agent in agents if isinstance(agents, list) else []:
         if not isinstance(agent, Mapping):
             continue
@@ -208,8 +272,14 @@ def box_summary(
         key = f"{process}:{session}"
         by_state[key] = by_state.get(key, 0) + 1
         reason = agent.get("reason")
+        # A box's memory guard reports its stop as `stopped` with this reason.
         if process in _FAILED_PROCESS_STATES or reason == "out_of_memory":
             stopped[stop_reason(reason)] += 1
+        restarts += _count(agent.get("restarts_10m"))
+        oom_kills += _count(agent.get("oom_kills"))
+        waiting_for_room = agent.get("waiting_for_room")
+        if isinstance(waiting_for_room, Mapping):
+            waiting += _count(waiting_for_room.get("count"))
     login_problems: dict[str, int] = {}
     for entry in providers if isinstance(providers, list) else []:
         if not isinstance(entry, Mapping) or entry.get("installed") is False:
@@ -219,12 +289,27 @@ def box_summary(
             continue
         key = f"{_word(entry.get('provider'), PROVIDERS, 'other')}:{auth}"
         login_problems[key] = min(login_problems.get(key, 0) + 1, MAX_COUNT)
-    return {
+    summary: dict[str, Any] = {
         "agents": by_state,
         "stopped": stopped,
         "sessions_running": _count(machine.get("sessions_running")),
         "sessions_max": _count(machine.get("sessions_max")),
         "login_problems": login_problems,
+    }
+    if backend != BOX_BACKEND:
+        return summary
+    valve = machine.get("valve_memory")
+    return {
+        **summary,
+        "restarts_10m": min(restarts, MAX_COUNT),
+        "oom_kills": min(oom_kills, MAX_COUNT),
+        "waiting_for_room": min(waiting, MAX_COUNT),
+        "valve_memory": valve if valve in VALVE_STATES else None,
+        "gateway_agents": _count(machine.get("gateway_agents")),
+        "gateway_refused": _count(machine.get("gateway_refused")),
+        "gateway_capped": machine.get("gateway_capped") is True,
+        "guard_stops": _optional_count(machine.get("guard_stops")),
+        "valve_parks": _optional_count(machine.get("valve_parks")),
     }
 
 
@@ -245,7 +330,8 @@ def _used_percent(total: Any, free: Any) -> float | None:
 
 def record_box_report(machine: Mapping[str, Any], backend: str = V1_BACKEND) -> None:
     """How full a cloud machine's memory and disk were, recorded as its report
-    arrives (once per machine: `reports_memory`)."""
+    arrives (once per machine: `reports_memory`), and a box's anonymous
+    memory where it sends it."""
     attributes = {"backend": backend_of(backend)}
     memory = _used_percent(
         machine.get("mem_total_bytes"), machine.get("mem_free_bytes")
@@ -257,6 +343,39 @@ def record_box_report(machine: Mapping[str, Any], backend: str = V1_BACKEND) -> 
     )
     if disk is not None:
         metrics().observe(HOSTED_DISK_USED, attributes, disk)
+    anon = machine.get("mem_anon_bytes")
+    if isinstance(anon, int) and not isinstance(anon, bool) and anon >= 0:
+        metrics().observe(HOSTED_BOX_ANON_MEMORY, {}, float(anon))
+
+
+def record_evictions(evictions: int | None) -> None:
+    """Boxes the operator says were pushed off their machine."""
+    if evictions:
+        metrics().increment(HOSTED_BOX_EVICTIONS, {}, float(_count(evictions)))
+
+
+# A hosted agents v2 box start's cases (the requirement's A and B; a new agent
+# or a resumed session on an awake box isn't a box start) and its stages, in
+# the order they happen: the one place these words are defined, which the
+# dashboard and the monitor read (`test_datadog_artifacts`).
+START_CASES = ("first_start", "wake")
+START_STAGES = (
+    "box_requested",  # the click to the box request (0 when asked for earlier)
+    "box_claimed",  # to the operator claiming the request (first start)
+    "box_provisioned",  # to the operator's result (first start)
+    "box_running",  # to the scaler seeing the box running
+    "controller_reported",  # to the box's controller reporting
+    "ready",  # to Core marking the box ready
+    "total",  # the click to ready: the stages above, added up
+    "since_box_request",  # a first start's box request to ready
+)
+
+
+def record_start_stage(case: str, stage: str, seconds: float) -> None:
+    """One stage of a box start. Only the fixed words are ever recorded; a
+    negative or absurd figure (a clock change) is not."""
+    if case in START_CASES and stage in START_STAGES and 0 <= seconds <= 86_400:
+        metrics().observe(HOSTED_START_SECONDS, {"case": case, "stage": stage}, seconds)
 
 
 def record_provisioned(seconds: float, backend: str = V1_BACKEND) -> None:
@@ -442,7 +561,10 @@ def _per_backend() -> dict[str, int]:
 
 @dataclass
 class HostedSnapshot:
-    """The gauges' values, as of one sample, per `backend`."""
+    """The gauges' values, as of one sample. The ones both kinds of machine
+    fill are kept per `backend`; the rest are boxes' only. `box_counts` holds
+    each fresh box's since-start counts (guard stops, valve parks), keyed by
+    machine and workspace, for the sampler to turn into rises."""
 
     agents: dict[tuple[str, str, str], int] = field(default_factory=dict)
     stopped: dict[tuple[str, str], int] = field(default_factory=dict)
@@ -450,7 +572,23 @@ class HostedSnapshot:
     sessions_max: dict[str, int] = field(default_factory=_per_backend)
     boxes_reporting: dict[str, int] = field(default_factory=_per_backend)
     boxes_expected: dict[str, int] = field(default_factory=_per_backend)
+    # The warm pool: its configured size and its boxes by state.
+    pool_size: int = 0
+    pool_boxes: dict[str, int] = field(default_factory=dict)
+    # The box operator's last report: its live boxes and its ceiling.
+    operator_boxes_live: int | None = None
+    operator_ceiling: int | None = None
     login_problems: dict[tuple[str, str, str], int] = field(default_factory=dict)
+    restarts_10m: int = 0
+    oom_kills: int = 0
+    waiting_for_room: int = 0
+    valve_memory: dict[str, int] = field(
+        default_factory=lambda: dict.fromkeys(VALVE_STATES, 0)
+    )
+    gateway_agents: int = 0
+    gateway_refused: int = 0
+    gateway_capped: int = 0
+    box_counts: dict[str, tuple[int | None, int | None]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -503,7 +641,7 @@ def snapshot_of(rows: list[MachineRow], now: datetime) -> HostedSnapshot:
         reports = (row.heartbeat or {}).get("controllers") or {}
         if not isinstance(reports, Mapping):
             continue
-        for report in reports.values():
+        for workspace_id, report in reports.items():
             if not isinstance(report, Mapping) or not _fresh(report.get("at"), now):
                 continue
             summary = report.get("metrics")
@@ -534,6 +672,23 @@ def snapshot_of(rows: list[MachineRow], now: datetime) -> HostedSnapshot:
                     snap.login_problems[key3] = snap.login_problems.get(
                         key3, 0
                     ) + _count(number)
+            if backend != BOX_BACKEND:
+                # The rest are boxes' only: a v1 machine reports none of them.
+                continue
+            snap.restarts_10m += _count(summary.get("restarts_10m"))
+            snap.oom_kills += _count(summary.get("oom_kills"))
+            snap.waiting_for_room += _count(summary.get("waiting_for_room"))
+            valve = summary.get("valve_memory")
+            if valve in VALVE_STATES:
+                snap.valve_memory[valve] += 1
+            snap.gateway_agents += _count(summary.get("gateway_agents"))
+            snap.gateway_refused += _count(summary.get("gateway_refused"))
+            if summary.get("gateway_capped") is True:
+                snap.gateway_capped += 1
+            snap.box_counts[f"{row.id}/{workspace_id}"] = (
+                _optional_count(summary.get("guard_stops")),
+                _optional_count(summary.get("valve_parks")),
+            )
     return snap
 
 
@@ -579,12 +734,47 @@ def snapshot_readings(snap: HostedSnapshot) -> Iterator[GaugeReading]:
                     float(snap.login_problems.get((backend, provider, reason), 0)),
                     {"provider": provider, "reason": reason, "backend": backend},
                 )
+    yield GaugeReading(HOSTED_POOL_SIZE, float(snap.pool_size), {})
+    if snap.operator_boxes_live is not None:
+        yield GaugeReading(
+            HOSTED_OPERATOR_BOXES_LIVE, float(snap.operator_boxes_live), {}
+        )
+    if snap.operator_ceiling is not None:
+        yield GaugeReading(HOSTED_OPERATOR_CEILING, float(snap.operator_ceiling), {})
+    for state in POOL_STATES:
+        yield GaugeReading(
+            HOSTED_POOL_BOXES, float(snap.pool_boxes.get(state, 0)), {"state": state}
+        )
+    yield GaugeReading(HOSTED_AGENT_RESTARTS_10M, float(snap.restarts_10m), {})
+    yield GaugeReading(HOSTED_AGENT_OOM_KILLS, float(snap.oom_kills), {})
+    yield GaugeReading(HOSTED_WAITING_FOR_ROOM, float(snap.waiting_for_room), {})
+    for state in VALVE_STATES:
+        yield GaugeReading(
+            HOSTED_BOXES_VALVE_MEMORY,
+            float(snap.valve_memory.get(state, 0)),
+            {"state": state},
+        )
+    yield GaugeReading(HOSTED_GATEWAY, float(snap.gateway_agents), {"kind": "agents"})
+    yield GaugeReading(HOSTED_GATEWAY, float(snap.gateway_refused), {"kind": "refused"})
+    yield GaugeReading(
+        HOSTED_GATEWAY, float(snap.gateway_capped), {"kind": "capped_boxes"}
+    )
+
+
+def _rise(previous: int | None, current: int | None) -> int:
+    """How much a since-start count rose. The first sight is a baseline, and a
+    fall is a controller restart, so the new count is all new."""
+    if current is None or previous is None:
+        return 0
+    return current - previous if current >= previous else current
 
 
 _MACHINES = text(
-    "SELECT id, state, desired_state, heartbeat, heartbeat_at "
+    "SELECT id, state, desired_state, heartbeat, heartbeat_at, backend "
     "FROM cloud_machines WHERE state <> 'deleted'"
 )
+_POOL = text("SELECT state, count(*) AS boxes FROM hosted_pool_boxes GROUP BY state")
+_OPERATOR = text("SELECT boxes_live, box_ceiling FROM hosted_operator_reports LIMIT 1")
 _TRY_LOCK = text("SELECT pg_try_advisory_lock(hashtext(:name))")
 
 
@@ -604,8 +794,12 @@ class HostedSampler:
         interval_seconds: float = SAMPLE_INTERVAL_SECONDS,
         timeout_seconds: float = SAMPLE_TIMEOUT_SECONDS,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        pool_size: int = 0,
     ) -> None:
         self._engine_factory = engine_factory
+        self._pool_size = pool_size
+        self._pool_boxes: dict[str, int] = {}
+        self._operator: tuple[int | None, int | None] = (None, None)
         self._interval = interval_seconds
         self._timeout = timeout_seconds
         self._clock = clock
@@ -613,6 +807,7 @@ class HostedSampler:
         self._conn: AsyncConnection | None = None
         self._holds_lock = False
         self._latest: HostedSnapshot | None = None
+        self._last_counts: dict[str, tuple[int | None, int | None]] = {}
         self._last_failure_log = float("-inf")
         self.disabled = False
 
@@ -641,17 +836,40 @@ class HostedSampler:
         try:
             rows = await asyncio.wait_for(self._read(), self._timeout)
         except Exception as exc:
-            self._latest = None
+            self._lost()
             await self._drop_connection()
             record_sample_failure("hosted")
             self._log_failure(exc)
             return None
         if rows is None:
-            self._latest = None
+            self._lost()
             return None
         snap = snapshot_of(rows, self._clock())
+        snap.pool_size = self._pool_size
+        snap.pool_boxes = dict(self._pool_boxes)
+        snap.operator_boxes_live, snap.operator_ceiling = self._operator
+        self._record_rises(snap.box_counts)
         self._latest = snap
         return snap
+
+    def _lost(self) -> None:
+        """Not reporting: no gauges, and no baselines kept for the rises,
+        since another process may be counting them meanwhile."""
+        self._latest = None
+        self._last_counts = {}
+
+    def _record_rises(self, counts: dict[str, tuple[int | None, int | None]]) -> None:
+        guard = parks = 0
+        for key, (stops, parked) in counts.items():
+            before_stops, before_parked = self._last_counts.get(key, (None, None))
+            guard += _rise(before_stops, stops)
+            parks += _rise(before_parked, parked)
+        # A box that went silent is forgotten, so its return is a new baseline.
+        self._last_counts = counts
+        if guard:
+            metrics().increment(HOSTED_GUARD_STOPS, {}, float(guard))
+        if parks:
+            metrics().increment(HOSTED_VALVE_PARKS, {}, float(parks))
 
     def _postgres(self) -> bool:
         if self._engine is None:
@@ -670,6 +888,12 @@ class HostedSampler:
                 return None
             self._holds_lock = True
             logger.info("This process now reports the hosted machines' gauges.")
+        pool = await conn.execute(_POOL)
+        self._pool_boxes = {str(row.state): int(row.boxes) for row in pool}
+        operator = (await conn.execute(_OPERATOR)).first()
+        self._operator = (
+            (None, None) if operator is None else (operator[0], operator[1])
+        )
         result = await conn.execute(_MACHINES)
         return [
             MachineRow(
@@ -678,6 +902,7 @@ class HostedSampler:
                 desired_state=str(row.desired_state),
                 heartbeat=row.heartbeat if isinstance(row.heartbeat, Mapping) else None,
                 heartbeat_at=row.heartbeat_at,
+                backend=str(row.backend),
             )
             for row in result
         ]
@@ -716,8 +941,72 @@ class HostedSampler:
             logger.debug("Closing the hosted metrics sampler's connection failed.")
 
     async def aclose(self) -> None:
-        self._latest = None
+        self._lost()
         await self._drop_connection()
         engine, self._engine = self._engine, None
         if engine is not None:
             await engine.dispose()
+
+
+# Why a cloud machine claim was refused at a limit: fixed words only.
+CLAIM_REFUSALS = ("workspace_full",)
+
+
+POOL_PATHS = ("pool", "fallback")
+POOL_STATES = ("requested", "waiting", "retiring")
+POOL_RETIRED = ("image", "age", "size", "make_failed", "failed_claim")
+
+
+def record_pool_claim(session: AsyncSession, path: str) -> None:
+    """Count one new box with the warm pool on, by `path`, once `session`
+    commits. Only a fixed word, never who."""
+    if path not in POOL_PATHS:
+        return
+    after_commit(
+        session, lambda: metrics().increment(HOSTED_POOL_CLAIMS, {"path": path})
+    )
+
+
+def record_pool_retired(session: AsyncSession, reason: str) -> None:
+    """Count one pool box retired, by a fixed `reason`, once `session`
+    commits (`failed_before_owner` reads as `failed_claim`)."""
+    word = "failed_claim" if reason == "failed_before_owner" else reason
+    if word not in POOL_RETIRED:
+        return
+    after_commit(
+        session, lambda: metrics().increment(HOSTED_POOL_RETIRED, {"reason": word})
+    )
+
+
+def record_pool_refill_seconds(session: AsyncSession, seconds: float) -> None:
+    """Time one pool box from Core asking to the operator reporting it made,
+    once `session` commits."""
+    if seconds < 0:
+        return
+    after_commit(
+        session, lambda: metrics().observe(HOSTED_POOL_REFILL_SECONDS, {}, seconds)
+    )
+
+
+def record_pool_reap_refused() -> None:
+    """Count one reaper report Core refused, at once (the refusal commits
+    nothing)."""
+    metrics().increment(HOSTED_POOL_REAP_REFUSED, {})
+
+
+REMOVAL_OUTCOMES = ("claimed", "removed", "refused", "unjustified")
+
+
+def record_box_removal(outcome: str, count: int = 1) -> None:
+    """Count box removals by a fixed `outcome`, at once. Never which box."""
+    if outcome not in REMOVAL_OUTCOMES or count <= 0:
+        return
+    metrics().increment(HOSTED_BOX_REMOVALS, {"outcome": outcome}, float(count))
+
+
+def record_claim_refused(reason: str) -> None:
+    """Count one claim refused at a limit (`switch.hosted.claim_refused`), at
+    once: a refusal commits nothing. Only a fixed word, never who."""
+    if reason not in CLAIM_REFUSALS:
+        return
+    metrics().increment(HOSTED_CLAIM_REFUSED, {"reason": reason})

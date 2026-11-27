@@ -1,3 +1,9 @@
+import { NO_ENTRANCE } from '@switch-console/chat-ui/components/chat-entrance';
+import { ChatTimelineView } from '@switch-console/chat-ui/components/chat-timeline';
+import type { ChatAgent, ChatMessage } from '@switch-console/chat-ui/contracts/chats';
+import { ChatHostProvider } from '@switch-console/chat-ui/host';
+import { ChatTimeline, type TimelineApi } from '@switch-console/chat-ui/stores/chat-timeline-store';
+import { stubChatHost } from '@switch-console/chat-ui/testing';
 /**
  * A template's kickoff in a room's chat, in real CSS: a card naming who sent
  * it, with that agent's own picture, and the run history for the agents folded
@@ -6,19 +12,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import buddyAvatar from '@/assets/images/switch-buddy/avatar.png';
 import '@renderer/index.css';
-import { NO_ENTRANCE } from '@renderer/features/chats/chat-entrance';
-import { ChatTimelineView } from '@renderer/features/chats/components/chat-timeline';
-import {
-  ChatTimeline,
-  type TimelineApi,
-} from '@renderer/features/chats/stores/chat-timeline-store';
-import type { ChatAgent, ChatMessage } from '@shared/core/chats/chats';
-
-vi.mock('@renderer/features/chats/stores/chats', () => ({ chatsStore: { userId: 'me' } }));
+import { isOwnBuddy, recordOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
+// The chat draws Console's own avatars here, switch-buddy's bundled picture included.
+import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 
 const SHOTS = '../../../../build/acceptance/kickoff';
 
@@ -69,6 +69,14 @@ const tracker: ChatAgent = {
 
 it('draws a kickoff as a card from the agent that sent it', async () => {
   document.documentElement.classList.add('emdark');
+  // The viewer's own buddy ran it: only that agent goes by a name like switch-buddy's.
+  recordOwnBuddy('srv-1', 'ws-1', [
+    {
+      agentId: 'buddy',
+      name: 'switch-buddy-simon-flack',
+      template: { id: 'official:switch-buddy', key: 'buddy', revision: 1 },
+    },
+  ]);
   const timeline = new ChatTimeline('room-1', {} as TimelineApi);
   timeline.apply(
     message(1, {
@@ -126,15 +134,17 @@ it('draws a kickoff as a card from the agent that sent it', async () => {
   await act(async () =>
     root!.render(
       <QueryClientProvider client={new QueryClient()}>
-        <ChatTimelineView
-          serverId="srv-1"
-          timeline={timeline}
-          agents={[tracker]}
-          people={[]}
-          activities={[]}
-          onReply={() => {}}
-          entrance={NO_ENTRANCE}
-        />
+        <ChatHostProvider host={stubChatHost({ AgentAvatar, isOwnBuddy })}>
+          <ChatTimelineView
+            serverId="srv-1"
+            timeline={timeline}
+            agents={[tracker]}
+            people={[]}
+            activities={[]}
+            onReply={() => {}}
+            entrance={NO_ENTRANCE}
+          />
+        </ChatHostProvider>
       </QueryClientProvider>
     )
   );

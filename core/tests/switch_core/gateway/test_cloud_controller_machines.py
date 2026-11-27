@@ -54,6 +54,8 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_controller import router as controller_router
 from switch_core.gateway.hosted_machines import router as machines_router
+from switch_core.hosted_v2 import _config as hosted_v2_config
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.management.placement import placement_refusal
 from switch_core.observability.hosted import reconciler_watch
@@ -61,7 +63,7 @@ from switch_core.observability.metrics import MetricsRegistry, install, uninstal
 from switch_core.process_lease import ProcessLeases
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
-from tests.switch_core.hosted_machine_helpers import add_tenant
+from tests.switch_core.hosted_machine_helpers import add_tenant, place_managed_agent
 from tests.switch_core.management.harness import (
     TEST_KEYRING,
     Harness,
@@ -123,6 +125,7 @@ def _hosted_app(
     app = FastAPI()
     app.state.hosted_controller_settings = HostedControllerSettings(
         allowed_tenant_ids=[require_tenant_id()],
+        allowed_user_ids=["*"] if process_hosted_v2() else None,
         token=TOKEN,
         agent_api_endpoint=API_ENDPOINT,
     )
@@ -135,6 +138,8 @@ def _hosted_app(
         hosted_launch_capacity=1,
         hosted_agents_enabled=True,
         third_party_avatars_enabled=True,
+        # The v1/v2 switch as the test runs it, for the v2-only routes' gate.
+        hosted_box_provisioning=process_hosted_v2(),
     )
 
     async def session():
@@ -147,6 +152,7 @@ def _hosted_app(
     app.dependency_overrides[get_session] = session
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_config] = lambda: config
+    app.dependency_overrides[hosted_v2_config] = lambda: config
     app.dependency_overrides[get_current_user] = current_user
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.test"
@@ -781,6 +787,7 @@ class TestControllerMachines:
                         desired_state=row.desired_state,
                         heartbeat=row.heartbeat,
                         heartbeat_at=row.heartbeat_at,
+                        backend=row.backend,
                     )
                 ],
                 datetime.now(UTC),
@@ -828,7 +835,8 @@ class TestControllerMachines:
                     "provisioning",
                     "running",
                 )
-                assert gauges(booting) == ({"vm": 0}, {"vm": 0})
+                kind = booting.backend
+                assert gauges(booting) == ({"vm": 0, "box": 0}, {"vm": 0, "box": 0})
 
                 # The reconciler sees it running at the new revision, then its
                 # controller's first report makes it ready.
@@ -840,7 +848,9 @@ class TestControllerMachines:
                 await report_status(client, controller, 1)  # type: ignore[arg-type]
                 ready = await _machine(harness.session_factory, machine.id)
                 assert ready.state == "ready"
-                assert gauges(ready) == ({"vm": 1}, {"vm": 1})
+                expected, reporting = gauges(ready)
+                assert expected[kind] == 1
+                assert reporting[kind] == 1
 
     async def test_a_login_problem_is_logged_once_when_it_first_shows(
         self,
@@ -850,13 +860,15 @@ class TestControllerMachines:
     ) -> None:
         """A provider login that is missing or expired is counted in the kept
         summary on every report, but logged only on the first report showing
-        it, with fixed words and the machine id."""
+        it, with fixed words and the machine id. Only a provider an agent on
+        the controller runs counts: the others' logins are nobody's problem."""
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
         providers = [
             provider("claude", auth="expired"),
             provider("codex", installed=False, auth="missing"),
-            provider("cursor"),
+            provider("cursor", auth="missing"),
+            provider("opencode"),
         ]
         async with _hosted_app(harness.session_factory, owner) as hosted:
             code = (await _prepare(hosted, machine.id))["controllers"][0][
@@ -877,6 +889,14 @@ class TestControllerMachines:
                     harness=harness,
                     headers=bearer(token.json()["access_token"]),
                 )
+                async with harness.session_factory() as session:
+                    await place_managed_agent(
+                        session,
+                        owner_id=owner.id,
+                        controller_id=enrolled["controller_id"],
+                        name="claude-agent",
+                    )
+                    await session.commit()
                 with caplog.at_level(logging.INFO, logger=cloud_controllers.__name__):
                     for seq in (1, 2):
                         response = await report_status(
@@ -1039,7 +1059,7 @@ def test_a_waking_machine_is_judged_by_its_last_report() -> None:
         last_seen_at=now - timedelta(hours=2),
         status={"providers": [{"provider": "claude", "installed": True, "auth": "ok"}]},
     )
-    leases = ProcessLeases(read_at=now, leases={})
+    leases = ProcessLeases(read_at=now, leases={}, read_mono=0.0)
     asleep = placement_refusal(
         controller, "claude", leases=leases, now=now, interval_seconds=60, waking=False
     )

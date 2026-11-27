@@ -23,7 +23,7 @@
 # It runs as the namespace's default account, not switch-core's: a pre-upgrade
 # hook runs before the release's own objects are applied, so on the upgrade
 # that introduces switch-core's account the Job could not be created. It needs
-# no identity of its own, and mounts no token anything outside trusts.
+# no identity of its own, and mounts no token at all.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -47,6 +47,9 @@ spec:
       {{- include "switch.imagePullSecrets" . | nindent 6 }}
       {{- end }}
       restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.switchCore.podSecurityContext | nindent 8 }}
       initContainers:
         {{- include "switch.waitFor" (dict "name" "postgres" "host" (include "switch.postgresHost" .) "port" (include "switch.postgresPort" .)) | nindent 8 }}
       containers:
@@ -56,12 +59,18 @@ spec:
           command: ["switch-migrate"]
           env:
             {{- include "switch.coreEnv" $ctx | nindent 12 }}
-          {{- if include "switch.dbCaBundleConfigMap" $ctx }}
+          securityContext:
+            {{- toYaml .Values.switchCore.securityContext | nindent 12 }}
           volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if include "switch.dbCaBundleConfigMap" $ctx }}
             {{- include "switch.dbCaBundleVolumeMount" $ctx | nindent 12 }}
-          {{- end }}
-      {{- if include "switch.dbCaBundleConfigMap" $ctx }}
+            {{- end }}
       volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if include "switch.dbCaBundleConfigMap" $ctx }}
         {{- include "switch.dbCaBundleVolume" $ctx | nindent 8 }}
-      {{- end }}
+        {{- end }}
 {{- end }}

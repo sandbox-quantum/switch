@@ -58,6 +58,15 @@ class _Boolean(PropertyType):
         return None
 
 
+def _outside(allowed: frozenset[str]) -> str:
+    """Why a string outside a closed set was refused, without the string.
+
+    The refused value is the one the set exists to keep out of telemetry, and
+    `emit_safely` logs this reason, so it must not carry the value itself.
+    """
+    return f"expected one of {sorted(allowed)}, got a str outside them"
+
+
 @dataclass(frozen=True)
 class _OneOf(PropertyType):
     values: frozenset[str]
@@ -66,7 +75,7 @@ class _OneOf(PropertyType):
         if not isinstance(value, str):
             return f"expected one of {sorted(self.values)}, got {type(value).__name__}"
         if value not in self.values:
-            return f"expected one of {sorted(self.values)}, got {value!r}"
+            return _outside(self.values)
         return None
 
 
@@ -135,7 +144,7 @@ class _RegisteredPlatform(PropertyType):
         if not isinstance(value, str):
             return f"expected one of {sorted(allowed)}, got {type(value).__name__}"
         if value not in allowed:
-            return f"expected one of {sorted(allowed)}, got {value!r}"
+            return _outside(allowed)
         return None
 
 

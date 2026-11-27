@@ -64,8 +64,27 @@ export class OwnershipContendedError extends Error {
   }
 }
 
+/**
+ * Says whether a ticket names no contender: `own` when it carries this
+ * process's id and this process holds it right now. Given only in box mode
+ * (`box/owner-records`), where a restarted container hands the same low ids out
+ * again; without it a ticket counts while its id answers as alive.
+ */
+export type TicketJudge = (path: string, pid: number, own: boolean) => Promise<boolean>;
+
+/**
+ * The tickets this process holds right now, for a `TicketJudge`: a ticket named
+ * for this process's id that is not in here was left by an earlier process
+ * with the same id.
+ */
+const ownTickets = new Set<string>();
+
 /** Bakery election: each contender writes only its own ticket, so reclamation needs no lock. */
-export async function withOwnershipLock<T>(root: string, action: () => Promise<T>): Promise<T> {
+export async function withOwnershipLock<T>(
+  root: string,
+  action: () => Promise<T>,
+  judge?: TicketJudge
+): Promise<T> {
   const directory = join(root, 'ownership');
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const id = `${process.pid}-${randomUUID()}.json`;
@@ -76,7 +95,13 @@ export async function withOwnershipLock<T>(root: string, action: () => Promise<T
       if (!/^\d+-[a-f0-9-]+\.json$/.test(name)) continue;
       const pid = Number(name.split('-')[0]);
       if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid ownership ticket PID.');
-      if (!isProcessAlive(pid, 'recorded')) continue;
+      const ticketPath = join(directory, name);
+      if (
+        judge
+          ? await judge(ticketPath, pid, ownTickets.has(ticketPath))
+          : !isProcessAlive(pid, 'recorded')
+      )
+        continue;
       try {
         const text = await waitingOutSharing(() => readFile(join(directory, name), 'utf8'));
         result.push({ id: name, value: ticketSchema.parse(JSON.parse(text)) });
@@ -86,8 +111,10 @@ export async function withOwnershipLock<T>(root: string, action: () => Promise<T
     }
     return result;
   };
-  await save(path, { choosing: true, ticket: 0 }, false);
+  if (!judge) await save(path, { choosing: true, ticket: 0 }, false);
+  ownTickets.add(path);
   try {
+    if (judge) await save(path, { choosing: true, ticket: 0 }, false);
     const ticket = Math.max(0, ...(await entries()).map((entry) => entry.value.ticket)) + 1;
     if (!Number.isSafeInteger(ticket)) throw new Error('Ownership ticket space exhausted.');
     await save(path, { choosing: false, ticket }, true);
@@ -109,7 +136,12 @@ export async function withOwnershipLock<T>(root: string, action: () => Promise<T
     }
     return await action();
   } finally {
-    await unlink(path);
+    ownTickets.delete(path);
+    if (!judge) await unlink(path);
+    else
+      await unlink(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
   }
 }
 
@@ -126,13 +158,14 @@ export const OUTLAST_PATIENCE_MS = 120_000;
 export async function withOwnershipLockOutlasting<T>(
   root: string,
   action: () => Promise<T>,
-  signal: AbortSignal
+  signal: AbortSignal,
+  judge?: TicketJudge
 ): Promise<{ value: T } | null> {
   const deadline = performance.now() + OUTLAST_PATIENCE_MS;
   let warned = false;
   for (;;) {
     try {
-      return { value: await withOwnershipLock(root, action) };
+      return { value: await withOwnershipLock(root, action, judge) };
     } catch (error) {
       if (!(error instanceof OwnershipContendedError) || performance.now() >= deadline) throw error;
       if (!warned) {
@@ -151,13 +184,22 @@ export async function replaceOwner(path: string, value: unknown): Promise<void> 
   await save(path, value, true);
 }
 
-export async function releaseOwner(root: string, path: string, owner: unknown): Promise<void> {
-  await withOwnershipLock(root, async () => {
-    try {
-      const current = JSON.parse(await readFile(path, 'utf8'));
-      if (JSON.stringify(current) === JSON.stringify(owner)) await unlink(path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-  });
+export async function releaseOwner(
+  root: string,
+  path: string,
+  owner: unknown,
+  judge?: TicketJudge
+): Promise<void> {
+  await withOwnershipLock(
+    root,
+    async () => {
+      try {
+        const current = JSON.parse(await readFile(path, 'utf8'));
+        if (JSON.stringify(current) === JSON.stringify(owner)) await unlink(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    },
+    judge
+  );
 }

@@ -1,10 +1,14 @@
+import { TooltipProvider } from '@switch-console/chat-ui/primitives/tooltip';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import { AgentCrudEvents } from './app/agent-crud-events';
 import { AppMenuEvents } from './app/app-menu-events';
 import { HostSetupEvents } from './app/host-setup-events';
 import { Workspace } from './app/workspace';
+import { ConsoleChatHost } from './features/chats/console-chat-host';
 import { ConsoleLinkListener } from './features/deeplinks/console-link-listener';
+import { DeviceConsentPrompts } from './features/machines/device-consent-prompts';
+import { HostKeyPromptGate } from './features/remote-hosts/host-key-prompt';
 import { SessionDeeplinkListener } from './features/switch-rooms/session-deeplink-listener';
 import { BridgePlatformsLoader } from './features/switch-servers/bridge-platforms-loader';
 import { TelemetryConsentGate } from './features/telemetry/TelemetryConsentGate';
@@ -14,7 +18,6 @@ import { ModalRenderer } from './lib/modal/modal-renderer';
 import { ThemeProvider } from './lib/providers/theme-provider';
 import { queryClient } from './lib/query-client';
 import { RightSidebarProvider } from './lib/ui/right-sidebar';
-import { TooltipProvider } from './lib/ui/tooltip';
 
 function AppContent() {
   return (
@@ -27,12 +30,16 @@ function AppContent() {
           <SessionDeeplinkListener />
           <ConsoleLinkListener />
           <BridgePlatformsLoader />
+          <DeviceConsentPrompts />
           <RightSidebarProvider>
             <ThemeProvider>
-              <ModalRenderer />
-              {/* The first-run pages say it themselves when they are on. */}
-              {!BUILD_FEATURE_FLAGS.onboarding && <TelemetryConsentGate />}
-              <Workspace />
+              <ConsoleChatHost>
+                <ModalRenderer />
+                <HostKeyPromptGate />
+                {/* The first-run pages say it themselves when they are on. */}
+                {!BUILD_FEATURE_FLAGS.onboarding && <TelemetryConsentGate />}
+                <Workspace />
+              </ConsoleChatHost>
             </ThemeProvider>
           </RightSidebarProvider>
         </WorkspaceViewProvider>

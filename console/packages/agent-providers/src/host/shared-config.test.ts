@@ -17,7 +17,7 @@ const NO_REDACTIONS = () => {};
 afterEach(() => vi.unstubAllEnvs());
 
 it.skipIf(process.platform === 'win32')(
-  'preserves host and configured environment, including shell setup output',
+  'preserves host and configured environment, and what shell setup makes of them',
   async () => {
     vi.stubEnv('SDK_CUSTOM_HOST_VALUE', 'from-host');
     vi.stubEnv('SDK_UNLISTED_VALUE', 'must-not-inherit');
@@ -25,13 +25,42 @@ it.skipIf(process.platform === 'win32')(
     const env = await executionEnvironment(
       process.cwd(),
       { SDK_CONFIGURED: 'configured' },
-      'echo setup-output; export SDK_CUSTOM_SETUP="$SDK_CONFIGURED-from-setup"',
+      'echo setup-output; export PATH="/opt/sdk-setup/bin:$PATH" SDK_CONFIGURED="$SDK_CONFIGURED-from-setup"',
       ['SDK_CUSTOM_HOST_VALUE', 'PATH', 'HOME', 'SHELL']
     );
     expect(env.SDK_UNLISTED_VALUE).toBeUndefined();
     expect(env.SDK_CUSTOM_HOST_VALUE).toBe('from-host');
-    expect(env.SDK_CUSTOM_SETUP).toBe('configured-from-setup');
+    expect(env.PATH?.startsWith('/opt/sdk-setup/bin:')).toBe(true);
+    expect(env.SDK_CONFIGURED).toBe('configured-from-setup');
     expect(env.SWITCH_API_TOKEN).toBeUndefined();
+  }
+);
+
+it.skipIf(process.platform === 'win32')(
+  'leaves behind what shell setup or the login profile adds beyond the inherited variables',
+  async () => {
+    const home = await mkdtemp(join(tmpdir(), 'shared-config-home-'));
+    try {
+      await writeFile(
+        join(home, '.profile'),
+        'export FROM_LOGIN_PROFILE=profile-value SWITCH_AGENT_ID=from-profile\n'
+      );
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('SHELL', '/bin/sh');
+      const env = await executionEnvironment(
+        home,
+        {},
+        'export FROM_SETUP=setup-value NODE_OPTIONS=--no-warnings',
+        ['PATH', 'HOME', 'SHELL']
+      );
+      expect(env.HOME).toBe(home);
+      expect(env.FROM_SETUP).toBeUndefined();
+      expect(env.NODE_OPTIONS).toBeUndefined();
+      expect(env.FROM_LOGIN_PROFILE).toBeUndefined();
+      expect(env.SWITCH_AGENT_ID).toBeUndefined();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   }
 );
 

@@ -1,3 +1,4 @@
+import { autoModeDescription } from '@switch-console/chat-ui/components/agent-permissions';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -15,7 +16,6 @@ import {
   type ConfigureAgentFormState,
   useConfigureAgentForm,
 } from '@renderer/features/locations/components/add-agent-modal/modes';
-import { autoModeDescription } from '@renderer/features/locations/components/settings-view/sections/permission-settings-section';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 let container: HTMLDivElement | null = null;
@@ -81,13 +81,13 @@ describe('a new agent’s permission switches', () => {
 
 describe('the auto mode description', () => {
   it('warns for OpenCode that commands then run without review', () => {
-    expect(autoModeDescription(['opencode'], false)).toBe(
+    expect(autoModeDescription(['OpenCode'], false)).toBe(
       'OpenCode has no automatic review: with this on, every action runs without asking, commands included.'
     );
   });
 
   it('keeps the usual line for a provider with its own review', () => {
-    expect(autoModeDescription(['claude'], false)).toBe(
+    expect(autoModeDescription([], false)).toBe(
       'Safe actions run on their own; risky ones ask you first.'
     );
   });

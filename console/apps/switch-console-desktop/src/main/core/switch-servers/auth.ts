@@ -4,10 +4,12 @@ import { err, ok, type Result } from '@switch-console/shared';
 import { BrowserWindow, session as electronSession, shell } from 'electron';
 import { z } from 'zod';
 import { appReturnUrl, bringToFront } from '@main/app/deeplinks';
+import { DEVTOOLS_ENABLED } from '@main/app/devtools';
 import { LOCAL_SERVER_ADMIN_EMAIL } from '@main/core/managed-switch-server/constants';
 import { managedServerSecretsKey } from '@main/core/managed-switch-server/host/host-for-server';
 import { readSecrets } from '@main/core/managed-switch-server/secrets';
 import { log } from '@main/lib/logger';
+import { registerServerPageLinkHandlers } from '@main/utils/externalLinks';
 import {
   dashboardOrigin,
   type SignupResult,
@@ -130,6 +132,34 @@ function boundedBody(text: string): string {
   return text.replace(/\s+/g, ' ').trim().slice(0, 200);
 }
 
+/**
+ * Keep a session the server has just handed over. The server has accepted the
+ * sign-in by now, so a failure here is Console's own — the operating system's
+ * secure storage refused or is missing — and it is said as much rather than
+ * left to look like a sign-in that never finished.
+ */
+async function saveSession(
+  server: SwitchServer,
+  jwt: string,
+  action: string
+): Promise<Result<true, TransportError>> {
+  try {
+    await setSessionCookie(server.id, jwt);
+  } catch (cause) {
+    log.error('Switch session could not be saved after the server accepted it', {
+      server: server.id,
+      action,
+      cause: cause instanceof Error ? cause.message : String(cause),
+    });
+    const detail = cause instanceof Error ? `: ${cause.message}` : '';
+    return err({
+      kind: 'failed',
+      message: `${action} succeeded, but Switch Console could not save the session securely${detail}${detail ? '' : '.'} Check that the operating system keychain is available, then sign in again.`,
+    });
+  }
+  return ok(true);
+}
+
 /** Read the `switch_auth` cookie off a successful auth response and persist it. */
 async function persistSessionCookie(
   server: SwitchServer,
@@ -143,16 +173,7 @@ async function persistSessionCookie(
       message: `${action} succeeded but the gateway did not return a session cookie.`,
     });
   }
-  try {
-    await setSessionCookie(server.id, jwt);
-  } catch (cause) {
-    const detail = cause instanceof Error ? `: ${cause.message}` : '';
-    return err({
-      kind: 'failed',
-      message: `${action} succeeded, but Switch Console could not save the session securely${detail}${detail ? '' : '.'} Check that the operating system keychain is available, then sign in again.`,
-    });
-  }
-  return ok(true);
+  return saveSession(server, jwt, action);
 }
 
 /**
@@ -636,8 +657,14 @@ async function oidcWindowLogin(
     height: 720,
     title: `Sign in to ${server.name}`,
     autoHideMenuBar: true,
-    webPreferences: { partition, nodeIntegration: false, contextIsolation: true },
+    webPreferences: {
+      partition,
+      nodeIntegration: false,
+      contextIsolation: true,
+      devTools: DEVTOOLS_ENABLED,
+    },
   });
+  registerServerPageLinkHandlers(win.webContents);
 
   const login =
     provider === null
@@ -662,14 +689,24 @@ async function oidcWindowLogin(
       finish(err({ kind: 'failed', message: 'OIDC sign-in timed out.' }));
     }, OIDC_LOGIN_TIMEOUT_MS);
 
+    // Run from navigation events nobody awaits, so it settles the sign-in
+    // itself, failure included, rather than leaving the window to time out.
     const tryCapture = async () => {
       if (settled) return;
-      const cookies = await ses.cookies.get({ name: SWITCH_AUTH_COOKIE });
-      const cookie = cookies[0];
-      if (cookie?.value) {
-        await setSessionCookie(server.id, cookie.value);
-        finish(ok(true));
+      let jwt: string | undefined;
+      try {
+        jwt = (await ses.cookies.get({ name: SWITCH_AUTH_COOKIE }))[0]?.value;
+      } catch (cause) {
+        finish(
+          err({
+            kind: 'failed',
+            message: `Could not read the session from the sign-in window: ${cause instanceof Error ? cause.message : String(cause)}`,
+          })
+        );
+        return;
       }
+      if (!jwt || settled) return;
+      finish(await saveSession(server, jwt, 'Sign-in'));
     };
 
     // The cookie is set right before the gateway's final redirect to the SPA,

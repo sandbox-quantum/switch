@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,6 +56,18 @@ class MessagingEventReceiptStore:
             await session.rollback()
             return None
         return receipt
+
+    async def find(
+        self, session: AsyncSession, *, platform: str, external_event_id: str
+    ) -> MessagingEventReceipt | None:
+        """The receipt an event was claimed under, if it was."""
+        result = await session.execute(
+            select(MessagingEventReceipt).where(
+                MessagingEventReceipt.platform == platform,
+                MessagingEventReceipt.external_event_id == external_event_id,
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def mark_handled(self, session: AsyncSession, *, receipt_id: str) -> None:
         """Record that the claimed event was seen all the way through.

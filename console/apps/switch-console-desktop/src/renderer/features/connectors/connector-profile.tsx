@@ -1,3 +1,6 @@
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { ArrowLeft } from 'lucide-react';
 import { useState } from 'react';
 import { ConnectionIcon } from '@renderer/features/switch-servers/connection-icon';
@@ -5,10 +8,10 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
-import { Spinner } from '@renderer/lib/ui/spinner';
-import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import {
+  type ConnectionCatalogEntry,
+  githubThroughApp,
+} from '@shared/core/switch-servers/connection-catalog';
 import { pastedConnection } from './connect-flow';
 import { ConnectorAgentsSection } from './connector-agents-section';
 import { openConnectorAppSetUp } from './connector-app-set-up';
@@ -32,7 +35,7 @@ import { offersAddAgent } from './grant-agents';
 import { useConnectService } from './use-connect-service';
 
 const ACTION_LABEL = {
-  connect: 'Connect to Switch',
+  connect: 'Connect',
   reconnect: 'Reconnect',
   paste_again: 'Paste a new one',
   replace: 'Replace key',
@@ -150,7 +153,7 @@ export function ConnectorProfile({
                 disabled={!connection.connectable}
                 onClick={() => connect(connection, action, afterConnected)}
               >
-                {ACTION_LABEL[action]}
+                {action === 'connect' ? `Connect ${connection.name}` : ACTION_LABEL[action]}
               </Button>
             )}
             {hasConnection && (
@@ -197,7 +200,7 @@ export function ConnectorProfile({
         )}
       </section>
 
-      {connection.slug === 'github' && state.kind === 'connected' && (
+      {githubThroughApp(connection) && state.kind === 'connected' && (
         <GitHubAccessSection serverId={serverId} workspaceId={workspaceId} />
       )}
 

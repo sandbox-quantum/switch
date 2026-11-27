@@ -113,10 +113,10 @@ vi.mock('@renderer/lib/hooks/useTheme', () => ({
   useTheme: () => ({ effectiveTheme: 'emlight' }),
 }));
 
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import { LocalSetupProgress } from '@renderer/features/onboarding/local-setup-progress';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { ExternalServerStep } from '@renderer/features/switch-servers/AddServerModal';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -398,7 +398,11 @@ describe('the first-run flow', () => {
 
     await addFromConnectPage(el);
 
-    expect(addServer).toHaveBeenCalledWith('switch.example.com', 'https://switch.example.com');
+    expect(addServer).toHaveBeenCalledWith(
+      'switch.example.com',
+      'https://switch.example.com',
+      false
+    );
   });
 
   it('keeps the flow on screen after the server is added, for the sign-in still to come', async () => {
@@ -587,7 +591,7 @@ describe('the server address form', () => {
     await type(field(el, 'Server address')!, 'https://new.example.com');
     await choose(el, 'Save changes');
 
-    expect(updateServer).toHaveBeenCalledWith('srv-1', 'Team', 'https://new.example.com');
+    expect(updateServer).toHaveBeenCalledWith('srv-1', 'Team', 'https://new.example.com', false);
     expect(onSuccess).toHaveBeenCalledOnce();
   });
 });

@@ -481,12 +481,12 @@ class TestOnlyTheOperator:
         assert apps[AIRTABLE]["redirect_uris"] == [AIRTABLE_CALLBACK]
         assert apps[AIRTABLE]["redirect_uri"] == AIRTABLE_CALLBACK
         assert apps[AIRTABLE]["needs_public_url"] is True
-        # GitLab's application lists the scopes of both levels, which the
-        # operator ticks when creating it.
+        # GitLab's application lists the scopes a sign-in asks for, which
+        # the operator ticks when creating it.
         gitlab = f"{PUBLIC}/gateway/service-connections/gitlab/flows/callback"
         assert apps["gitlab"]["redirect_uris"] == [gitlab]
         assert apps["gitlab"]["needs_public_url"] is True
-        assert apps["gitlab"]["scopes"] == ["mcp", "read_api", "read_user", "api"]
+        assert apps["gitlab"]["scopes"] == ["mcp", "api", "read_user"]
         assert apps[AIRTABLE]["scopes"] == [
             "data.records:read",
             "schema.bases:read",
@@ -970,12 +970,16 @@ class TestGitHubNeedsHttps:
             )
         assert listed.status_code == 200, listed.text
         services = {entry["slug"]: entry for entry in listed.json()["connections"]}
-        assert services["github"]["unavailable_code"] == "needs_https"
-        assert services["github"]["unavailable_reason"] == (
+        # Its App can't work here, but a pasted token still connects it.
+        github = services["github"]
+        assert github["unavailable_code"] is None
+        assert github["connectable"] is True
+        assert github["web_sign_in"] is False
+        assert github["sign_in_unavailable_reason"] == (
             "GitHub can't be used here: it needs Switch to have an https address, "
             "or an http one on your own computer (localhost or 127.0.0.1)."
         )
-        assert services["github"]["server_setup_needed"] is False
+        assert github["server_setup_needed"] is False
         assert services[GOOGLE]["unavailable_code"] == "app_not_set_up"
         assert services[GOOGLE]["server_setup_needed"] is True
 
@@ -1061,8 +1065,14 @@ class TestGitHubOnThisComputer:
         assert apps["github"]["setup_blocked"] is None
         assert apps["github"]["redirect_uris"] == [self.CALLBACK]
         services = {entry["slug"]: entry for entry in catalog.json()["connections"]}
-        assert services["github"]["unavailable_code"] == "app_not_set_up"
-        assert services["github"]["server_setup_needed"] is True
+        github = services["github"]
+        assert github["unavailable_code"] is None
+        assert github["connectable"] is True
+        assert github["sign_in_unavailable_reason"] == (
+            "GitHub's connector app isn't set up on this server yet. "
+            "Whoever runs Switch can set it up."
+        )
+        assert github["server_setup_needed"] is True
 
     async def test_a_github_app_is_saved_and_called_back_there(
         self, loopback_world: World, operator, session_factory

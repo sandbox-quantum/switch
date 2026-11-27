@@ -729,15 +729,23 @@ class SharedConnections:
         }
         lost = lapsed - shut_down
         if shut_down:
-            agents = self._registry.drop_copies_held_by(shut_down)
+            moving_until = {
+                process_id: until
+                for process_id in shut_down
+                if (until := leases.move_ends(process_id)) is not None
+            }
+            agents = self._registry.drop_copies_held_by(
+                shut_down, moving_until=moving_until
+            )
             logger.info(
                 "Switch-core process(es) %s shut down; their connections of %d "
-                "agent(s) no longer count",
+                "agent(s) no longer count, but for the machines still moving to "
+                "another process",
                 ", ".join(sorted(shut_down)),
                 len(agents),
             )
         if lost:
-            agents = self._registry.drop_copies_held_by(lost)
+            agents = self._registry.drop_copies_held_by(lost, moving_until={})
             logger.warning(
                 "Switch-core process(es) %s stopped holding their lease without "
                 "shutting down; their connections of %d agent(s) no longer count",

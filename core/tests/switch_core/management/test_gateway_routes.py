@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.agent_icon import generated_icon_url, new_icon_url
@@ -20,6 +21,7 @@ from switch_core.connections.broker import Principal, ServiceError
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     AgentController,
+    AgentDefinition,
     Tenant,
     TenantMember,
 )
@@ -27,6 +29,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ASSIGNMENT_CHANGED, CREDENTIAL_REVOKED
+from switch_core.providers.registry import agent_provider
 from tests.switch_core.connections.github_seed import connect_github, grant_repository
 from tests.switch_core.gateway.agent_route_harness import add_agent
 from tests.switch_core.management.harness import (
@@ -616,8 +619,23 @@ class TestManagedAgents:
             "junie",
         ]
         assert providers[0]["label"] == "Claude Code"
+        assert providers[0]["supports_auto_mode"] is True
+        assert providers[4] == {
+            **providers[4],
+            "id": "cursor",
+            "supports_auto_mode": False,
+        }
         for entry in providers:
-            assert set(entry) == {"id", "label", "advanced_fields"}
+            assert set(entry) == {
+                "id",
+                "label",
+                "advanced_fields",
+                "supports_auto_mode",
+            }
+            assert (
+                entry["supports_auto_mode"]
+                == agent_provider(entry["id"]).supports_auto_mode
+            )
             assert (
                 entry["advanced_fields"]
                 == advanced.json()["providers"][entry["id"]]["fields"]
@@ -740,6 +758,224 @@ class TestManagedAgents:
         assert view.json()["status"] == {**entry, "directory": None}
         assert view.json()["controller_state"] == "online"
 
+    @pytest.mark.usefixtures("hosted_v2_on")
+    async def test_the_view_says_why_the_agent_stopped(self, harness: Harness) -> None:
+        """A fixed reason code and times, decided by Core from the status report."""
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+            healthy = await client.get(
+                f"/gateway/management/agents/{agent_id}", cookies=cookies_for(owner)
+            )
+            stopped = {
+                "agent_id": agent_id,
+                "applied_revision": 1,
+                "process": "stopped",
+                "attached": False,
+                "sessions": {"active": 0, "ids": []},
+                "restarts_10m": 0,
+                "oom_kills": 1,
+                "since": "2026-01-01T00:00:00Z",
+                "reason": "out_of_memory",
+                "detail": "a planted marker phrase the owner's agent wrote",
+            }
+            await report_status(
+                client, controller, 2, providers=[provider("claude")], agents=[stopped]
+            )
+            listed = await client.get(
+                "/gateway/management/agents", cookies=cookies_for(owner)
+            )
+        assert healthy.json()["stop_reason"] is None
+        (entry,) = [a for a in listed.json() if a["agent_id"] == agent_id]
+        assert entry["stop_reason"] == {
+            "code": "memory_guard",
+            "since": "2026-01-01T00:00:00+00:00",
+            "reset_at": None,
+        }
+        assert "planted marker" not in str(
+            entry["stop_reason"]
+        )  # never the box's own text
+
+    async def test_with_v2_off_the_view_has_no_stop_reason(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The v1/v2 switch (sweep row 22): a managed agent reads as upstream's,
+        in the single view and the list."""
+        from switch_core import hosted_v2
+
+        monkeypatch.setattr(hosted_v2, "_process_on", False)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+            one = await client.get(
+                f"/gateway/management/agents/{agent_id}", cookies=cookies_for(owner)
+            )
+            listed = await client.get(
+                "/gateway/management/agents", cookies=cookies_for(owner)
+            )
+        assert one.status_code == 200, one.text
+        assert "stop_reason" not in one.json()
+        assert all("stop_reason" not in a for a in listed.json())
+
+    @pytest.mark.usefixtures("hosted_v2_on")
+    async def test_busy_is_accepted_only_as_a_real_boolean(
+        self, harness: Harness
+    ) -> None:
+        """Working versus idle; a box can't put anything else there."""
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+            entry = _running(agent_id, session="active")
+            entry["busy"] = True
+            accepted = await report_status(
+                client, controller, 2, providers=[provider("claude")], agents=[entry]
+            )
+            for bad in ("yes", 1, "true"):
+                entry["busy"] = bad
+                refused = await report_status(
+                    client,
+                    controller,
+                    3,
+                    providers=[provider("claude")],
+                    agents=[entry],
+                )
+                assert refused.status_code == 422, bad
+        assert accepted.status_code == 200, accepted.text
+
+    @pytest.mark.usefixtures("hosted_v2_on")
+    async def test_a_let_go_is_waiting_too_long_and_only_its_fixed_shape_is_accepted(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+            waiting = _running(agent_id, session="active")
+            waiting["let_go"] = {"at": "2026-10-29T11:50:00Z", "reason": "timed_out"}
+            accepted = await report_status(
+                client, controller, 2, providers=[provider("claude")], agents=[waiting]
+            )
+            view = await client.get(
+                f"/gateway/management/agents/{agent_id}", cookies=cookies_for(owner)
+            )
+            for bad in (
+                {"at": "2026-10-29T11:50:00Z", "reason": "the agent's own words"},
+                {"at": "2026-10-29T11:50:00Z", "reason": "timed_out", "note": "x"},
+                {"at": "x" * 41, "reason": "timed_out"},
+            ):
+                waiting["let_go"] = bad
+                refused = await report_status(
+                    client,
+                    controller,
+                    3,
+                    providers=[provider("claude")],
+                    agents=[waiting],
+                )
+                assert refused.status_code == 422, bad
+        assert accepted.status_code == 200, accepted.text
+        assert view.json()["stop_reason"]["code"] == "waiting_too_long"
+
+    async def test_the_view_carries_where_the_agents_sessions_stand(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+            reported = await report_status(
+                client,
+                controller,
+                2,
+                providers=[provider("claude")],
+                agents=[_running(agent_id, session="parked")],
+            )
+            view = await client.get(
+                f"/gateway/management/agents/{agent_id}", cookies=cookies_for(owner)
+            )
+        assert reported.status_code == 200, reported.text
+        assert view.json()["status"]["session"] == "parked"
+
+    @pytest.mark.usefixtures("hosted_v2_on")
+    async def test_a_session_state_outside_the_three_is_refused(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+            reported = await report_status(
+                client,
+                controller,
+                2,
+                providers=[provider("claude")],
+                agents=[_running(agent_id, session="<b>hacked</b>")],
+            )
+        assert reported.status_code == 422
+
+    @pytest.mark.usefixtures("hosted_v2_on")
+    async def test_a_report_naming_another_controllers_agent_sets_no_state_on_it(
+        self, harness: Harness, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        bob = await add_member(harness.session_factory, "bob")
+        async with harness.client() as client:
+            ada_box = await enroll_console(harness, client, ada)
+            bob_box = await enroll_console(harness, client, bob)
+            await report_status(client, ada_box, 1, providers=[provider("claude")])
+            await report_status(client, bob_box, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, bob, name="bobs-agent", controller_id=bob_box.controller_id
+            )
+            bobs_agent = created.json()["agent_id"]
+            # Ada's box claims to speak for Bob's agent.
+            reported = await report_status(
+                client,
+                ada_box,
+                2,
+                providers=[provider("claude")],
+                agents=[_running(bobs_agent, session="active")],
+            )
+            view = await client.get(
+                f"/gateway/management/agents/{bobs_agent}", cookies=cookies_for(bob)
+            )
+        assert reported.status_code == 200, reported.text
+        assert view.json()["status"] is None
+        async with harness.session_factory() as session:
+            row = await session.get(AgentController, ada_box.controller_id)
+        assert row is not None and row.status is not None
+        assert all("session" not in entry for entry in row.status["agents"])
+        assert any(
+            r.levelname == "WARNING" and bobs_agent in r.getMessage()
+            for r in caplog.records
+        )
+
 
 async def report_machine(
     client: httpx.AsyncClient,
@@ -841,6 +1077,71 @@ class TestTheWorkingDirectory:
         assert moved.status_code == 200, moved.text
         assert moved.json()["definition"]["directory"] == "/two/workspaces/reviewer"
         assert kept.json()["definition"]["directory"] == "/srv/kept"
+
+    async def test_a_directory_that_is_no_place_to_work_is_refused(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        cookies = cookies_for(owner)
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            climbing = await create_managed_agent(
+                client,
+                owner,
+                name="climber",
+                controller_id=controller.controller_id,
+                definition_body=definition(directory="../../etc"),
+            )
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            path = f"/gateway/management/agents/{created.json()['agent_id']}"
+            relative = await client.patch(
+                path, json={"definition": definition(directory="work")}, cookies=cookies
+            )
+            with_nul = await client.patch(
+                path,
+                json={"definition": definition(directory="/srv/a\x00b")},
+                cookies=cookies,
+            )
+            kept = await client.get(path, cookies=cookies)
+        for refused in (climbing, relative, with_nul):
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["error"]["code"] == "validation_error"
+            assert "directory" in refused.json()["error"]["message"]
+        assert kept.json()["definition"]["directory"] == f"{WORKSPACES_DIR}/reviewer"
+
+    async def test_a_stored_directory_that_breaks_the_rules_is_reported(
+        self, harness: Harness
+    ) -> None:
+        """One stored before directories were checked is refused with what is
+        wrong with it when the agent is next changed, not with a server error."""
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+            async with harness.session_factory() as session:
+                row = (
+                    await session.execute(
+                        select(AgentDefinition).where(
+                            AgentDefinition.agent_id == agent_id
+                        )
+                    )
+                ).scalar_one()
+                row.definition = {**row.definition, "directory": "/srv/../etc"}
+                await session.commit()
+            stopped = await client.patch(
+                f"/gateway/management/agents/{agent_id}",
+                json={"desired_state": "stopped"},
+                cookies=cookies_for(owner),
+            )
+        assert stopped.status_code == 422, stopped.text
+        assert "'..' segment" in stopped.json()["error"]["message"]
 
     async def test_a_controller_that_has_not_said_leaves_it_null(
         self, harness: Harness
@@ -1215,6 +1516,20 @@ class TestMachineNameAndDescription:
         assert response.status_code == 422, response.text
         assert response.json()["error"]["code"] == "validation_error"
         assert listed.json()[0]["name"] == "laptop"
+
+
+def _running(agent_id: str, *, session: str) -> dict[str, Any]:
+    return {
+        "agent_id": agent_id,
+        "applied_revision": 1,
+        "process": "running",
+        "attached": True,
+        "sessions": {"active": 1, "ids": ["s1"]},
+        "session": session,
+        "restarts_10m": 0,
+        "oom_kills": 0,
+        "since": "2026-01-01T00:00:00Z",
+    }
 
 
 class TestWhatTheOwnerMayDo:

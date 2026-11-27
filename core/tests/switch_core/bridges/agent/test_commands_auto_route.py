@@ -34,6 +34,7 @@ from switch_core.db.stores.room_store import (
     AUTO_ROUTE_FALLBACK_KEY,
     AUTO_ROUTE_ON_KEY,
     RoomStore,
+    auto_route_choice_in,
 )
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.delivery.addressing import SenderPrincipal
@@ -78,6 +79,7 @@ def _host(
     *,
     flag: bool = True,
     endpoint: bool = True,
+    default_on: bool = False,
     sender: str | None = None,
 ) -> tuple[SimpleNamespace, list[str]]:
     """A command host for `room_id`. The command's sender is the Switch user
@@ -118,6 +120,7 @@ def _host(
                 bedrock_enabled=False,
             ),
             store=DecisionSettingsStore(),
+            rooms_on_by_default=default_on,
         ),
     )
     return host, posted
@@ -140,9 +143,17 @@ async def _run(host: SimpleNamespace, args: str) -> None:
     await _cmd_auto_route(host, RoomRef(room_id="!t:test"), event, False)  # type: ignore[arg-type]
 
 
-async def _on(session_factory: async_sessionmaker[AsyncSession], room_id: str) -> bool:
+async def _choice(
+    session_factory: async_sessionmaker[AsyncSession], room_id: str
+) -> bool | None:
     async with session_factory() as session:
-        return await RoomStore().auto_route_on(session, room_id)
+        room = await session.get(Room, room_id)
+        assert room is not None
+        return auto_route_choice_in(room.metadata_)
+
+
+async def _on(session_factory: async_sessionmaker[AsyncSession], room_id: str) -> bool:
+    return await _choice(session_factory, room_id) is True
 
 
 def test_is_a_room_command_the_switch_app_runs() -> None:
@@ -266,6 +277,30 @@ class TestAutoRouteCommand:
         await _run(host, "OFF")
         assert "Automatic routing is **off**" in posted[-1]
         assert not await _on(session_factory, room_id)
+
+    async def test_on_by_default_where_the_server_says_so(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        host, posted = _host(session_factory, room_id, default_on=True)
+
+        await _run(host, "")
+
+        assert "Automatic routing is **on**" in posted[-1]
+        assert await _choice(session_factory, room_id) is None
+
+    async def test_off_holds_against_the_server_default(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        host, posted = _host(session_factory, room_id, default_on=True)
+
+        await _run(host, "off")
+        assert "Automatic routing is **off**" in posted[-1]
+        assert await _choice(session_factory, room_id) is False
+
+        await _run(host, "")
+        assert "Automatic routing is **off**" in posted[-1]
 
     async def test_anything_else_gets_the_usage(
         self, session_factory: async_sessionmaker[AsyncSession]

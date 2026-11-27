@@ -32,6 +32,7 @@ import {
   type ServiceGrants,
   setServiceGrant,
   updateAgentAddressingPolicy,
+  githubThroughApp,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 
@@ -151,6 +152,8 @@ export default function ServiceAccessSection({
   const onOff = services.filter((service) => service.enabled && service.pass_through);
   const onOffSlugs = new Set(onOff.map((service) => service.slug));
   const githubService = services.find((service) => service.slug === "github") ?? null;
+  // GitHub connected with a pasted token is on or off, among the others.
+  const githubApp = githubService === null || githubThroughApp(githubService);
   // Why GitHub can't be granted here at all, said where its form would be.
   const githubBlocked = githubService === null ? null : serviceBlockedReason(githubService);
 
@@ -158,9 +161,6 @@ export default function ServiceAccessSection({
     <>
       <Divider />
       <Stack spacing={1.5}>
-        <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
-          Service access
-        </Typography>
         <Typography variant="body2" color="text.secondary">
           What this agent may use of your own connectors. Its sessions are given
           short-lived access for what you grant, and nothing else.
@@ -170,7 +170,7 @@ export default function ServiceAccessSection({
         {grants === null && !error && <CircularProgress size={20} />}
         {grants !== null && !canGrant && (
           <Alert severity="info">
-            New grants are only for an agent Switch Console runs from a known agent type. What it
+            New grants are only for an agent run from a known agent type. What it
             has been granted can still be removed.
           </Alert>
         )}
@@ -264,12 +264,12 @@ export default function ServiceAccessSection({
             />
           ))}
 
-        {grants && canGrant && githubBlocked !== null && (
+        {grants && canGrant && githubApp && githubBlocked !== null && (
           <Typography variant="body2" color="text.secondary">
             {githubService && <BlockedReason reason={githubBlocked} service={githubService} />}
           </Typography>
         )}
-        {grants && canGrant && githubBlocked === null && (editing || !githubGrant) && (
+        {grants && canGrant && githubApp && githubBlocked === null && (editing || !githubGrant) && (
           <GitHubGrantForm
             backLabel={agent.name}
             github={github}
@@ -288,7 +288,7 @@ export default function ServiceAccessSection({
           />
         )}
 
-        <GitHubNotes />
+        {githubApp && <GitHubNotes />}
       </Stack>
     </>
   );
@@ -327,7 +327,7 @@ export function serviceBlockedReason(
 ): string | null {
   if (service.unavailable_reason !== null) return service.unavailable_reason;
   if (!service.workspace_enabled)
-    return `${service.name} is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors in Switch Console.`;
+    return `${service.name} is not enabled in this workspace. Ask a workspace admin; they switch it on in Settings › Connectors.`;
   return null;
 }
 

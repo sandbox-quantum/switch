@@ -52,7 +52,7 @@ def _consumer() -> CommandConsumer:
         room_service=MagicMock(),
         user_store=MagicMock(),
         agent_admin=MagicMock(),
-        deletion_requests=MagicMock(),
+        agent_requests=MagicMock(),
         frontend_base_url=None,
         follow_the_conversation_enabled=False,
         feature_flags={},

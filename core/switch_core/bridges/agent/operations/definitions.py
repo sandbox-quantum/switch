@@ -11,6 +11,7 @@ and room come from `operations.context`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -21,6 +22,15 @@ from switch_core.agent_refusals import AgentRefused, record_refusal
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
 from switch_core.agent_templates import plan_template
 from switch_core.authz import Principal, require_group_filing
+from switch_core.bridges.agent.agent_change_requests import (
+    addressing_widens,
+    changed_fields,
+    current_addressing,
+    fields_to_confirm,
+    hold_change,
+    owner_of,
+    record_change_by_agent,
+)
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.agent_management import (
     management_permission,
@@ -31,6 +41,7 @@ from switch_core.bridges.agent.operations.agent_management import (
 from switch_core.bridges.agent.operations.context import (
     bound_rooms,
     caller_session,
+    client_txn_id,
     connected_room,
     counting_reader,
     get_agent_id,
@@ -56,7 +67,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.types import IntegrationProfile, TrustFeedback
-from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
+from switch_core.clients.agent_admin import CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
@@ -75,7 +86,9 @@ from switch_core.template_runs import (
     NewAgentPlan,
     Problem,
     TemplateAgents,
+    asking_instead_of_default_bypass,
     opening_rooms_as_made,
+    owner_confirmation_problems,
     pending_addressing,
     room_ids_of,
 )
@@ -860,7 +873,12 @@ async def post_message(
     spec = parse_ui_spec(ui) if ui is not None else None
     protocol = get_protocol()
     sent = await protocol.send_message(
-        agent_id, room_id, body, thread_id=thread_id, ui=spec
+        agent_id,
+        room_id,
+        body,
+        thread_id=thread_id,
+        client_txn_id=client_txn_id(),
+        ui=spec,
     )
     return _with_trust({"event_id": sent.event_id}, sent.trust)
 
@@ -947,6 +965,7 @@ async def send_targeted_message(
         body,
         thread_id=thread_id,
         target_roles=target_roles or [],
+        client_txn_id=client_txn_id(),
         ui=spec,
     )
     return _with_trust(
@@ -1117,12 +1136,18 @@ async def create_room(
         caller_is_member = agent_id in await protocol.room_store.get_agent_ids(
             session, result.room.id
         )
+    channel_url_fn = getattr(protocol, "channel_web_url", None)
+    channel_url = (
+        await channel_url_fn(result.room) if channel_url_fn is not None else None
+    )
     return {
         "id": result.room.id,
         "name": result.room.name,
         "transport_room_id": result.room.transport_room_id,
         # Deprecated alias, carried for the connector compatibility window.
         "matrix_room_id": result.room.transport_room_id,
+        "external_channel_id": result.room.external_channel_id,
+        "channel_url": channel_url,
         "caller_is_member": caller_is_member,
         "failed_attachments": result.failed_attachments,
     }
@@ -2033,6 +2058,9 @@ async def _provision_as_agent(
                         for p in new_agents
                     ]
                 )
+        new_agents = asking_instead_of_default_bypass(new_agents)
+        if unconfirmed := owner_confirmation_problems(new_agents):
+            raise AgentsNotCreated(unconfirmed)
         creator = TemplateAgents(
             protocol=protocol,
             management=management_port(),
@@ -2055,7 +2083,7 @@ async def _provision_as_agent(
     builtins = await rooms_yaml.builtins_for(
         user_id=owner.id, name=owner.name, email=owner.email, text=yaml, inputs=inputs
     )
-    parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
+    parsed = await rooms_yaml.read_template(yaml, inputs=inputs, builtins=builtins)
     if isinstance(parsed.spec, GroupSpec):
         # Without the owner's admin reach, which filing rooms in a group needs.
         require_group_filing(False)
@@ -2272,7 +2300,10 @@ async def run_template(
     anything would fail, nothing is created and the refusal lists every
     problem with its reason code. If the rooms then fail, the agents created
     are deleted again. Confirm what will be created with the person asking
-    first: it starts real agents on their machines.
+    first: it starts real agents on their machines. An agent with bypass mode
+    on, or ``permissionMode: bypassPermissions`` in its ``advanced_config``,
+    is refused (``needs_owner_confirmation``): your owner confirms those, so
+    create it with ``create_agent`` or ask them to run the template.
 
     Args:
         template_id: The id from ``list_templates``.
@@ -2356,7 +2387,8 @@ async def _run_document(
         text=content,
         inputs=inputs,
     )
-    plan = plan_template(
+    plan = await asyncio.to_thread(
+        plan_template,
         content,
         filled,
         inputs or {},
@@ -2641,7 +2673,7 @@ async def request_agent_deletion(agent_id: str) -> dict[str, Any]:
         "agent_name": name,
         "status": "awaiting_confirmation",
         "confirm_with": f"!delete-agent {name} confirm",
-        "expires_in_seconds": int(DELETE_CONFIRM_SECONDS),
+        "expires_in_seconds": int(CONFIRM_SECONDS),
     }
 
 
@@ -2689,7 +2721,8 @@ async def update_agent_detail(
             ui-avatars.com.
         addressing: Who can address it: "owner_only" (your owner alone, not
             even their other agents, you included), "owner_and_owner_agents"
-            (your owner and any agent they own) or "anyone".
+            (your owner and any agent they own) or "anyone". Opening it wider
+            than it is waits for your owner to confirm (below).
         mid_turn_delivery: What a message sent while it is working does:
             "steer" (the default) hands it to the running turn, whoever sent
             it and from wherever; "queue" always runs it as a turn of its own
@@ -2712,7 +2745,7 @@ async def update_agent_detail(
             mode has no review and runs every command without asking, so
             turn it on for OpenCode only when the person asks for that.
         auto_approve: Bypass mode: run every tool without any permission
-            check; overrides `auto_mode`. Unsafe; turn it on only when the
+            check; overrides `auto_mode`. Unsafe; ask for it only when the
             person explicitly asks.
         directory: Working directory on its machine; "" for the machine's
             own workspace for the agent, whose path Switch fills in.
@@ -2727,6 +2760,24 @@ async def update_agent_detail(
     a session mid-turn picks them up when the turn ends, and a running
     conversation is told its new instructions.
 
+    Your owner confirms a change that widens what the agent may do on its
+    own, or who may reach it: turning `auto_approve` or `auto_mode` on,
+    `advanced_config` with `permissionMode` "bypassPermissions" or "auto", a
+    new `directory` (other than "" for the machine's own workspace), `machine`
+    or `provider`, `addressing` wider than it is now ("anyone", or
+    "owner_and_owner_agents" for an agent your owner's agents cannot address
+    yet), or `instructions` for an agent that has bypass on (`auto_approve`,
+    or `permissionMode` "bypassPermissions") once the call is made. That is
+    not made by this call: it is posted in the room you are
+    connected to (connect to one first), with the other managed fields of the
+    same call, and waits for your owner to send `!agent-change <name>
+    confirm` there within two minutes; otherwise it lapses. Only the owner
+    can confirm it, never you or another agent, and one change per agent
+    waits at a time. Tell the person what it changes and what to send.
+    Turning bypass or auto mode off, any other `permissionMode`, a narrower
+    `addressing`, and every other field apply at once, as does a value the
+    agent already has.
+
     Returns:
         The `get_agent_detail` shape plus `managed`: for a managed agent, the
         entry `list_managed_agents` shows for it (provider, model,
@@ -2737,6 +2788,10 @@ async def update_agent_detail(
         templates_mentioning_old_name}` — each chat platform that could not be
         updated yet (the rename stands; it catches up when its bridge next
         starts), and saved templates whose text still says the old name.
+        Plus `awaiting_confirmation` when a change waits for your owner:
+        `{status, agent_name, owner, fields, needs_confirmation_for,
+        confirm_with, expires_in_seconds, message}`, with `managed` showing
+        the agent as it still is.
     """
     caller_id = get_agent_id()
     protocol = get_protocol()
@@ -2782,6 +2837,9 @@ async def update_agent_detail(
             raise ValueError(str(exc)) from exc
     port = management_port()
     managed: dict[str, Any] | None = None
+    held: dict[str, Any] | None = None
+    managed_now: dict[str, Any] | None = None
+    confirming: tuple[str, ...] = ()
     if not changes.is_empty():
         if port is None:
             raise ValueError(
@@ -2790,6 +2848,42 @@ async def update_agent_detail(
                 "run state Switch can set."
             )
         permitted = await permitted_to_manage()
+        managed_now = await port.managed_agent(
+            permitted.tenant_id, permitted.owner.id, agent_id
+        )
+        if managed_now is not None:
+            confirming = fields_to_confirm(changes, managed_now)
+        if confirming:
+            await port.check_managed_agent_changes(
+                permitted.tenant_id, permitted.owner.id, agent_id, changes
+            )
+    opens_addressing = addressing is not None and addressing_widens(
+        await current_addressing(protocol, agent_id), addressing
+    )
+    if confirming or opens_addressing:
+        held = await hold_change(
+            protocol,
+            port,
+            room_id=await require_connected_room(),
+            caller_id=caller_id,
+            owner=await owner_of(protocol, agent_id),
+            agent_id=agent_id,
+            changes=changes if confirming else None,
+            addressing=addressing if opens_addressing else None,
+            confirming=confirming + (("addressing",) if opens_addressing else ()),
+        )
+    if opens_addressing:
+        profile = AgentProfileUpdate(
+            columns={
+                key: value
+                for key, value in profile.columns.items()
+                if key != "addressing_policy"
+            }
+        )
+    if confirming:
+        managed = managed_now
+    elif not changes.is_empty():
+        assert port is not None
         managed = await port.update_managed_agent(
             permitted.tenant_id, permitted.owner.id, agent_id, changes, protocol
         )
@@ -2822,6 +2916,26 @@ async def update_agent_detail(
     }
     if renamed is not None:
         response["renamed"] = renamed
+    if held is not None:
+        response["awaiting_confirmation"] = held
+    profile_given = {
+        "description": description,
+        "display_name": display_name,
+        "icon_url": icon_url,
+        "addressing": addressing,
+        "mid_turn_delivery": mid_turn_delivery,
+    }
+    applied = [
+        field
+        for field, value in profile_given.items()
+        if value is not None and not (field == "addressing" and opens_addressing)
+    ]
+    applied += ["name"] if renamed is not None else []
+    applied += [] if confirming else list(changed_fields(changes))
+    if applied:
+        await record_change_by_agent(
+            protocol, caller_id=caller_id, agent_id=agent_id, fields=applied
+        )
     return response
 
 

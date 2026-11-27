@@ -1,6 +1,3 @@
-import { propagateServerApiUrl } from '@main/core/agents/propagate-server-api-url';
-import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
-import { getManagedServer } from '@main/core/switch-servers/servers-store';
 import type {
   DockerAvailability,
   LocalActivityEntry,
@@ -34,18 +31,9 @@ export const localSwitchServerController = createRPCController({
 
   /**
    * Move the service on `port` elsewhere and start again. When that moves the
-   * API, the agents pointed at it follow, as they do when a server's address
-   * is edited.
+   * API, the agents pointed at it follow: the start registers the new address
+   * and moves them (`followManagedServerAddress`).
    */
-  useAnotherPort: async (port: number): Promise<StartLocalServerResult> => {
-    const before = await getManagedServer();
-    const result = await localServerService.useAnotherPort(port);
-    if (result.kind !== 'started' || !before) return result;
-    const after = await getManagedServer();
-    if (after && after.url !== before.url) {
-      await propagateServerApiUrl(after.id, after.url);
-      await embeddedControllerService.followServerApiUrl(after.id);
-    }
-    return result;
-  },
+  useAnotherPort: (port: number): Promise<StartLocalServerResult> =>
+    localServerService.useAnotherPort(port),
 });

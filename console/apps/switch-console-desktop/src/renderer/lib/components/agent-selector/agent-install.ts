@@ -1,4 +1,4 @@
-import type { AgentInstallError, AgentUpdateError } from '@shared/core/providers/agent-payload';
+import type { AgentInstallError } from '@shared/core/providers/agent-payload';
 import { getProvider, type AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 export type AgentInstallActionState = {
@@ -53,23 +53,6 @@ export type AgentUpdateActionState = {
   label: string;
   versionLabel: string | null;
 };
-
-export function getAgentUpdateErrorMessage(error: AgentUpdateError): string {
-  switch (error.type) {
-    case 'permission-denied':
-      return error.message;
-    case 'command-failed':
-      return error.output ? `${error.message} ${error.output}` : error.message;
-    case 'process-open-failed':
-      return error.message;
-    case 'unknown-dependency':
-      return `Unknown dependency: ${error.id}`;
-    case 'no-update-strategy':
-      return `No update strategy is available for ${error.id}.`;
-    case 'not-detected-after-update':
-      return 'The agent was not detected after update.';
-  }
-}
 
 export function getAgentUpdateActionState({
   updateAvailable,

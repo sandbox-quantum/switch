@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
@@ -57,7 +56,9 @@ from switch_core.gateway.feature_flags import router as feature_flags_router
 from switch_core.gateway.github_connections import router as github_connections_router
 from switch_core.gateway.hosted_controller import router as hosted_controller_router
 from switch_core.gateway.hosted_machines import router as hosted_machines_router
+from switch_core.gateway.hosted_provisioner import router as hosted_provisioner_router
 from switch_core.gateway.invite_mail import InviteMailer
+from switch_core.gateway.license_acceptance import router as license_router
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
 )
@@ -97,6 +98,7 @@ from switch_core.gateway.service_connections import (
 from switch_core.gateway.service_flows import router as service_flows_router
 from switch_core.gateway.stream_caps import GatewayStreamCaps
 from switch_core.gateway.suspension import router as suspension_router
+from switch_core.gateway.team_survey import router as team_survey_router
 from switch_core.gateway.teams_placements import router as teams_placements_router
 from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
@@ -111,15 +113,39 @@ from switch_core.gateway.workspace_guardrails import (
 from switch_core.gateway.workspace_services import (
     router as workspace_services_router,
 )
+from switch_core.hosted_v2 import (
+    hosted_v2_on,
+    require_hosted_v2,
+    set_process_hosted_v2,
+)
 from switch_core.keys import Purpose
 from switch_core.organization_directory import OrganizationDirectory
-from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.providers.hosted import (
+    load_hosted_settings,
+    log_operator_overlaps,
+    warn_if_no_per_workspace_limit,
+    warn_if_open_to_all,
+)
 from switch_core.request_validation import validation_error_response
 from switch_core.room_service import RoomService
 from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
 from switch_core.trust.connection_check import TrustConnectionCheck
 from switch_core.user_changes import LocalUserChanges
+from switch_core.visibility.audit_routes import router as operator_audit_router
+from switch_core.visibility.dependencies import (
+    load_keyed_id_key,
+    set_process_keyed_id_key,
+)
+from switch_core.visibility.hosted_access_routes import router as hosted_access_router
+from switch_core.visibility.operator_action_routes import (
+    router as operator_action_router,
+)
+from switch_core.visibility.operator_limits import configure_limits
+from switch_core.visibility.operators import OperatorList
+from switch_core.visibility.read_views import (
+    operator_router as visibility_operator_router,
+)
 
 
 def create_gateway_app(
@@ -186,19 +212,59 @@ def create_gateway_app(
 
     app = FastAPI(title="Switch Gateway API")
     app.state.chat_service = chat_service
-    app.state.hosted_controller_settings = (
-        HostedControllerSettings.model_validate_json(
-            Path(config.hosted_controller_config_path).read_text()
-        )
-        if config.hosted_controller_config_path
-        else None
+    app.state.hosted_controller_settings = load_hosted_settings(
+        config.hosted_controller_config_path, v2=hosted_v2_on(config)
     )
     if config.hosted_launch_capacity and app.state.hosted_controller_settings is None:
         raise ValueError(
             "HOSTED_LAUNCH_CAPACITY above 0 requires HOSTED_CONTROLLER_CONFIG_PATH."
         )
+    warn_if_open_to_all(
+        app.state.hosted_controller_settings,
+        config.hosted_launch_capacity,
+        # Before `set_process_hosted_v2` below: asked of the config itself.
+        v2=hosted_v2_on(config),
+    )
+    warn_if_no_per_workspace_limit(
+        config.hosted_launch_capacity,
+        config.hosted_launch_capacity_per_workspace,
+        v2=hosted_v2_on(config),
+    )
+    # The operator bearer's overlaps: open ones named with their
+    # end, lapsed ones still in the file warned about.
+    log_operator_overlaps(app.state.hosted_controller_settings)
+    # Before any route can need it; an unsafe key file stops the start here.
+    app.state.keyed_id_key = load_keyed_id_key(config)
+    set_process_keyed_id_key(app.state.keyed_id_key)
+    # The v1/v2 switch, once per start, for code with no config to hand.
+    set_process_hosted_v2(config)
+    app.state.operator_list = OperatorList(config.visibility_operators_path)
+    # Operator rate limits: the bulk-action alert's title takes its window from
+    # the setting, and a limit set looser than the default is named once at start.
+    configure_limits(config)
+    # The v1/v2 switch: every v2-only router answers 404 with v2 off, before
+    # any authentication or work, exactly as a route that doesn't exist.
+    v2_only = [Depends(require_hosted_v2)]
+    app.include_router(
+        operator_audit_router, tags=["hosted-operator"], dependencies=v2_only
+    )
+    app.include_router(
+        hosted_access_router, tags=["hosted-operator"], dependencies=v2_only
+    )
+    app.include_router(
+        operator_action_router, tags=["hosted-operator"], dependencies=v2_only
+    )
+    # v1 hosted uses these two, so they stay up; their v2 parts are gated inside.
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
     app.include_router(hosted_controller_router, tags=["hosted-controller"])
+    app.include_router(
+        hosted_provisioner_router, tags=["hosted-provisioner"], dependencies=v2_only
+    )
+    # The operator's overview and "Show name". They answer 503 until a
+    # keyed-id key is set.
+    app.include_router(
+        visibility_operator_router, tags=["visibility"], dependencies=v2_only
+    )
     app.state.connector_apps = connector_apps
     install_github_app(app.state, connector_apps.github_app())
     app.include_router(
@@ -282,6 +348,8 @@ def create_gateway_app(
     app.include_router(browser_handoff_router, tags=["auth"])
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(workos_sign_in_router, tags=["auth"])
+    app.include_router(team_survey_router, tags=["auth"])
+    app.include_router(license_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(organizations_router, tags=["organizations"])
     app.include_router(organization_workspaces_router, tags=["organizations"])

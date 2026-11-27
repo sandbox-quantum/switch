@@ -51,7 +51,7 @@ beforeEach(() => {
   vi.mocked(hooks.useRoomAgentCandidates).mockReturnValue(data({ agent_ids: [] }));
   vi.mocked(hooks.useRoomGroups).mockReturnValue(data([]));
   vi.mocked(api.createRoom).mockResolvedValue({ id: "r1" } as never);
-  render(<RoomCreateFormBody />);
+  render(<RoomCreateFormBody preselectedAgentId={null} />);
   fireEvent.change(screen.getByLabelText(/Name/), { target: { value: "planning" } });
   fireEvent.change(screen.getByLabelText(/Description/), { target: { value: "d" } });
 });
@@ -85,7 +85,7 @@ describe("RoomCreateFormBody access", () => {
   });
 
   it("offers no access for a room on an app: its channel decides", async () => {
-    await choose(/Bridge/, "Slack (slack)");
+    await choose(/Bridge/, "Slack");
     await choose(/Channel type/, "Private channel");
 
     expect(screen.queryByRole("combobox", { name: /Access/ })).toBeNull();
@@ -100,14 +100,14 @@ describe("RoomCreateFormBody access", () => {
   });
 
   it("offers a private channel first for a room on an app", async () => {
-    await choose(/Bridge/, "Slack (slack)");
+    await choose(/Bridge/, "Slack");
     expect(select(/Channel type/).textContent).toBe("Private channel");
     expect(await submit()).toMatchObject({ channel_type: "channel_private" });
   });
 
   it("offers a public channel, saying how to make it private, to someone not linked", async () => {
     vi.mocked(hooks.useMyIdentities).mockReturnValue(data([]));
-    await choose(/Bridge/, "Slack (slack)");
+    await choose(/Bridge/, "Slack");
 
     expect(select(/Channel type/).textContent).toBe("Public channel");
     expect(screen.getByText("Link your account to make it private, in Messaging apps.")).toBeTruthy();
@@ -116,7 +116,7 @@ describe("RoomCreateFormBody access", () => {
 
   it("still sends private when someone not linked picks it", async () => {
     vi.mocked(hooks.useMyIdentities).mockReturnValue(data([]));
-    await choose(/Bridge/, "Slack (slack)");
+    await choose(/Bridge/, "Slack");
     await choose(/Channel type/, "Private channel");
 
     expect(await submit()).toMatchObject({ channel_type: "channel_private" });
@@ -124,7 +124,7 @@ describe("RoomCreateFormBody access", () => {
 
   it("drops a choice made before an app was picked", async () => {
     await choose(/Access/, "Private");
-    await choose(/Bridge/, "Slack (slack)");
+    await choose(/Bridge/, "Slack");
 
     expect(await submit()).not.toHaveProperty("read_visibility");
   });

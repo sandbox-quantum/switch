@@ -1,6 +1,6 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { useQuery } from '@tanstack/react-query';
 import { rpc } from '@renderer/lib/ipc';
-import type { ChatSummary } from '@shared/core/chats/chats';
 import { chatsStore } from './stores/chats';
 
 /**

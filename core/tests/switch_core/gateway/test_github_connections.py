@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select, update
 
+from switch_core.connections.adapters import github as github_adapter
 from switch_core.connections.adapters.github import GitHubAdapter, GitHubApp
 from switch_core.connections.broker import SWITCHED_OFF, ServiceBroker
 from switch_core.connections.loader import CATALOG
@@ -39,7 +40,12 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.github_connections import APP_CHANGED, router
 from switch_core.keys import Keyring
-from switch_core.providers.github import GitHubConnections, GitHubError, GitHubReach
+from switch_core.providers.github import (
+    GitHubConnections,
+    GitHubError,
+    GitHubReach,
+    TokenOwner,
+)
 from switch_core.providers.github_installation import GitHubInstallationCredentials
 from switch_core.tenant_context import tenant_scope
 
@@ -129,7 +135,11 @@ def _process(
         catalog=CATALOG,
         adapters={}
         if github is None
-        else {"github": GitHubAdapter(github, AsyncMock(), read_only=False)},
+        else {
+            "github": GitHubAdapter(
+                CATALOG["github"].definition, github, AsyncMock(), read_only=False
+            )
+        },
         organization_apps=organization_apps,
         disabled={},
         store=ServiceConnectionStore(),
@@ -413,6 +423,31 @@ async def test_a_web_sign_in_that_fails_unexpectedly_still_returns_to_the_page(
     )
     assert any(
         record.levelname == "ERROR" and "from the web failed" in record.message
+        for record in caplog.records
+    )
+
+
+async def test_a_console_sign_in_that_fails_unexpectedly_fails_the_flow_and_says_why(
+    github_app, caplog
+):
+    client, github, _, factory = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    github.request.side_effect = RuntimeError("synthetic failure")
+    failed = await complete(client, flow_id)
+    saved = "Switch couldn't save your GitHub connection. Connect again."
+    assert (failed.status_code, failed.json()) == (500, {"detail": saved})
+    status = (await client.get(BASE + f"/flows/{flow_id}")).json()
+    assert (status["status"], status["error"]) == ("failed", saved)
+    async with factory() as session:
+        assert (
+            await session.scalar(
+                select(ServiceConnection).where(ServiceConnection.service == "github")
+            )
+            is None
+        )
+    assert any(
+        record.levelname == "ERROR" and "from Switch Console failed" in record.message
         for record in caplog.records
     )
 
@@ -948,7 +983,7 @@ async def test_disconnect_works_once_the_app_is_removed(github_app):
         ),
     ],
 )
-async def test_with_no_app_every_route_says_why_github_cannot_be_used(
+async def test_with_no_app_every_sign_in_route_says_why_github_cannot_be_used(
     github_app, public_url, reason
 ):
     client, _, _, factory = github_app
@@ -957,10 +992,18 @@ async def test_with_no_app_every_route_says_why_github_cannot_be_used(
     assert started.status_code == 200, started.text
     client._transport.app.state.github_connections = None
     _rebroker(client, factory, adapters={}, disabled={}, public_url=public_url)
-    answers = [await client.get(BASE), await _start(client)]
-    for answer in answers:
-        assert answer.status_code == 503
-        assert answer.json()["detail"] == reason
+    # Where the person stands still reads, with nothing to install: a pasted
+    # token connects GitHub without the App.
+    status = await client.get(BASE)
+    assert status.status_code == 200, status.text
+    assert status.json() == {
+        "status": "not_connected",
+        "install_url": None,
+        "can_revoke": False,
+    }
+    answer = await _start(client)
+    assert answer.status_code == 503
+    assert answer.json()["detail"] == reason
     left = await client.get(BASE + "/authorize", params={"state": started.json()["id"]})
     assert left.status_code == 503
     assert html.escape(reason) in left.text
@@ -1105,7 +1148,11 @@ async def test_with_the_flag_off_the_servers_switch_still_refuses_a_sign_in(
     _rebroker(
         client,
         factory,
-        adapters={"github": GitHubAdapter(github, AsyncMock(), read_only=False)},
+        adapters={
+            "github": GitHubAdapter(
+                CATALOG["github"].definition, github, AsyncMock(), read_only=False
+            )
+        },
         disabled={"github": SERVER_REFUSAL["detail"]},
         public_url=None,
     )
@@ -1127,7 +1174,11 @@ async def test_switched_off_on_the_server_mid_flow_the_sign_in_is_revoked(
     _rebroker(
         client,
         factory,
-        adapters={"github": GitHubAdapter(github, AsyncMock(), read_only=False)},
+        adapters={
+            "github": GitHubAdapter(
+                CATALOG["github"].definition, github, AsyncMock(), read_only=False
+            )
+        },
         disabled={"github": SERVER_REFUSAL["detail"]},
         public_url=None,
     )
@@ -1213,7 +1264,9 @@ def _saved(
         organization_id="org-example",
         adapter=None
         if github is None
-        else GitHubAdapter(github, AsyncMock(), read_only=False),
+        else GitHubAdapter(
+            CATALOG["github"].definition, github, AsyncMock(), read_only=False
+        ),
         github_app=None if github is None else GitHubApp(github, None, ()),
         problem=problem,
         changed_at=datetime.now(UTC),
@@ -1290,6 +1343,61 @@ class TestOrganizationsApp:
 
         assert refused.status_code == 503
         assert refused.json()["detail"] == problem
+
+    async def test_a_token_works_where_the_organizations_app_is_unusable(
+        self, github_app, monkeypatch
+    ) -> None:
+        _, server_github, identity, factory = github_app
+        problem = "Your organization's GitHub app can't be used: it is broken."
+        app = _process(
+            server_github,
+            identity,
+            factory,
+            False,
+            _Organizations(_saved(None, problem)),
+        )
+        broker: ServiceBroker = app.state.service_broker
+        monkeypatch.setattr(
+            github_adapter,
+            "token_owner",
+            AsyncMock(return_value=TokenOwner(1001, "ada-gh", expires=True)),
+        )
+
+        async with await _client(app) as client:
+            before = await client.get(BASE)
+            async with factory() as session:
+                standing = await broker.standing(session, "github")
+                checked = await broker.check_paste(
+                    session, "github", "token", {"pat": "github_pat_SYNTHETIC"}, {}
+                )
+            async with factory() as session:
+                await broker.connect(
+                    session,
+                    user_id=identity["user"].id,
+                    service="github",
+                    consent="write",
+                    granted_scopes=[],
+                    account_id=checked.account_id,
+                    external_identity=checked.label,
+                    secret=checked.secret,
+                    oauth_client_id=None,
+                    method="token",
+                    choices={},
+                )
+            after = await client.get(BASE)
+
+        # Signing in is refused with the organization's reason; the token,
+        # which goes through no App, connects GitHub and reads as connected.
+        assert standing.unavailable is None
+        assert standing.sign_in_unavailable is not None
+        assert standing.sign_in_unavailable.reason == problem
+        assert before.status_code == 200, before.text
+        assert before.json()["install_url"] is None
+        assert after.status_code == 200, after.text
+        assert (after.json()["status"], after.json()["method"]) == (
+            "connected",
+            "token",
+        )
 
     async def test_a_sign_in_begun_under_another_app_is_refused_at_authorize(
         self, github_app

@@ -46,7 +46,7 @@ export class AgentRuntimes implements AgentRuntime {
     await chosen.launch(agentId, template, options);
   }
 
-  async stop(agentId: string, options: { wait: boolean }): Promise<void> {
+  async stop(agentId: string, options: { wait: boolean; asked?: boolean }): Promise<void> {
     await this.shared.stop(agentId, options);
     await this.isolated.stop(agentId, options);
   }

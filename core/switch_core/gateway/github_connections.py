@@ -2,6 +2,7 @@ import asyncio
 import html
 import logging
 import secrets
+from dataclasses import dataclass
 from typing import Annotated, cast
 from urllib.parse import urlencode
 
@@ -140,6 +141,34 @@ async def workspace_app(
 ) -> GitHubConnections:
     """The signed-in person's workspace's GitHub App (`app_for_workspace`)."""
     return app_for_workspace(request, await broker.organization_app(session, "github"))
+
+
+@dataclass(frozen=True)
+class WorkspaceGitHubApp:
+    """The GitHub App a workspace signs in through, where it can: `app` is
+    None where no App is set up for it, or the one that applies can't be
+    used, and `problem` then says why a sign-in through it is refused (None
+    where no App is set up at all, so GitHub connects only with a pasted
+    token)."""
+
+    app: GitHubConnections | None
+    problem: str | None
+
+
+async def workspace_app_if_set_up(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+) -> WorkspaceGitHubApp:
+    """`workspace_app`, without refusing: a pasted token works whatever
+    becomes of the App, so only a sign-in through it is refused."""
+    app = await broker.organization_app(session, "github")
+    if app is None and request.app.state.github_connections is None:
+        return WorkspaceGitHubApp(None, None)
+    try:
+        return WorkspaceGitHubApp(app_for_workspace(request, app), None)
+    except HTTPException as refused:
+        return WorkspaceGitHubApp(None, str(refused.detail))
 
 
 def get_sign_in_flows(request: Request) -> SignInFlows:
@@ -573,9 +602,21 @@ async def complete(
     )
     if checking is None:
         raise HTTPException(400, refused)
-    return await _sign_in_and_link(
-        session, broker, flows, checking, github, body.code, user.id
-    )
+    try:
+        return await _sign_in_and_link(
+            session, broker, flows, checking, github, body.code, user.id
+        )
+    except Exception:
+        # The flow fails with why, as the web's does, rather than read as
+        # pending until it expires.
+        logger.exception(
+            "Writing a GitHub connection from Switch Console failed: tenant=%s user=%s",
+            flow.tenant_id,
+            user.id,
+        )
+        await _settled(flows, checking, "failed", error=not_saved("GitHub"))
+        await session.rollback()
+        return JSONResponse(status_code=500, content={"detail": not_saved("GitHub")})
 
 
 async def _sign_in_and_link(
@@ -708,7 +749,7 @@ async def connection(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-    github: Annotated[GitHubConnections, Depends(workspace_app)],
+    github: Annotated[WorkspaceGitHubApp, Depends(workspace_app_if_set_up)],
 ) -> dict:
     return await connection_status(user.id, session, broker, github)
 
@@ -717,9 +758,12 @@ async def connection_status(
     user_id: str,
     session: AsyncSession,
     broker: ServiceBroker,
-    github: GitHubConnections,
+    github: WorkspaceGitHubApp,
 ) -> dict:
-    """The person's GitHub link and every repository the App lets them reach."""
+    """The person's GitHub link and every repository the App lets them reach.
+    With no App it can use there is nothing to install: `install_url` is
+    null, and only a pasted token connects it."""
+    install_url = None if github.app is None else github.app.install_url
     try:
         token = await broker.connection_access_token(session, user_id, "github")
     except ServiceError as error:
@@ -728,27 +772,44 @@ async def connection_status(
     if token is None:
         return {
             "status": "not_connected",
-            "install_url": github.install_url,
+            "install_url": install_url,
             "can_revoke": False,
         }
-    try:
-        reach = await github.repositories(token)
-    except GitHubAuthorizationError as error:
-        raise HTTPException(422, str(error)) from None
-    except GitHubError as error:
-        raise HTTPException(502, str(error)) from None
     row = await STORE.get_connection(session, user_id, "github")
     if row is None:
         raise HTTPException(409, "The GitHub connector changed. Please retry.")
     await session.commit()
+    if row.method != "oauth":
+        # A pasted token reaches what it does, not through the App, so there
+        # are no installations to list: a grant on it names no repositories.
+        return {
+            "status": "connected",
+            "method": row.method,
+            "login": row.external_identity,
+            "installations": [],
+            "sso_hidden_organizations": [],
+            "install_url": install_url,
+            "can_revoke": True,
+        }
+    if github.app is None:
+        raise HTTPException(
+            503, github.problem or broker.server_availability("github") or ""
+        )
+    try:
+        reach = await github.app.repositories(token)
+    except GitHubAuthorizationError as error:
+        raise HTTPException(422, str(error)) from None
+    except GitHubError as error:
+        raise HTTPException(502, str(error)) from None
     return {
         "status": "connected",
+        "method": row.method,
         "login": row.external_identity,
         "installations": reach.installations,
         # Organizations whose single sign-on hides their installations from
         # this sign-in: connecting again and authorizing them shows those.
         "sso_hidden_organizations": reach.sso_hidden,
-        "install_url": github.install_url,
+        "install_url": install_url,
         # The caller's own connection, theirs to disconnect.
         "can_revoke": True,
     }

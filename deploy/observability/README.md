@@ -179,7 +179,7 @@ export flattens them to `switch.agent_id`, and Datadog queries both as
 | One actor is moving many files | `security.attachment.uploaded` / `.downloaded` | `switch.agent_id`, `switch.actor_user_id` | 50 in 10 min | P3 |
 | An agent is asking for many service tokens | `security.service_token.issued` | `switch.agent_id` | 30 in 10 min | P3 |
 | Switch Trust blocked or redacted a message | actions `trust.message_blocked` / `trust.message_redacted` (an `alerted` or `errored` verdict is the log-only `security.trust.verdict`, not alerted on) | `switch.agent_id`, `switch.actor_user_id` | any | P3 |
-| An agent was given more power | actions `agent.auto_approve_enabled`, `agent.can_manage_agents_granted` | `switch.agent_id` | any | P3 |
+| An agent was given more power, not by its owner directly | actions `agent.auto_approve_enabled`, `agent.can_manage_agents_granted` with `security_details.by_owner` false (an agent acting for the owner, or no request) | `switch.agent_id` | any | P3 |
 | A platform operator acted in a workspace | action `platform.access` | `switch.actor_user_id` | any | P4 |
 | An API key was revealed | action `api_key.revealed` | `switch.actor_user_id` | any | P4 |
 | Sign-ins failing from one address | `security.auth.sign_in_failed` | `security_details.client_ip` | 20 in 10 min | P3 |
@@ -308,8 +308,9 @@ What this repository checks needs no secret. On pull requests, PR CI's
 monitor that would be refused at apply time is refused at review.
 
 `hosted-dashboard.json` is the hosted agents board for whoever is on call: the
-hosted alerts, then the main dashboard's hosted charts in reading order (a test
-keeps them equal). Import it in Datadog under Dashboards, New Dashboard, Import
+hosted alerts, then the main dashboard's hosted charts in reading order, then
+its hosted agents v2 section, which stays empty unless `HOSTED_BOX_PROVISIONING`
+is on (a test keeps them equal). Import it in Datadog under Dashboards, New Dashboard, Import
 dashboard JSON, then set `$service` and `$flint_env` to the deployment's, and
 replace `REPLACE-WITH-SERVICE` in the alerts panel's query with its service.
 
@@ -320,6 +321,8 @@ database query duration, pool hold and wait time (`switch.db.pool.hold.duration`
 `switch.db.pool.wait.duration`), platform call duration, rate-limit hold-backs,
 the agent buffer's scan length and duration, garbage-collection pauses
 (`switch.runtime.gc_pause`), cloud machine memory (`switch.hosted.box_memory_used`),
+hosted box anonymous memory (`switch.hosted.box_anon_memory`),
+hosted box start times (`switch.hosted.start_seconds`),
 and decision duration, model time, confidence
 and wait (`switch.decision.duration`, `switch.decision.model_time`,
 `switch.decision.confidence`, `switch.decision.wait`) are OTLP histograms, and the
@@ -336,12 +339,12 @@ configured tag set (`route` for requests, `operation` for database queries and
 the agent buffer, `caller` for pool hold time but not wait time, `generation` for
 garbage-collection pauses, `bridge` and `platform` for bridge calls, `platform`
 and `delivery` for rate-limit hold-backs, `model` for decision duration, model
-time and confidence, `outcome` for decision wait, and `version` for the
+time and confidence, `outcome` for decision wait, `case` and `stage` for hosted box start times, and `version` for the
 release scorecard and comparisons), or
 `p95: … by {…}` returns nothing on a fresh account. Empty is the honest outcome either way; a panel is never silently
 switched to a different statistic.
 
-The three latency **monitors** (the API, delivery, and decisions) depend on the same thing, and fail more quietly
+The four latency **monitors** (the API, delivery, decisions, and hosted box first starts) depend on the same thing, and fail more quietly
 than a panel does: an alert over a percentile that is not enabled evaluates
 against no series and sits healthy for ever. Check them after enabling
 percentiles, not before.
@@ -554,22 +557,32 @@ alerts per pod, since one pod can exhaust its pool while the others idle.
 
 The `switch.hosted.*` metrics are reported only with the `hosted_agents` flag
 on, and come from what cloud machines already send Core: their controllers'
-status reports, and the hosted controller service's calls. Laptops and SSH
-hosts are never counted. No metric carries an id: every attribute is a word
-from a fixed set (`core/switch_core/observability/hosted.py`), and `backend`
-is the kind of machine (`vm` for every machine this server makes today).
+status reports, the hosted controller service's calls, and, for hosted agents
+v2 boxes, the operator's observations. Laptops and SSH hosts are never
+counted. No metric carries an id: every attribute is a word from a fixed set
+(`core/switch_core/observability/hosted.py`), and `backend` is the kind of
+machine: `vm` for a v1 machine, `box` for a hosted agents v2 box.
 
 - The gauges come from one Core process, the one holding the hosted metrics
   advisory lock, so several processes don't each report every machine. A
   report older than 3 minutes is left out rather than reported as it was.
+- Agents, stopped agents, sessions, machines expected and reporting, memory
+  and disk used, provider logins and provisioning time are reported for both
+  kinds, by `backend`. The rest (restarts, out-of-memory kills, waiting for
+  room, the valve, the gateway, evictions, guard stops and valve parks) are
+  boxes' only, with no `backend`.
 - A v1 machine reports no session state, so `switch.hosted.agents` always has
   `session:none` for it: chart it by `process`.
 - `switch.hosted.box_memory_used` is recorded once per machine report: a
   machine serving several workspaces sends its memory in each workspace's
   report, and only the first fresh one, by workspace id, is counted.
+- `switch.hosted.guard_stops` and `switch.hosted.valve_parks` are counts of the
+  rise in each box's since-start figures, so a controller restart reads as a
+  reset, not a drop.
 - **A silent machine** is `switch.hosted.boxes_reporting` below
   `switch.hosted.boxes_expected`. Machines stopped by their owner or for
-  idleness are not expected, so they don't set it off.
+  idleness, and boxes paused or turned off, are not expected, so they don't
+  set it off.
 - `switch.hosted.machine_events` counts cloud machine changes once committed,
   at the points where product telemetry reports the same change, so it counts
   whether or not product telemetry is on.
@@ -581,15 +594,24 @@ is the kind of machine (`vm` for every machine this server makes today).
   process's start until it first hears from the hosted controller service, so
   a reconciler that is down when Core restarts still shows as silent. Read the
   minimum over pods.
+  **On a server with hosted agents v2 on**, the box workers (the scaler and
+  the drain worker) poll the same machine list, so the gauge shows the
+  hosted controller service as a whole, not the v1 machines' reconciler
+  alone: it stays low while the box workers run, even if the v1 reconciler
+  has stopped. On a v1-only server it watches the v1 reconciler alone.
 - `switch.hosted.machine_events` with `event:failed` says why a machine
   failed: `not_scheduled`, `never_started`, `never_connected` (a first launch),
-  `wake_failed` (a wake or restart that didn't come back), `owner_left`,
-  `needs_attention`, `reported`, or `stop_failed` (an error while it was
-  wanted stopped). Each failure also writes one log line with the fixed field
+  `wake_failed` (a wake or restart that didn't come back), `launch_refused`
+  (it needs attention and has never been ready: its launch was refused or
+  never came up), `owner_left`, `needs_attention` (after it had been ready),
+  `reported`, or `stop_failed` (an error while it was wanted stopped). "Hosted
+  machine launches failing" counts the first five. Each failure also writes one log line with the fixed field
   `switch.event: hosted.machine_failed`, its reason and the machine id.
 - `switch.hosted.provider_login_problems` counts AI provider logins on cloud
   machines that are `missing` or `expired`, by provider (a fixed list, else
-  `other`). The first time a machine reports one, Core writes one line with
+  `other`). Only a provider that an agent placed on the machine runs is
+  counted: every provider is installed there, and one no agent uses needs no
+  login. The first time a machine reports one, Core writes one line with
   `switch.event: hosted.provider_login_problem`.
 - `switch.hosted.provision_seconds` (from request to first report, new machines
   only) and `switch.hosted.disk_used` are histograms, like memory.
@@ -641,7 +663,10 @@ is the kind of machine (`vm` for every machine this server makes today).
   rather than logs.
 - `switch.controller.credential_refusals` counts refused controller
   credentials by reason code and kind of route only, never the client's
-  address or any part of the credential.
+  address or any part of the credential. With hosted agents v2 on it also
+  counts `locked_out` (a request refused while its address is locked out) and
+  `lockout_started`, and the cloud controller service's `hosted_provisioner`
+  and `hosted_operator` routes.
 - Credential refusals have two alerts, both routed as security (see
   [Routing](#routing)). **The more urgent one** (P2, pages) watches the bearer
   routes only (`agent`, `controller`, `hosted_controller`) for the reasons that
@@ -655,3 +680,8 @@ is the kind of machine (`vm` for every machine this server makes today).
   service isn't restarted for that (exit codes 3 and 6), so each revoked
   controller adds about one refusal: 30 is well above a normal day, and
   reached only by a large revoke or by someone trying credentials.
+- Two box alerts, low urgency: 3 or more memory guard stops, and 3 or more
+  evictions, in 30 minutes.
+- `switch.hosted.alerts_open` counts the operator alerts open now, by condition
+  only. Which box, machine or service is on the operator's Alerts tab, never
+  in Datadog.

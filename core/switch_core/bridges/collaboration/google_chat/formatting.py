@@ -5,6 +5,9 @@ from typing import Any
 
 # Google Chat text limit is 32,000 bytes. We use 30,000 to leave headroom for formatting/overhead.
 MAX_CHAT_MESSAGE_BYTES = 30000
+# A code block reopened in the next chunk carries its language tag only up to
+# this long, so the room a reopening takes is bounded.
+_MAX_REOPENED_LANGUAGE = 32
 
 # Pattern for fenced code blocks: ```lang ... ``` or ``` ... ```
 _CODE_BLOCK_PATTERN = re.compile(r"(```[\s\S]*?```)", re.DOTALL)
@@ -100,7 +103,14 @@ def split_message_chunks(
     while remaining:
         prefix = ""
         if in_code_block:
-            prefix = f"```{code_block_lang}\n" if code_block_lang else "```\n"
+            # A language tag so long it would crowd the code out of every
+            # part is dropped from the reopened fences.
+            lang = (
+                code_block_lang
+                if len(code_block_lang) <= _MAX_REOPENED_LANGUAGE
+                else ""
+            )
+            prefix = f"```{lang}\n"
 
         # If remaining fits in one chunk taking prefix into account
         if len((prefix + remaining).encode("utf-8")) <= max_bytes:
@@ -109,9 +119,16 @@ def split_message_chunks(
 
         # Available space for candidate: max_bytes - len(prefix) - 10 (for trailing \n```)
         budget = max_bytes - len(prefix.encode("utf-8")) - 10
-        candidate_len = min(len(remaining), budget)
-        while len(remaining[:candidate_len].encode("utf-8")) > budget:
-            candidate_len -= 50
+        # The longest prefix within `budget` bytes, never cutting a character
+        # in two, and at least one character so every pass makes progress.
+        candidate_len = max(
+            1,
+            len(
+                remaining[: max(budget, 0)]
+                .encode("utf-8")[: max(budget, 0)]
+                .decode("utf-8", errors="ignore")
+            ),
+        )
 
         segment = remaining[:candidate_len]
 

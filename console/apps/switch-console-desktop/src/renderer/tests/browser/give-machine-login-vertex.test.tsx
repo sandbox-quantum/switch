@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const giveMachineLogin = vi.hoisted(() => vi.fn());
 const machineLoginOutcome = vi.hoisted(() => vi.fn());
+const machineSealingKey = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -21,14 +22,12 @@ vi.hoisted(() => {
 });
 
 vi.mock('@renderer/lib/ipc', () => ({
-  rpc: { managedAgents: { giveMachineLogin, machineLoginOutcome } },
+  rpc: { managedAgents: { giveMachineLogin, machineLoginOutcome, machineSealingKey } },
   events: { on: () => () => {}, emit: () => {} },
 }));
 
-import {
-  GiveMachineLogin,
-  loginKindsFor,
-} from '@renderer/features/locations/components/add-agent-modal/give-machine-login';
+import { providerLoginKinds } from '@switch-console/chat-ui/model/provider-catalogue';
+import { GiveMachineLogin } from '@renderer/features/locations/components/add-agent-modal/give-machine-login';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import '@renderer/index.css';
 
@@ -36,6 +35,8 @@ const KEY = JSON.stringify({
   type: 'service_account',
   client_email: 'a@b.iam.gserviceaccount.com',
 });
+
+const FINGERPRINT = '6668 7aad f862 bd77 6c8f c18b 8e9f 8e20';
 
 const MACHINE: OwnedMachine = {
   id: 'controller-1',
@@ -57,6 +58,9 @@ let root: Root | null = null;
 beforeEach(() => {
   giveMachineLogin.mockReset().mockResolvedValue({ operationId: 'op-1' });
   machineLoginOutcome.mockReset().mockResolvedValue({ state: 'succeeded' });
+  machineSealingKey
+    .mockReset()
+    .mockResolvedValue({ state: 'verified', fingerprint: FINGERPRINT, source: 'pinned' });
 });
 
 afterEach(async () => {
@@ -128,16 +132,16 @@ async function chooseVertex(el: HTMLElement): Promise<void> {
 
 describe('giving a machine a Claude login through Vertex AI', () => {
   it('offers Vertex AI as a third Claude login', () => {
-    expect(loginKindsFor('claude').map((kind) => kind.label)).toEqual([
+    expect(providerLoginKinds('claude', true).map((kind) => kind.label)).toEqual([
       'Setup token',
       'API key',
       'Vertex AI',
     ]);
-    expect(loginKindsFor('codex').map((kind) => kind.value)).not.toContain('vertex');
+    expect(providerLoginKinds('codex', true).map((kind) => kind.value)).not.toContain('vertex');
   });
 
   it('offers Vertex AI to Antigravity beside this computer’s sign-in', () => {
-    expect(loginKindsFor('antigravity').map((kind) => kind.label)).toEqual([
+    expect(providerLoginKinds('antigravity', true).map((kind) => kind.label)).toEqual([
       "This computer's sign-in",
       'Vertex AI',
     ]);
@@ -171,6 +175,7 @@ describe('giving a machine a Claude login through Vertex AI', () => {
         region: 'us-east5',
         credentials: { from: 'key', json: KEY },
       },
+      fingerprint: FINGERPRINT,
     });
     expect(el.textContent).toContain('Claude Code signs in on cloud-box.');
   });

@@ -20,7 +20,6 @@ import type {
   InstallOption,
 } from '@shared/core/providers/agent-payload';
 import { getDependencyDescriptor } from '../dependencies/registry';
-import { providerOverrideSettings } from '../settings/provider-settings-service';
 import { getPlugin, listPlugins } from './plugin-registry';
 
 /**
@@ -63,10 +62,7 @@ async function buildOne(
   if (!provider) return null;
 
   const state = dependencyManager?.get(id);
-  const settingsMeta = await providerOverrideSettings.getItemWithMeta(id);
   const descriptor = getDependencyDescriptor(id);
-
-  const defaultConfig = settingsMeta?.defaults ?? {};
 
   const rawHostDep = dependencyManager?.getHostDependency(id);
   const hostDep =
@@ -86,11 +82,6 @@ async function buildOne(
     latestVersion,
     updateAvailable,
     command: usedInst?.pathEntry ?? state?.path ?? null,
-    settings: settingsMeta ?? {
-      value: defaultConfig,
-      defaults: defaultConfig,
-      overrides: {},
-    },
     installOptions: descriptor ? resolveInstallOptions(descriptor, platform) : [],
     installations: hostDep?.installations ?? [],
     used,

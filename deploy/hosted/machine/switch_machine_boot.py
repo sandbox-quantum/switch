@@ -80,7 +80,8 @@ VOLUME_WAIT_SECONDS = 600
 CONTROLLER_RETRIES = 4
 CONTROLLER_RETRY_SECONDS = 30
 METADATA_WAIT_SECONDS = 300
-# Instance metadata, IMDSv2: agents cannot reach it, root can.
+# Instance metadata, IMDSv2: the agents and the controllers cannot reach it
+# (their units deny the address), root can.
 METADATA_URL = "http://169.254.169.254/latest"
 # The exit status of an instance the hosted controller did not launch, which
 # has nothing to boot from: systemd does not run it again.

@@ -233,7 +233,14 @@ async def _mirror(
         clock,
     )
     return _Running(
-        mirror, Fence(kind=MIRROR_KIND, key=MIRROR_KEY, process_id=process_id, token=1)
+        mirror,
+        Fence(
+            kind=MIRROR_KIND,
+            key=MIRROR_KEY,
+            process_id=process_id,
+            token=1,
+            unheld_since=None,
+        ),
     )
 
 

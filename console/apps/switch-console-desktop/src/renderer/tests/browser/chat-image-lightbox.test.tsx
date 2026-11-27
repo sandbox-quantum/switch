@@ -8,12 +8,9 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { userEvent } from 'vitest/browser';
 
 const media = vi.hoisted(() => vi.fn());
-vi.mock('@renderer/lib/ipc', () => ({
-  events: { on: () => () => {} },
-  rpc: { chats: { media } },
-}));
-
-import { ChatAttachments } from '@renderer/features/chats/components/chat-attachments';
+const saveAttachment = vi.hoisted(() => vi.fn());
+import { ChatAttachments } from '@switch-console/chat-ui/components/chat-attachments';
+import { withChatHost } from '@switch-console/chat-ui/testing';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;
@@ -25,6 +22,7 @@ afterEach(async () => {
   container = null;
   root = null;
   vi.restoreAllMocks();
+  saveAttachment.mockReset();
 });
 
 function samplePng(): string {
@@ -48,19 +46,31 @@ async function render(): Promise<HTMLElement> {
   root = createRoot(container);
   await act(async () =>
     root!.render(
-      <ChatAttachments
-        serverId="s"
-        roomId="r"
-        attachments={[
-          {
-            uri: 'mxc://example.org/shot',
-            filename: 'shot.png',
-            mimetype: 'image/png',
-            size: 70,
-            msgtype: 'm.image',
-          },
-        ]}
-      />
+      withChatHost(
+        <ChatAttachments
+          serverId="s"
+          roomId="r"
+          attachments={[
+            {
+              uri: 'mxc://example.org/shot',
+              filename: 'shot.png',
+              mimetype: 'image/png',
+              size: 70,
+              msgtype: 'm.image',
+            },
+          ]}
+        />,
+        {
+          media: (_serverId, roomId, uri) => media({ roomId, uri }),
+          saveAttachment: async (serverId, roomId, attachment) =>
+            saveAttachment({
+              serverId,
+              roomId,
+              uri: attachment.uri,
+              filename: attachment.filename,
+            }),
+        }
+      )
     )
   );
   await expect.poll(() => container!.querySelector('img')).toBeTruthy();
@@ -81,13 +91,16 @@ it('shows the download button on hover', async () => {
 
 it('downloads without opening the lightbox', async () => {
   const image = await render();
-  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  saveAttachment.mockResolvedValue('/Users/me/Downloads/shot.png');
   await userEvent.hover(image);
   await userEvent.click(downloadButton());
-  await expect.poll(() => click.mock.calls.length).toBe(1);
-  const link = click.mock.contexts[0] as HTMLAnchorElement;
-  expect(link.download).toBe('shot.png');
-  expect(link.href).toMatch(/^blob:/);
+  await expect.poll(() => saveAttachment.mock.calls.length).toBe(1);
+  expect(saveAttachment).toHaveBeenCalledWith({
+    serverId: 's',
+    roomId: 'r',
+    uri: 'mxc://example.org/shot',
+    filename: 'shot.png',
+  });
   expect(lightbox()).toBeNull();
 });
 

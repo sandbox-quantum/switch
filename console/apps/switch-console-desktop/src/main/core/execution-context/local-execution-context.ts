@@ -59,7 +59,7 @@ export class LocalExecutionContext implements IExecutionContext {
     return refreshInstalledCliPath();
   }
 
-  exec(command: string, args: string[] = [], opts: ExecOptions = {}): Promise<ExecResult> {
+  async exec(command: string, args: string[] = [], opts: ExecOptions = {}): Promise<ExecResult> {
     const { timeout, maxBuffer } = opts;
     const spawnSpec = this.resolveSpawn(command, args);
     return execFileAsync(spawnSpec.command, spawnSpec.args, {

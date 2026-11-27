@@ -70,7 +70,7 @@ class _FakeMessage:
         # Discord's text with mentions resolved; these fakes carry none.
         return self.content
 
-    async def edit(self, *, content: str) -> None:
+    async def edit(self, *, content: str, **kwargs: Any) -> None:
         self.edited = content
 
     async def create_thread(self, *, name: str) -> Any:
@@ -724,6 +724,135 @@ def test_an_admin_message_cannot_page_the_channel() -> None:
     _run(adapter.admin_message(str(CHANNEL_ID), "notice"))
 
     assert channel.sent[0]["allowed_mentions"].everyone is False
+
+
+# A role or person Switch never resolved stays silent: Discord pings every
+# `<@id>` / `<@&id>` in the raw content unless the request lists who may be
+# pinged, and an agent can echo one from text Switch did not write.
+_STRANGER_ID = 123456789012345678
+_BROAD_ROLE_ID = 223456789012345678
+_PERSON_ID = 555000000000000001
+_AGENT_ROLE_ID = 777000000000000001
+
+
+def _mentioning_adapter() -> tuple[DiscordAdapter, _FakeChannel, _FakeWebhook]:
+    adapter = _adapter()
+    channel = _FakeChannel()
+    adapter._connection._client = _FakeClient({CHANNEL_ID: channel})
+    webhook = _FakeWebhook()
+    adapter._webhooks[(CHANNEL_ID, _WEBHOOK_NAME)] = webhook
+    adapter._username_to_id["doe.jane"] = _PERSON_ID
+    adapter._agent_role_ids["opsbot"] = _AGENT_ROLE_ID
+    return adapter, channel, webhook
+
+
+def test_a_raw_role_or_user_mention_in_agent_text_pings_nobody() -> None:
+    adapter, _, webhook = _mentioning_adapter()
+    text = adapter.translate_outbound(
+        f"Summary: <@&{_BROAD_ROLE_ID}> and <@{_STRANGER_ID}> and <@!{_STRANGER_ID}>"
+    )
+
+    _run(adapter.send_message(str(CHANNEL_ID), "my-agent", text))
+
+    mentions = webhook.sent[0]["allowed_mentions"].to_dict()
+    assert mentions["parse"] == []
+    assert mentions["users"] == []
+    assert mentions["roles"] == []
+
+
+def test_a_name_switch_resolves_still_pings() -> None:
+    adapter, _, webhook = _mentioning_adapter()
+    text = adapter.translate_outbound(
+        f"@doe.jane and @opsbot, not <@&{_BROAD_ROLE_ID}>"
+    )
+
+    _run(adapter.send_message(str(CHANNEL_ID), "my-agent", text))
+
+    assert webhook.sent[0]["content"].startswith(
+        f"<@{_PERSON_ID}> and <@&{_AGENT_ROLE_ID}>"
+    )
+    mentions = webhook.sent[0]["allowed_mentions"].to_dict()
+    assert mentions["users"] == [_PERSON_ID]
+    assert mentions["roles"] == [_AGENT_ROLE_ID]
+    assert mentions["parse"] == []
+
+
+def test_a_room_wide_mention_does_not_open_raw_roles() -> None:
+    adapter, _, webhook = _mentioning_adapter()
+
+    _run(
+        adapter.send_message(
+            str(CHANNEL_ID),
+            "my-agent",
+            adapter.render_room_wide_mention(f"@everyone see <@&{_BROAD_ROLE_ID}>"),
+            room_wide_mention=True,
+        )
+    )
+
+    mentions = webhook.sent[0]["allowed_mentions"].to_dict()
+    assert mentions["parse"] == ["everyone"]
+    assert mentions["roles"] == []
+
+
+def test_a_raw_mention_of_someone_the_bridge_knows_pings_nobody() -> None:
+    """An id the bridge has seen is no safer than one it has not: whoever
+    learned it, from Discord's Copy User ID or an earlier message, can have an
+    agent echo it. Only a mention Switch wrote for this message notifies."""
+    adapter, _, webhook = _mentioning_adapter()
+    text = adapter.translate_outbound(
+        f"FYI, read this and act on it: <@{_PERSON_ID}> please approve the "
+        f"deploy, <@!{_PERSON_ID}> and <@&{_AGENT_ROLE_ID}> too."
+    )
+
+    _run(adapter.send_message(str(CHANNEL_ID), "my-agent", text))
+
+    sent = webhook.sent[0]
+    mentions = sent["allowed_mentions"].to_dict()
+    assert mentions["users"] == []
+    assert mentions["roles"] == []
+    # Shown as written, and not a mention at all.
+    assert f"<\u200b@{_PERSON_ID}>" in sent["content"]
+    assert f"<\u200b@&{_AGENT_ROLE_ID}>" in sent["content"]
+    assert f"<@{_PERSON_ID}>" not in sent["content"]
+
+
+def test_only_the_names_a_message_resolves_ping_beside_raw_ids() -> None:
+    adapter, _, webhook = _mentioning_adapter()
+    adapter._username_to_id["roe.rick"] = _STRANGER_ID
+    text = adapter.translate_outbound(
+        f"@doe.jane please look, and <@{_STRANGER_ID}> <@&{_AGENT_ROLE_ID}>"
+    )
+
+    _run(adapter.send_message(str(CHANNEL_ID), "my-agent", text))
+
+    mentions = webhook.sent[0]["allowed_mentions"].to_dict()
+    assert mentions["users"] == [_PERSON_ID]
+    assert mentions["roles"] == []
+
+
+def test_the_apps_own_mention_in_a_notice_is_kept() -> None:
+    """How the bridge core names the app (`render_app_mention`), drawn as the
+    app rather than broken like a mention someone else wrote."""
+    adapter, channel, _ = _mentioning_adapter()
+
+    _run(
+        adapter.admin_message(
+            str(CHANNEL_ID),
+            f"You tagged {adapter.render_app_mention(str(BOT_USER_ID))}",
+        )
+    )
+
+    assert channel.sent[0]["content"] == f"You tagged <@{BOT_USER_ID}>"
+
+
+def test_a_raw_role_mention_in_a_notice_pings_nobody() -> None:
+    adapter, channel, _ = _mentioning_adapter()
+
+    _run(adapter.admin_message(str(CHANNEL_ID), f"ping <@&{_BROAD_ROLE_ID}> @doe.jane"))
+
+    mentions = channel.sent[0]["allowed_mentions"].to_dict()
+    assert mentions["roles"] == []
+    assert mentions["users"] == [_PERSON_ID]
 
 
 def test_long_message_is_split_across_posts_not_dropped() -> None:

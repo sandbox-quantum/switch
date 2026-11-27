@@ -24,6 +24,7 @@ Two shapes, matching the two kinds of route:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -32,6 +33,9 @@ from switch_core.accounts.suspension import owner_is_suspended
 from switch_core.archived_workspace import is_archived
 from switch_core.bridges.agent.auth import ControllerAuthError, ControllerPrincipal
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
+from switch_core.bridges.agent.operations.agent_management import (
+    WORKSPACE_NOT_ENABLED_MESSAGE,
+)
 from switch_core.bridges.agent.protocol.controller_presence import (
     Binding,
     ControllerPresence,
@@ -41,6 +45,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.tenant_lookup import tenant_of_api_key
 from switch_core.management import reason_codes, tokens
+from switch_core.management.errors import ManagementError
 
 MANAGEMENT_PREFIX = "/v1/management"
 CONTROLLERS_PREFIX = "/v1/controllers"
@@ -59,6 +64,8 @@ class ControllerOwnerSuspendedError(ControllerAuthError):
         super().__init__(
             reason_codes.ACCOUNT_SUSPENDED,
             "The account this controller belongs to is suspended.",
+            # Given here too: the base class sets the status from its argument.
+            status_code=403,
         )
 
 
@@ -75,12 +82,29 @@ class ManagementAuthenticator:
         token_secret: str,
         presence: ControllerPresence,
         auth_cache: ControllerAuthCache,
+        workspace_allowed: Callable[[str], bool] = lambda _tenant_id: True,
+        workspace_restricted: bool = False,
     ) -> None:
+        # Whether a workspace may use agent management at all (the hosted
+        # config's `management_tenant_ids`, through `tenant_allowed`). Applied
+        # where a caller's workspace becomes known, so it covers every route
+        # under /v1/management and /v1/controllers without a copy per route;
+        # the Console-side routes ask `workspace_allowed` too.
+        self._workspace_allowed = workspace_allowed
+        self._workspace_restricted = workspace_restricted
         self._session_factory = session_factory
         self._controllers = controllers
         self._verified = tokens.VerifiedTokens(secret=token_secret)
         self._presence = presence
         self._auth_cache = auth_cache
+
+    def workspace_allowed(self, tenant_id: str) -> bool:
+        return self._workspace_allowed(tenant_id)
+
+    @property
+    def workspace_restricted(self) -> bool:
+        """A workspace list is set (so an unbound call fails closed)."""
+        return self._workspace_restricted
 
     @property
     def presence(self) -> ControllerPresence:
@@ -98,6 +122,15 @@ class ManagementAuthenticator:
 
     def is_public(self, path: str) -> bool:
         return path == ENROLL_PATH or _TOKEN_PATH.fullmatch(path) is not None
+
+    def signature_valid(self, token: str) -> bool:
+        """The token's signature and expiry check out, with no database read
+        (a locked-out address is served only for such a token)."""
+        try:
+            self._verified.verify(token)
+        except (tokens.AccessTokenExpired, tokens.AccessTokenInvalid):
+            return False
+        return True
 
     async def authenticate(self, token: str, path: str) -> ControllerPrincipal:
         try:
@@ -119,6 +152,9 @@ class ManagementAuthenticator:
             key_id=claims.key_id,
         )
         if _ASSIGNMENT_PATH.fullmatch(path):
+            # A suspended owner's controller still reads its assignment, but a
+            # workspace off the allow-list is refused here as everywhere.
+            self._require_workspace(principal)
             current, _ = await self._standing(principal)
             return current
         return await self.current(principal)
@@ -135,10 +171,19 @@ class ManagementAuthenticator:
         or replaced when another controller on the same device took it over)
         is refused as expired: its holder exchanges its credential again,
         which only the controller's current process can do."""
+        self._require_workspace(principal)
         current, owner_suspended = await self._standing(principal)
         if owner_suspended:
             raise ControllerOwnerSuspendedError()
         return current
+
+    def _require_workspace(self, principal: ControllerPrincipal) -> None:
+        if not self._workspace_allowed(principal.tenant_id):
+            # Ahead of the cache, so a controller remembered from before the
+            # list changed is refused too.
+            raise ControllerAuthError(
+                reason_codes.WORKSPACE_NOT_ENABLED, WORKSPACE_NOT_ENABLED_MESSAGE, 403
+            )
 
     async def _standing(
         self, principal: ControllerPrincipal
@@ -213,10 +258,20 @@ class ManagementAuthenticator:
 
     async def tenant_of_secret(self, secret: str) -> str | None:
         """The tenant an enrollment code or controller credential belongs to,
-        or None for a secret no tenant holds."""
-        return await tenant_of_api_key(
+        or None for a secret no tenant holds. Raises `ManagementError` (403)
+        for a workspace not allowed to use the controller routes."""
+        tenant_id = await tenant_of_api_key(
             self._session_factory, tokens.hash_secret(secret)
         )
+        if tenant_id is not None and not self._workspace_allowed(tenant_id):
+            raise workspace_not_enabled()
+        return tenant_id
+
+
+def workspace_not_enabled() -> ManagementError:
+    return ManagementError(
+        403, reason_codes.WORKSPACE_NOT_ENABLED, WORKSPACE_NOT_ENABLED_MESSAGE
+    )
 
 
 def _holding(principal: ControllerPrincipal, key_id: str | None) -> ControllerPrincipal:

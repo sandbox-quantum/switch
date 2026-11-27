@@ -16,12 +16,15 @@ vi.hoisted(() => {
 
 const openConsoleLink = vi.hoisted(() => vi.fn());
 const confirmOpenExternalLink = vi.hoisted(() => vi.fn());
+const toast = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/features/deeplinks/console-link-handler', () => ({
   followConsoleLink: openConsoleLink,
 }));
 vi.mock('@renderer/lib/open-external-link', () => ({ confirmOpenExternalLink }));
+vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast }));
 
-import { ChatMarkdown } from '@renderer/features/chats/ui/chat-markdown';
+import { ChatMarkdown } from '@switch-console/chat-ui/ui/chat-markdown';
+import { ConsoleChatHost } from '@renderer/features/chats/console-chat-host';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;
@@ -39,7 +42,13 @@ async function render(markdown: string) {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root!.render(<ChatMarkdown>{markdown}</ChatMarkdown>));
+  await act(async () =>
+    root!.render(
+      <ConsoleChatHost>
+        <ChatMarkdown>{markdown}</ChatMarkdown>
+      </ConsoleChatHost>
+    )
+  );
   // Streamdown renders after a tick.
   await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
 }
@@ -65,5 +74,13 @@ describe('links to Console pages in chat', () => {
     await act(async () => link('the docs').click());
     expect(confirmOpenExternalLink).toHaveBeenCalledWith('https://example.test/docs');
     expect(openConsoleLink).not.toHaveBeenCalled();
+  });
+
+  it('refuse any other scheme with a notice, as links in documents are', async () => {
+    await render('Write to [support](mailto:support@example.test).');
+    await act(async () => link('support').click());
+    expect(openConsoleLink).not.toHaveBeenCalled();
+    expect(confirmOpenExternalLink).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Link not opened' }));
   });
 });

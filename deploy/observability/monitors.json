@@ -316,8 +316,8 @@
   {
     "name": "[Switch REPLACE-WITH-ENV] agent connections are dropping en masse",
     "type": "query alert",
-    "query": "avg(last_10m):sum:switch.agents.connected{service:REPLACE-WITH-SERVICE} / week_before(sum:switch.agents.connected{service:REPLACE-WITH-SERVICE}) < 0.5",
-    "message": "{{#is_alert}}Fewer than half as many agents are connected as at this time a week ago. Agents that lost their connection stop answering in their rooms.\n\n**Check:** pod restarts and agent connection logs; a pod loss makes its agents reconnect elsewhere. If last week was the odd one out (an outage, or a load test that connected extra agents), this clears on its own.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agent connections are dropping en masse.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "query": "avg(last_10m):sum(max:switch.agents.connected{service:REPLACE-WITH-SERVICE} by {service,pod_name,transport,client}, {service}) / week_before(sum(max:switch.agents.connected{service:REPLACE-WITH-SERVICE} by {service,pod_name,transport,client}, {service})) < 0.33",
+    "message": "{{#is_alert}}Fewer than a third as many agents are connected as at this time a week ago. Agents that lost their connection stop answering in their rooms.\n\n**Check:** pod restarts and agent connection logs; a pod loss makes its agents reconnect elsewhere. If last week was the odd one out (an outage, or a load test that connected extra agents), this clears on its own.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agent connections are dropping en masse.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",
@@ -332,7 +332,7 @@
       "require_full_window": false,
       "include_tags": true,
       "thresholds": {
-        "critical": 0.5
+        "critical": 0.33
       }
     },
     "priority": 2
@@ -784,8 +784,8 @@
   {
     "name": "[Switch REPLACE-WITH-ENV] Controller token exchanges and enrolments refused",
     "type": "query alert",
-    "query": "sum(last_10m):default_zero(sum:switch.controller.credential_refusals{service:REPLACE-WITH-SERVICE,route:management}.as_count()) > 30",
-    "message": "{{#is_alert}}{{value}} controller token exchanges or enrolments were refused in 10 minutes. A revoked or replaced controller stops after one refused exchange, so a few are normal (one per controller revoked); this many means either a large revoke, such as a migration batch, or someone trying credentials or enrolment codes.\n\n**Check:** the refusals by reason on the dashboard, and whether many controllers were revoked just now.{{/is_alert}}{{#is_recovery}}Recovered: controller token exchanges and enrolments are back to normal.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "query": "sum(last_10m):default_zero(sum:switch.controller.credential_refusals{service:REPLACE-WITH-SERVICE,route IN (management,hosted_provisioner,hosted_operator)}.as_count()) > 30",
+    "message": "{{#is_alert}}{{value}} controller token exchanges, enrolments or in-cluster worker credentials were refused in 10 minutes. A revoked or replaced controller stops after one refused exchange, so a few are normal (one per controller revoked); this many means a large revoke (such as a migration batch), an in-cluster worker with an old credential after a rotation, or someone trying credentials or enrolment codes.\n\n**Check:** the refusals by reason and route on the dashboard, whether many controllers were revoked just now, and whether the provisioner's and operator's credentials were just rotated.{{/is_alert}}{{#is_recovery}}Recovered: controller token exchanges and enrolments are back to normal.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",
@@ -832,8 +832,8 @@
   {
     "name": "[Switch REPLACE-WITH-ENV] Hosted machine launches failing",
     "type": "query alert",
-    "query": "sum(last_30m):default_zero(sum:switch.hosted.machine_events{service:REPLACE-WITH-SERVICE,event:failed,reason IN (never_connected,wake_failed,not_scheduled,never_started)}.as_count()) >= 3",
-    "message": "{{#is_alert}}{{value}} hosted machine launches failed in 30 minutes.\n\n**Check:** the failures by reason on the dashboard (not scheduled, never started, never connected, a wake that didn't come back), then the controller service's logs for the cloud errors.{{/is_alert}}{{#is_recovery}}Recovered: hosted machine launches are succeeding again.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "query": "sum(last_30m):default_zero(sum:switch.hosted.machine_events{service:REPLACE-WITH-SERVICE,event:failed,reason IN (never_connected,wake_failed,not_scheduled,never_started,launch_refused)}.as_count()) >= 3",
+    "message": "{{#is_alert}}{{value}} hosted machine launches failed in 30 minutes.\n\n**Check:** the failures by reason on the dashboard (not scheduled, never started, never connected, a wake that didn't come back, a launch refused before it was ever ready), then the controller service's logs for the cloud errors.{{/is_alert}}{{#is_recovery}}Recovered: hosted machine launches are succeeding again.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",
@@ -921,30 +921,6 @@
       "include_tags": true,
       "thresholds": {
         "critical": 10
-      }
-    },
-    "priority": 4
-  },
-  {
-    "name": "[Switch REPLACE-WITH-ENV] AI provider logins missing or expired on cloud machines",
-    "type": "query alert",
-    "query": "min(last_30m):max:switch.hosted.provider_login_problems{service:REPLACE-WITH-SERVICE} > 0",
-    "message": "{{#is_alert}}For 30 minutes, {{value}} AI provider login(s) on cloud machines have been missing or expired, so agents using them can't run.\n\n**Check:** which providers on the dashboard; the person who owns the machine needs to give the login again in Switch Console.{{/is_alert}}{{#is_recovery}}Recovered: no missing or expired AI provider logins on cloud machines.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": [
-      "service:REPLACE-WITH-SERVICE",
-      "env:REPLACE-WITH-ENV",
-      "team:switch",
-      "tier:now",
-      "category:ops"
-    ],
-    "options": {
-      "notify_no_data": false,
-      "renotify_interval": 60,
-      "notify_audit": false,
-      "require_full_window": false,
-      "include_tags": true,
-      "thresholds": {
-        "critical": 0
       }
     },
     "priority": 4
@@ -1270,8 +1246,8 @@
   {
     "name": "[Switch REPLACE-WITH-ENV] Security: an agent was given more power",
     "type": "log alert",
-    "query": "logs(\"service:REPLACE-WITH-SERVICE @switch.action:(agent.auto_approve_enabled OR agent.can_manage_agents_granted)\").index(\"*\").rollup(\"count\").by(\"@switch.agent_id\").last(\"5m\") > 0",
-    "message": "{{#is_alert}}Agent {{[@switch.agent_id].name}} was allowed to run tools without asking anyone (`agent.auto_approve_enabled`) or to manage other agents (`agent.can_manage_agents_granted`).\n\n**Check:** who did it (`switch.actor_user_id` in the log sample, and the workspace audit log), and whether the agent's owner meant to. Take it back in the gateway if not.\n\n**To stop it:** suspend the agent or person, which ends their access at once and keeps everything for review: the `switch-suspend` CLI on a switch-core pod, or the gateway's suspend and freeze routes (for an agent, a person, or a whole workspace). Lift the suspension the same way once it is cleared. See the suspend runbook in the operator docs.{{/is_alert}}{{#is_recovery}}Recovered: no new escalation for agent {{[@switch.agent_id].name}} in 5 minutes.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "query": "logs(\"service:REPLACE-WITH-SERVICE @switch.action:(agent.auto_approve_enabled OR agent.can_manage_agents_granted) @security_details.by_owner:false\").index(\"*\").rollup(\"count\").by(\"@switch.agent_id\").last(\"5m\") > 0",
+    "message": "{{#is_alert}}Agent {{[@switch.agent_id].name}} was allowed to run tools without asking anyone (`agent.auto_approve_enabled`) or to manage other agents (`agent.can_manage_agents_granted`), and not by its owner directly: by an agent acting for the owner (`security_details.acting_agent_id`), or with no request behind it. An owner setting up their own agent does not alert.\n\n**Check:** which agent did it (`security_details.acting_agent_id` in the log sample, and the workspace audit log), and whether the agent's owner meant to. Take it back in the gateway if not.\n\n**To stop it:** suspend the agent or person, which ends their access at once and keeps everything for review: the `switch-suspend` CLI on a switch-core pod, or the gateway's suspend and freeze routes (for an agent, a person, or a whole workspace). Lift the suspension the same way once it is cleared. See the suspend runbook in the operator docs.{{/is_alert}}{{#is_recovery}}Recovered: no new escalation for agent {{[@switch.agent_id].name}} in 5 minutes.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",
@@ -1441,5 +1417,149 @@
       }
     },
     "priority": 4
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Hosted boxes: memory guard stopping agents",
+    "type": "query alert",
+    "query": "sum(last_30m):default_zero(sum:switch.hosted.guard_stops{service:REPLACE-WITH-SERVICE}.as_count()) >= 3",
+    "message": "{{#is_alert}}The memory guard stopped {{value}} agents on hosted boxes in 30 minutes: boxes are running out of memory.\n\n**Check:** the boxes' memory and the out-of-memory panels on the dashboard, and the operator's Alerts tab for which boxes.{{/is_alert}}{{#is_recovery}}Recovered: the memory guard has stopped stopping agents.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now",
+      "category:ops"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 3
+      }
+    },
+    "priority": 3
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Hosted boxes pushed off their nodes",
+    "type": "query alert",
+    "query": "sum(last_30m):default_zero(sum:switch.hosted.box_evictions{service:REPLACE-WITH-SERVICE}.as_count()) >= 3",
+    "message": "{{#is_alert}}{{value}} hosted boxes were evicted from their nodes in 30 minutes, so their agents restarted.\n\n**Check:** the cluster's node pressure and the operator's Alerts tab for which boxes.{{/is_alert}}{{#is_recovery}}Recovered: box evictions are back to normal.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now",
+      "category:ops"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 3
+      }
+    },
+    "priority": 3
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Controller credential lockouts starting",
+    "type": "query alert",
+    "query": "sum(last_30m):default_zero(sum:switch.controller.credential_refusals{service:REPLACE-WITH-SERVICE,reason:lockout_started}.as_count()) >= 3",
+    "message": "{{#is_alert}}{{value}} addresses were locked out for refused controller credentials in 30 minutes. One address that keeps sending a wrong credential is locked out for a while; several starting means repeated guessing or a widely shared old credential.\n\n**Check:** the refusals by reason and route on the dashboard, and Core's refusal log lines.{{/is_alert}}{{#is_recovery}}Recovered: no new controller credential lockouts.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now",
+      "category:security"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 3
+      }
+    },
+    "priority": 4
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Hosted box first starts slow",
+    "type": "query alert",
+    "query": "min(last_30m):p90:switch.hosted.start_seconds{service:REPLACE-WITH-SERVICE,case:first_start,stage:total} > 30",
+    "message": "{{#is_alert}}For 30 minutes, a person's first hosted agents v2 box has taken over 30 seconds (p90) from their first request to ready (target: 20 s p50, 30 s p90).\n\n**Check:** the box start stages on the hosted dashboard (the slowest stage says where), free room on the agents node group, and the operator's and scaler's logs.{{/is_alert}}{{#is_recovery}}Recovered: first starts are back within 30 seconds (p90).{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now",
+      "category:ops"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 30
+      }
+    },
+    "priority": 4
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Hosted warm pool empty",
+    "type": "query alert",
+    "query": "min(last_10m):max:switch.hosted.pool.size{service:REPLACE-WITH-SERVICE} - max:switch.hosted.pool.boxes{service:REPLACE-WITH-SERVICE,state:waiting} >= 1",
+    "message": "{{#is_alert}}For 10 minutes the warm pool has had fewer waiting boxes than its size, so new people's first starts are made from scratch (the slower fallback) rather than taken from the pool.\n\n**Check:** whether the box operator is polling and reports the `pool` capability and a current template revision, whether pool boxes are failing to be made (`switch.hosted.pool.retired` by reason), and whether a ceiling or the per-minute limit is holding refills back.{{/is_alert}}{{#is_recovery}}Recovered: the warm pool is back to its size.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now",
+      "category:ops"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 1
+      }
+    },
+    "priority": 3
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Hosted warm pool reap refused",
+    "type": "query alert",
+    "query": "sum(last_10m):sum:switch.hosted.pool.reap_refused{service:REPLACE-WITH-SERVICE}.as_count() > 0",
+    "message": "{{#is_alert}}Core refused {{value}} report(s) from the warm pool's reaper of a box it never agreed to reap: not retiring, not reapable, or a box whose bind had reached its owner.\n\n**Check:** the reaper's logs and Core's error log for the box, and that the cluster's reaper policy refused the delete. A person's box must never be reaped.{{/is_alert}}{{#is_recovery}}Recovered: no refused reaper reports in the last 10 minutes.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now",
+      "category:security"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 0
+      }
+    },
+    "priority": 1
   }
 ]

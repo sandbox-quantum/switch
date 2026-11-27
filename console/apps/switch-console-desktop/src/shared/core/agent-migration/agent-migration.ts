@@ -103,6 +103,12 @@ export type MigrationControllerState =
   | { kind: 'ready' }
   /** The server cannot take this Console's controller; its agents are left as they are. */
   | { kind: 'incompatible'; reason: string }
+  /**
+   * The machine runs no controller for the server. Its agents stay with
+   * Console until the person makes it a machine of `workspaceId`, the
+   * workspace of the agents waiting to move.
+   */
+  | { kind: 'needs-consent'; workspaceId: string }
   | { kind: 'failed'; reason: string };
 
 /** One machine's agents for one server: how many moved, and what keeps the rest. */

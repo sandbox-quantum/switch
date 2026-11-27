@@ -16,7 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.accounts.account_reset import AccountReset
+from switch_core.accounts.account_reset import AccountReset, ResetWaiting
 from switch_core.accounts.deletion import (
     AccountDeletion,
     AccountDeletionIncomplete,
@@ -118,9 +118,11 @@ from switch_core.gateway.schemas import (
     SignupMachine,
     SignupRequest,
     SignupResponse,
+    StartOverResponse,
     UpdateMeRequest,
 )
 from switch_core.gateway.sign_in_events import record_sign_in, sign_in_failed
+from switch_core.hosted_v2 import hosted_v2_on
 from switch_core.observability.catalogue import AUTH_SIGN_IN_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.organization_admin_notices import OrganizationAdminNotices
@@ -129,12 +131,16 @@ from switch_core.room_service import RoomService
 from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 from switch_core.version import server_declaration
+from switch_core.visibility.box_provision import ask_for_box, box_provisioning_on
+from switch_core.visibility.guards import get_operator_list
+from switch_core.visibility.operators import OperatorList
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 MACHINE_OWNER_STOPPED = "Your cloud machine is stopped. Start it in Switch Console."
+MACHINE_AFTER_WORKSPACE = "Your cloud machine starts once you have created a workspace."
 
 
 def _gateway_declaration() -> ServerDeclaration:
@@ -256,6 +262,13 @@ async def _prewarm(
         )
         return SignupMachine(status="unavailable", reason=str(error))
     await session.commit()
+    await ask_for_box(
+        factory,
+        machine_id=machine.id,
+        config=config,
+        settings=settings,
+        now=datetime.now(UTC),
+    )
     if (conflict := claim_conflict(machine, datetime.now(UTC))) is not None:
         return SignupMachine(status="unavailable", reason=conflict)
     if owner_stopped(machine):
@@ -302,12 +315,15 @@ async def signup(
     config: Annotated[SwitchConfig, Depends(get_config)],
     settings: Annotated[HostedControllerSettings | None, Depends(hosted_settings)],
 ) -> SignupResponse:
-    """Open self sign-up: a new member of tenant zero, signed in, machine warming.
+    """Open self sign-up: a new account, signed in.
 
-    No caller exists yet to take a tenant from, so the account lands in tenant
-    zero by name, exactly as an OIDC first sign-in does. The cloud machine is
-    claimed after the account is committed and failing to claim one never
-    fails the sign-up: the response says why instead.
+    Where it lands follows `gateway_signup_mode`, as an OIDC first sign-in
+    does. Under "default_tenant" it joins tenant zero by name, since no caller
+    exists yet to take a tenant from, and its cloud machine starts warming:
+    claimed after the account is committed, and failing to claim one never
+    fails the sign-up, the response says why instead. Under "open" it joins
+    nothing and creates its workspace next (`POST /organizations`), whose
+    machine is warmed then.
     """
     if not config.gateway_signup_open:
         emit_safely(current_telemetry(), "signup_refused", {"reason": "disabled"})
@@ -340,9 +356,13 @@ async def signup(
             role="user",
             password_hash=password_hash,
         )
+        joins_tenant_zero = config.gateway_signup_mode == "default_tenant"
         try:
             async with session.begin_nested():
-                await user_store.create(session, user)
+                if joins_tenant_zero:
+                    await user_store.create(session, user)
+                else:
+                    await user_store.create_without_membership(session, user)
         except IntegrityError as err:
             if not email_taken(err):
                 raise
@@ -363,11 +383,25 @@ async def signup(
             user,
             config.keyring,
             config.gateway_cookie_secure,
-            TENANT_ZERO_ID,
+            TENANT_ZERO_ID if joins_tenant_zero else None,
             signed_in_now(),
         )
         signed_in = _session_response(user)
-        machine = await _prewarm(session, session_factory, user.id, config, settings)
+        if not joins_tenant_zero:
+            machine = SignupMachine(
+                status="unavailable", reason=MACHINE_AFTER_WORKSPACE
+            )
+        elif box_provisioning_on(config) and getattr(config, "hosted_pool_size", 0) > 0:
+            # Hosted agents v2 with a warm pool: no box at sign-up. One is
+            # taken from the pool, or made, at the person's first start, so
+            # the pool's boxes go to people who use them. The answer says
+            # nothing is wrong, as before (Console shows nothing for
+            # `starting`). With no pool, a sign-up asks for the box as before.
+            machine = SignupMachine(status="starting", reason=None)
+        else:
+            machine = await _prewarm(
+                session, session_factory, user.id, config, settings
+            )
     return SignupResponse(**signed_in.model_dump(), machine=machine)
 
 
@@ -456,7 +490,9 @@ async def auth_config(
     # exists to decide which login methods to offer.
     return AuthConfigResponse(
         password_login_enabled=config.gateway_password_login_enabled,
-        signup_enabled=config.gateway_signup_open,
+        signup_enabled=config.gateway_signup_joins_tenant_zero,
+        web_signup_enabled=config.gateway_signup_open
+        and config.gateway_onboarding_enabled,
         test_account_reset_enabled=config.gateway_allow_test_account_reset,
         oidc_enabled=config.gateway_oidc_enabled,
         oidc_provider_label=config.gateway_oidc_provider_label,
@@ -479,6 +515,7 @@ async def session_state(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    operators: Annotated[OperatorList, Depends(get_operator_list)],
 ) -> SessionStateResponse:
     """Who is signed in, which workspace this session is in, and — when it
     is in none — what would get it into one.
@@ -508,6 +545,14 @@ async def session_state(
         can_manage_connector_apps=await deployment_manager(session_factory, user)
         is not None,
         connector_apps_in_dashboard=await connector_apps_in_dashboard(session_factory),
+        # Read from the operator list only, never from `users.role`. A hint for
+        # the web's navigation, so nothing is written to the operator log here:
+        # `require_operator` records list changes before any operator route
+        # answers.
+        # With hosted agents v2 off, not read or sent, as upstream.
+        hosted_operator=operators.is_operator(user.id)
+        if hosted_v2_on(config)
+        else None,
     )
 
 
@@ -783,6 +828,119 @@ async def reset_test_account(
     workspace included (`accounts/account_reset.py`). Refused with a 409,
     before anything changes, for anything `DELETE /auth/me` refuses or the
     purge must wait for."""
+    reset, user, workspaces = await _test_reset(
+        req,
+        request,
+        session,
+        session_factory,
+        caller,
+        user_store,
+        organization_store,
+        agent_store,
+        api_key_store,
+        template_store,
+        protocol,
+        resource_service,
+        room_service,
+        broker,
+        client_lifecycle,
+        notices,
+        config,
+    )
+    try:
+        changes = await reset.reset(session, user, workspaces, keep_login=False)
+    except AccountDeletionRefused as refused:
+        raise HTTPException(status_code=409, detail=str(refused)) from None
+    except AccountDeletionIncomplete as incomplete:
+        await _tell_admins_of_incomplete_deletion(session, notices, incomplete)
+        raise
+    background.add_task(notices.send_all, changes)
+    response.delete_cookie("switch_auth", path="/")
+    return {"ok": True}
+
+
+@router.post("/auth/me/start-over")
+async def start_over(
+    req: DeleteAccountRequest,
+    request: Request,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    template_store: Annotated[TemplateStore, Depends(get_template_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    notices: Annotated[
+        OrganizationAdminNotices, Depends(get_organization_admin_notices)
+    ],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> StartOverResponse:
+    """Wipe what the caller's test account owns but keep its login, on a
+    server that allows test-account resets: the workspaces a reset purges
+    and the account's cloud machines go, and the caller is signed out, so
+    signing in again starts from creating a workspace. While a cloud machine
+    is still being torn down it answers `finished: false` with what it waits
+    on, having signed nobody out; asking again finishes it."""
+    reset, user, workspaces = await _test_reset(
+        req,
+        request,
+        session,
+        session_factory,
+        caller,
+        user_store,
+        organization_store,
+        agent_store,
+        api_key_store,
+        template_store,
+        protocol,
+        resource_service,
+        room_service,
+        broker,
+        client_lifecycle,
+        notices,
+        config,
+    )
+    try:
+        await reset.reset(session, user, workspaces, keep_login=True)
+    except ResetWaiting as waiting:
+        return StartOverResponse(finished=False, waiting=str(waiting))
+    except AccountDeletionRefused as refused:
+        raise HTTPException(status_code=409, detail=str(refused)) from None
+    response.delete_cookie("switch_auth", path="/")
+    return StartOverResponse(finished=True, waiting=None)
+
+
+async def _test_reset(
+    req: DeleteAccountRequest,
+    request: Request,
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    caller: AuthenticatedCaller,
+    user_store: UserStore,
+    organization_store: OrganizationStore,
+    agent_store: AgentStore,
+    api_key_store: ApiKeyStore,
+    template_store: TemplateStore,
+    protocol: AgentCore,
+    resource_service: ResourceService,
+    room_service: RoomService,
+    broker: ServiceBroker,
+    client_lifecycle: ClientLifecycleService,
+    notices: OrganizationAdminNotices,
+    config: SwitchConfig,
+) -> tuple[AccountReset, User, list[Workspace]]:
+    """The reset for the caller's confirmed account and its workspaces, on a
+    server that allows test-account resets; 404 elsewhere. Commits the
+    caller's session, which is not held through the reset."""
     if not config.gateway_allow_test_account_reset:
         raise HTTPException(
             status_code=404, detail="Test-account reset is not enabled on this server."
@@ -814,16 +972,7 @@ async def reset_test_account(
     )
     # As `delete_my_account`: not held through the purges and the deletion.
     await session.commit()
-    try:
-        changes = await reset.reset(session, user, workspaces)
-    except AccountDeletionRefused as refused:
-        raise HTTPException(status_code=409, detail=str(refused)) from None
-    except AccountDeletionIncomplete as incomplete:
-        await _tell_admins_of_incomplete_deletion(session, notices, incomplete)
-        raise
-    background.add_task(notices.send_all, changes)
-    response.delete_cookie("switch_auth", path="/")
-    return {"ok": True}
+    return reset, user, workspaces
 
 
 async def _tell_admins_of_incomplete_deletion(

@@ -44,6 +44,7 @@ from typing import Any
 import yaml
 
 from switch_core.rooms_yaml import PLACEHOLDER_RE, ParamSpec, coerce_param, interpolate
+from switch_core.template_yaml import load_template_yaml
 
 RESOURCE_TYPES = ("agent", "room", "group")
 # The most resources one template creates, each by the request that runs it.
@@ -74,7 +75,7 @@ def is_v2_text(text: str) -> bool:
     """Whether a document's text is version 2; false for one that does not
     parse, which the version 1 path reports."""
     try:
-        data = yaml.safe_load(text)
+        data = load_template_yaml(text)
     except yaml.YAMLError:
         return False
     return isinstance(data, dict) and is_v2(data)
@@ -206,7 +207,7 @@ def resource_types(data: dict[str, Any]) -> list[str]:
 
 
 def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> Compiled:
-    data = yaml.safe_load(text)
+    data = load_template_yaml(text)
     if not isinstance(data, dict):
         raise TemplateError("A template is a YAML mapping.")
     raw_params = data.get("params") or {}

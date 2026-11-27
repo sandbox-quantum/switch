@@ -1,0 +1,109 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  DialogContentArea,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@switch-console/chat-ui/primitives/dialog';
+import { observer } from 'mobx-react-lite';
+import { useState } from 'react';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
+import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import type { DeviceConsentAsk } from '@shared/core/embedded-controller/embedded-controller';
+import { serverForConsent } from './turn-on-machine';
+
+/** What an ask would let the agent do, as the person reads it. */
+export function askLines(ask: Pick<DeviceConsentAsk, 'bypass' | 'directory'>): string[] {
+  return [
+    ...(ask.bypass
+      ? ['Run every command without asking you first, as you, on this computer.']
+      : []),
+    ...(ask.directory !== null ? [`Work in ${ask.directory} on this computer.`] : []),
+  ];
+}
+
+type Props = BaseModalProps<void> & { serverId: string; ask: DeviceConsentAsk };
+
+/**
+ * A managed agent asks this computer for more than its server can grant:
+ * running without approvals, or a folder outside its workspaces. The person
+ * here allows it or not; until they allow it, the controller keeps the agent
+ * asking before it acts, or does not start it in that folder.
+ */
+export const DeviceConsentModal = observer(function DeviceConsentModal({
+  serverId,
+  ask,
+  onSuccess,
+  onClose,
+}: Props) {
+  const [busy, setBusy] = useState<'allow' | 'deny' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const server = serverForConsent(switchServersStore.serverById(serverId));
+  // The unique name leads: the display name is the owner's to set to anything,
+  // so it only follows, marked as what the agent is shown as.
+  const shownAs = ask.displayName && ask.displayName !== ask.name ? ask.displayName : null;
+  const choice = { bypass: ask.bypass, directory: ask.directory };
+
+  const answer = async (allow: boolean) => {
+    setBusy(allow ? 'allow' : 'deny');
+    setError(null);
+    try {
+      const params = { serverId, agentId: ask.agentId, choice };
+      if (allow) await rpc.embeddedController.allowForAgent(params);
+      else await rpc.embeddedController.denyForAgent(params);
+      onSuccess();
+    } catch (cause) {
+      setError(failureText(cause, allow ? 'Could not allow it.' : 'Could not record your answer.'));
+      setBusy(null);
+    }
+  };
+
+  return (
+    <>
+      <DialogHeader showCloseButton={false}>
+        <DialogTitle>
+          Allow {ask.name} from {server} on this computer?
+        </DialogTitle>
+      </DialogHeader>
+      <DialogContentArea className="space-y-3 pt-0 text-sm">
+        <p>
+          <span className="font-medium">{ask.name}</span>
+          {shownAs !== null && (
+            <span className="text-foreground-muted"> (shown as “{shownAs}”)</span>
+          )}{' '}
+          asks to:
+        </p>
+        <ul className="list-disc space-y-1 pl-5">
+          {askLines(ask).map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+        <p className="text-foreground-muted">
+          Only you can allow this, here: the server cannot. Until you do,{' '}
+          {ask.directory !== null
+            ? 'the agent does not start in that folder'
+            : 'the agent asks before it acts'}
+          . You can take it back on this computer’s page under Machines.
+        </p>
+        {error && (
+          <p role="alert" className="text-foreground-destructive">
+            {error}
+          </p>
+        )}
+      </DialogContentArea>
+      <DialogFooter>
+        <Button variant="outline" disabled={busy !== null} onClick={() => void answer(false)}>
+          {busy === 'deny' ? 'Saving…' : 'Don’t allow'}
+        </Button>
+        <Button variant="outline" disabled={busy !== null} onClick={onClose}>
+          Decide later
+        </Button>
+        <Button disabled={busy !== null} onClick={() => void answer(true)}>
+          {busy === 'allow' ? 'Allowing…' : 'Allow'}
+        </Button>
+      </DialogFooter>
+    </>
+  );
+});

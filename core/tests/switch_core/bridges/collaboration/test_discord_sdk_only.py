@@ -82,8 +82,9 @@ class _Overwrite:
 
 
 class _Author:
-    def __init__(self, user_id: int) -> None:
+    def __init__(self, user_id: int, *, bot: bool = False) -> None:
         self.id = user_id
+        self.bot = bot
 
 
 class _Message:
@@ -91,6 +92,7 @@ class _Message:
         self.id = message_id
         self.channel = channel
         self.content = content
+        self.type = discord.MessageType.default
         self.author = _Author(0)
         self.webhook_id: int | None = None
         self.edited: str | None = None
@@ -151,6 +153,7 @@ class _Channel:
         self.messages: dict[int, _Message] = {}
         self.history_messages: list[_Message] = []
         self.history_error: Exception | None = None
+        self.history_calls: list[dict[str, Any]] = []
         self.send_error: Exception | None = None
         self.delete_error: Exception | None = None
         self.fetch_error: Exception | None = None
@@ -210,6 +213,7 @@ class _Channel:
         return webhook
 
     def history(self, **kwargs: Any) -> Any:
+        self.history_calls.append(kwargs)
         messages = list(self.history_messages)
         error = self.history_error
 
@@ -287,6 +291,9 @@ class _Client:
     def __init__(self, channels: dict[int, Any]) -> None:
         self._channels = channels
         self.user = object()
+        # Whether the Gateway socket is open and READY, rather than logged in
+        # for the API alone.
+        self.ready = True
         # What Discord says instead of answering, keyed by channel id. A thread
         # the bot cannot open answers here, not with "unknown channel".
         self.fetch_errors: dict[int, Exception] = {}
@@ -299,6 +306,9 @@ class _Client:
 
     def get_channel(self, channel_id: int) -> Any | None:
         return self._channels.get(channel_id)
+
+    def is_ready(self) -> bool:
+        return self.ready
 
     async def fetch_channel(self, channel_id: int) -> Any:
         error = self.fetch_errors.get(channel_id)
@@ -408,6 +418,27 @@ async def test_a_card_names_the_asker_and_prints_the_handle_it_answers_to() -> N
     content = webhook.sent[0]["content"]
     assert content.startswith(f"<@{ASKER_ID}>\n")
     assert "request `R7`" in content
+
+
+async def test_a_card_pings_the_asker_it_names_though_the_bridge_never_saw_them() -> (
+    None
+):
+    """The asker is mentioned by id, which Discord resolves itself, so no
+    message of theirs need have passed through the bridge for it to reach
+    them."""
+    adapter, _channel, _thread, webhook = _guild_setup()
+    assert int(ASKER_ID) not in adapter._username_to_id.values()
+
+    await adapter.post_rich(
+        str(CHANNEL_ID),
+        "my-agent",
+        await _card(notify_external_id=ASKER_ID),
+        f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}",
+    )
+
+    mentions = webhook.sent[0]["allowed_mentions"].to_dict()
+    assert mentions["users"] == [int(ASKER_ID)]
+    assert mentions["parse"] == []
 
 
 async def test_a_card_nobody_can_be_notified_about_says_so_on_the_card() -> None:
@@ -1118,3 +1149,116 @@ async def test_a_thread_that_cannot_be_read_refuses_rather_than_raises(
 
     assert answered is False
     assert "not the first reply" in caplog.text
+
+
+# ── Reading back what was said while no process listened ────────────────────
+
+
+def _snowflake(when: datetime) -> int:
+    return discord.utils.time_snowflake(when)
+
+
+def _handed_on(adapter: DiscordAdapter, *, failing: str | None = None) -> list[str]:
+    """What the adapter hands on, by content, in place of the handing on
+    itself, which other tests cover."""
+    handed: list[str] = []
+
+    async def hand_on(message: Any, bot_user_id: int) -> None:
+        if message.content == failing:
+            raise RuntimeError("the bridge refused it")
+        handed.append(message.content)
+
+    adapter._hand_on = hand_on  # type: ignore[method-assign]
+    return handed
+
+
+async def test_a_read_back_hands_on_people_in_the_channel_and_its_threads() -> None:
+    since = datetime(2026, 11, 12, 12, 0, tzinfo=UTC)
+    channel = _Channel()
+    thread = _Thread(channel)
+    channel.threads = [thread]  # type: ignore[attr-defined]
+    channel.last_message_id = _snowflake(since + timedelta(seconds=3))  # type: ignore[attr-defined]
+    thread.last_message_id = _snowflake(since + timedelta(seconds=2))  # type: ignore[attr-defined]
+    person = _Message(channel, 1, "hello")
+    person.author = _Author(7)
+    bot = _Message(channel, 2, "beep")
+    bot.author = _Author(8, bot=True)
+    hooked = _Message(channel, 4, "an agent's words")
+    hooked.webhook_id = WEBHOOK_ID
+    channel.history_messages = [person, bot, hooked, _Message(channel, 6, "again")]
+    thread.history_messages = [_Message(thread, 5, "in the thread")]
+    adapter = _adapter({CHANNEL_ID: channel, ROOT_MESSAGE_ID: thread})
+    handed = _handed_on(adapter)
+
+    assert await adapter.read_back(since, [str(CHANNEL_ID)]) == 3
+
+    # One room: the thread's message goes where it was said, between the two.
+    assert handed == ["hello", "in the thread", "again"]
+    assert channel.history_calls == [
+        {"after": since, "limit": None, "oldest_first": True}
+    ]
+
+
+async def test_a_read_back_skips_idle_places_and_ones_it_cannot_open() -> None:
+    since = datetime(2026, 11, 12, 12, 0, tzinfo=UTC)
+    idle = _Channel()
+    idle.last_message_id = _snowflake(since - timedelta(minutes=1))  # type: ignore[attr-defined]
+    idle.history_error = AssertionError("a channel with nothing newer is read")
+    adapter = _adapter({CHANNEL_ID: idle})
+    handed = _handed_on(adapter)
+
+    assert await adapter.read_back(since, ["999", str(CHANNEL_ID)]) == 0
+
+    assert handed == []
+    assert idle.history_calls == []
+
+
+async def test_a_message_that_fails_to_hand_on_does_not_stop_the_rest() -> None:
+    since = datetime(2026, 11, 12, 12, 0, tzinfo=UTC)
+    channel = _Channel()
+    channel.history_messages = [
+        _Message(channel, 1, "first"),
+        _Message(channel, 2, "refused"),
+        _Message(channel, 3, "third"),
+    ]
+    adapter = _adapter({CHANNEL_ID: channel})
+    handed = _handed_on(adapter, failing="refused")
+
+    assert await adapter.read_back(since, [str(CHANNEL_ID)]) == 2
+
+    assert handed == ["first", "third"]
+
+
+def test_a_bridge_listens_once_its_gateway_socket_is_ready() -> None:
+    client = _Client({})
+    adapter = _adapter({})
+    adapter._connection._client = client  # type: ignore[union-attr,assignment]
+    client.ready = False
+    assert not adapter.listening()
+    client.ready = True
+    assert adapter.listening()
+
+
+def test_a_shared_bridge_not_attached_yet_does_not_listen() -> None:
+    adapter = _adapter({})
+    adapter._connection = None
+    assert not adapter.listening()
+
+
+async def test_a_message_heard_already_is_handed_on_again_in_its_place() -> None:
+    """It may be a live message waiting for this read-back, and a reply to
+    it read back first would lose its thread. Handed on twice, it is
+    written once."""
+    since = datetime(2026, 11, 12, 12, 0, tzinfo=UTC)
+    channel = _Channel()
+    channel.history_messages = [
+        _Message(channel, 1, "root"),
+        _Message(channel, 2, "reply"),
+    ]
+    adapter = _adapter({CHANNEL_ID: channel})
+    adapter._remember_seen(1)
+    handed = _handed_on(adapter)
+
+    assert await adapter.read_back(since, [str(CHANNEL_ID)]) == 2
+
+    assert handed == ["root", "reply"]

@@ -1,6 +1,7 @@
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { forceSshReconnect } from '@main/core/ssh/connect/connect-agent-ssh';
+import { SshHostKeyError } from '@main/core/ssh/host-keys/host-key-check';
 import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-connection-manager';
 import { SshAuthError } from '@main/core/ssh/lifecycle/ssh-connection-manager';
 import { events } from '@main/lib/events';
@@ -23,6 +24,7 @@ async function probeHost(sshHost: string): Promise<void> {
 export const hostReachabilityService = new HostReachabilityService({
   probe: probeHost,
   isAuthError: (error) => error instanceof SshAuthError,
+  isHostKeyError: (error) => error instanceof SshHostKeyError,
   publish: (reachability) => events.emit(hostReachabilityEventChannel, reachability),
   log,
 });

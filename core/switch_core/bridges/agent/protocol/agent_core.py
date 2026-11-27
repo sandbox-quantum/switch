@@ -96,7 +96,7 @@ from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
     platform_replies_in_channel,
 )
-from switch_core.clients.agent_admin import AgentDeletionRequests
+from switch_core.clients.agent_admin import AgentRequests
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
@@ -357,6 +357,12 @@ def _elided_root(root_id: str) -> dict[str, Any]:
     }
 
 
+class AgentClientNotRunning(ValueError):
+    """The agent's client is not running in Core yet (just after a restart):
+    a post can be sent again shortly. A ValueError, as before, for every
+    caller that already handles one."""
+
+
 class AgentExistsError(Exception):
     """Raised when registering an agent whose name is already taken and the
     caller did not opt into re-registration via ``overwrite=True``."""
@@ -437,10 +443,10 @@ class AgentCore:
     # The credential broker, set by the process wiring when service
     # connections are on; None means they are off, and nothing can be granted.
     service_broker: ServiceBroker | None = None
-    # Deletions agents have asked for, waiting for a person to confirm with
-    # `!delete-agent … confirm`. Set by the process wiring, shared with the
-    # admin client that runs that command.
-    deletion_requests: AgentDeletionRequests | None = None
+    # Deletions and changes agents have asked for, waiting for a person to
+    # confirm with `!delete-agent … confirm` or `!agent-change … confirm`. Set
+    # by the process wiring, shared with the admin client that runs those.
+    agent_requests: AgentRequests | None = None
     # The messaging apps this server registered as its own, set by the process
     # wiring; None when it registered none, the ordinary case.
     install_service: MessagingInstallService | None = None
@@ -1325,7 +1331,7 @@ class AgentCore:
             ValueError: no such agent or room.
             RuntimeError: deletion requests are not wired in this process.
         """
-        if self.deletion_requests is None:
+        if self.agent_requests is None:
             raise RuntimeError(
                 "Agent deletion requests are not available: the process wiring "
                 "did not set them up"
@@ -1368,7 +1374,7 @@ class AgentCore:
             target_label = agent_label_with_identifier(target.display_name, target.name)
             transport_room_id = room.transport_room_id
 
-        self.deletion_requests.add(room_id, target_agent_id, caller_name)
+        self.agent_requests.add(room_id, target_agent_id, caller_name)
         admin = next(
             (
                 c
@@ -2037,11 +2043,16 @@ class AgentCore:
         thread_id: str | None = None,
         *,
         extra_content: dict[str, object] | None = None,
+        client_txn_id: str | None = None,
         ui: UISpec | None = None,
     ) -> SentMessage:
         """Send a message to a room. Returns its event_id and, when Switch
         Trust redacted or flagged it, what it did (`TrustFeedback`), so the
         agent learns its words changed.
+
+        `client_txn_id`, when given, makes the send idempotent for this agent:
+        a second send under the same key returns the first message's event id
+        and posts nothing.
 
         When thread_id is set the message is posted as a reply in that thread
         (the id is normalised to the thread root). `extra_content` carries
@@ -2051,6 +2062,8 @@ class AgentCore:
         agent is not a room member, the client is not running, or thread_id
         does not resolve to an event in the room.
         Raises PermissionError if auth fails (should not happen in same-process).
+        Raises `MessageRefused` for a message too long or sent faster than the
+        agent's allowance, before Switch Trust checks it (`send_limits.py`).
         Raises GuardrailBlockedError if Switch Trust blocks the content; a
         notice is posted to the room in place of it.
         """
@@ -2060,7 +2073,14 @@ class AgentCore:
         room = await self.require_room_poster(agent_id, room_id)
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
-            raise ValueError("Agent client not running")
+            raise AgentClientNotRunning("Agent client not running")
+        if client_txn_id is not None:
+            # A resend of a post already made is that post: answered before
+            # Trust, so it is neither judged nor alerted on a second time.
+            already = await client.sent_under(room.transport_room_id, client_txn_id)
+            if already is not None:
+                return SentMessage(event_id=already, trust=None)
+        client.admit_message(content)
         thread_root_id: str | None = None
         if thread_id is not None:
             thread_root_id = await self._resolve_thread_root(
@@ -2087,6 +2107,8 @@ class AgentCore:
             thread_root_id=thread_root_id,
             extra_content=extra_content,
             metered=True,
+            authored=content,
+            client_txn_id=client_txn_id,
         )
         if event_id is None:
             raise ValueError("Failed to send message")
@@ -2144,8 +2166,11 @@ class AgentCore:
         receivers can coalesce them into one logical message, since a media
         event carries one file.
 
-        Raises GuardrailBlockedError if Switch Trust blocks the caption or any
-        file's text; a notice is posted to the room and nothing is sent. A
+        Raises `MessageRefused` for a caption too long or a post sent faster
+        than the agent's allowance, before Switch Trust checks anything or a
+        file is stored (`send_limits.py`). Raises GuardrailBlockedError if
+        Switch Trust blocks the caption or any file's text; a notice is
+        posted to the room and nothing is sent. A
         file Switch Trust cannot read is sent with a notice saying so. When it
         redacted the caption or noted anything, the result also carries
         `trust` (`TrustFeedback.to_result`).
@@ -2169,6 +2194,7 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
+        client.admit_message(caption)
         thread_root_id: str | None = None
         if thread_id is not None:
             thread_root_id = await self._resolve_thread_root(
@@ -2270,6 +2296,9 @@ class AgentCore:
                         else None
                     ),
                     metered=True,
+                    # Held to the length limit on the agent's own caption,
+                    # without the file notes Switch added under it.
+                    authored=caption if index == 0 else None,
                 )
                 if event_id is None:
                     raise ValueError(f"Failed to send media message for '{filename}'")
@@ -2345,6 +2374,8 @@ class AgentCore:
         content: str,
         thread_id: str | None = None,
         target_roles: list[str] | None = None,
+        *,
+        client_txn_id: str | None = None,
         ui: UISpec | None = None,
     ) -> SendTargetedResult:
         """Send a message addressed to specific agents/users and/or roles.
@@ -2488,6 +2519,7 @@ class AgentCore:
             body,
             thread_id=thread_id,
             extra_content=room_wide_mention_content() if room_wide else None,
+            client_txn_id=client_txn_id,
             ui=ui,
         )
 
@@ -2622,17 +2654,25 @@ class AgentCore:
         """Send a status message to a room, and say what Switch Trust did to
         it, as `post_message` does (`_trust_feedback`).
 
+        Raises `MessageRefused` for one too long or sent faster than the
+        agent's allowance, before Switch Trust checks it (`send_limits.py`).
         Raises GuardrailBlockedError if Switch Trust blocks it.
         """
         room = await self.require_room_member(agent_id, room_id)
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
+        client.admit_message(detail)
+        written = detail
         detail, pending_alert, verdict = await self._enforce_trust(
             room, detail, None, client
         )
         event_id = await client.send_message(
-            room.transport_room_id, f"*{detail}*", format="markdown", metered=True
+            room.transport_room_id,
+            f"*{detail}*",
+            format="markdown",
+            metered=True,
+            authored=written,
         )
         if event_id is None:
             if pending_alert is not None:
@@ -4963,20 +5003,25 @@ class AgentCore:
                 connections=self.connections,
             )
 
-    async def _channel_web_url(self, room: Room) -> str | None:
+    async def channel_web_url(self, room: Room) -> str | None:
         """An https link to the room's channel on its app, or None.
 
-        Only a web address: a native scheme (`slack://`) is not something a
-        chat message can be trusted to open, so a room whose app gives only
-        that is linked through Switch Console instead.
+        Only a web address: a native scheme (`slack://`, `mattermost://`) is
+        not something a chat message can be trusted to open, so adapters that
+        use a native scheme for `channel_deeplink` expose their web address via
+        `channel_web_url`.
         """
         if not room.bridge_id or not room.external_channel_id:
             return None
         adapter = self.collab_lifecycle.get_adapter(room.bridge_id)
         if adapter is None:
             return None
+        web_url_fn = getattr(adapter, "channel_web_url", None)
         try:
-            url = await adapter.channel_deeplink(room.external_channel_id)
+            if web_url_fn is not None:
+                url = await web_url_fn(room.external_channel_id)
+            else:
+                url = await adapter.channel_deeplink(room.external_channel_id)
         except Exception:
             logger.warning(
                 "Could not build a channel link for room %s", room.id, exc_info=True
@@ -5055,7 +5100,7 @@ class AgentCore:
             id=room.id,
             name=room.name,
             description=room.description,
-            channel_url=await self._channel_web_url(room),
+            channel_url=await self.channel_web_url(room),
             channel_type=room.channel_type,
             admin_mode=room.admin_mode,
             instructions=room.instructions,

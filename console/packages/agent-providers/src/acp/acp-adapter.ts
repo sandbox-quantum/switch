@@ -9,12 +9,18 @@ import type {
   ProviderCapabilities,
   ProviderSendTurnInput,
   ProviderSessionStartInput,
+  ProviderTurnStartResult,
 } from '../adapter';
-import { ProviderConversationUnavailableError, ProviderSessionError } from '../adapter';
+import {
+  ProviderConversationUnavailableError,
+  ProviderSessionError,
+  SteerNotSentError,
+} from '../adapter';
 import type {
   ApprovalDecision,
   ProviderItem,
   ProviderRuntimeEvent,
+  TokenUsage,
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
@@ -34,6 +40,7 @@ import {
 } from '../transport/stdio-json-rpc';
 import type {
   AcpAdapterOptions,
+  AcpCompactionProgress,
   AcpProviderHooks,
   AcpSelectedAnswer,
   AcpSessionContext,
@@ -42,12 +49,14 @@ import { acpMcpServers, requireHttpMcp } from './mcp';
 import {
   ACP_CANCELLED,
   modelConfigOption,
+  effortConfigOption,
   modelsFromConfig,
   modelsFromList,
   type AcpConfigOption,
   type AcpInitializeResult,
   type AcpPermissionRequest,
   type AcpPromptCapabilities,
+  type AcpPromptUsage,
   type AcpSessionResult,
   type AcpSessionUpdate,
   type AcpToolCall,
@@ -132,12 +141,43 @@ interface State {
   nativeId: string;
   client: StdioJsonRpcClient;
   turn: string | null;
+  /**
+   * Whether a `session/prompt` sent while one runs steers the running turn,
+   * for this session's executable: see {@link AcpProviderHooks.steersRunningTurn}.
+   */
+  steering: boolean;
+  /**
+   * The running turn's latest `session/prompt`, counted from the session's
+   * start: once a turn has been steered, only the answer to its latest prompt
+   * ends it. Undefined until the turn's first prompt has been sent.
+   */
+  latestPrompt: number | undefined;
+  /**
+   * The running turn's prompts in the order sent, each with its answer once
+   * it has one: a steered prompt the agent rejects hands the turn back to the
+   * one before it.
+   */
+  turnPrompts: SentPrompt[];
+  /**
+   * What steered prompts the agent rejected carried, sent again once the
+   * turn's other prompts have been answered: the host has already counted
+   * them as delivered into the turn, so they are never dropped quietly.
+   */
+  undelivered: Array<Array<Record<string, unknown>>>;
+  /** How many `session/prompt` requests the session has sent. */
+  prompts: number;
   queue: ProviderSendTurnInput[];
   items: Map<string, ProviderItem>;
   decisions: Map<string, PendingDecision>;
   questions: Map<string, PendingQuestion>;
   messageId: string;
   messageText: string;
+  /** The reasoning the agent is streaming now, shown as one item until something else arrives. */
+  thought: { id: string; agentMessageId: string | undefined; text: string } | null;
+  /** The running turn's spend, from the agent's answer to its prompt. */
+  usage: TokenUsage[];
+  /** The model the session's models list says is selected, for an agent with no `model` option. */
+  currentModelId: string | undefined;
   stopping: boolean;
   interrupted: boolean;
   /** Whether someone cancelled or declined one of this turn's approval requests. */
@@ -159,6 +199,46 @@ interface State {
   cleanup: (() => Promise<void>) | undefined;
   /** The removal of what `launch` prepared, once it has begun. */
   tidied: Promise<void> | undefined;
+  /** A compaction `compactSession` asked for, with the latest progress the agent reported. */
+  compaction: { progress: AcpCompactionProgress | undefined } | null;
+}
+
+/** How the agent answered one `session/prompt`. */
+type PromptAnswer = { reason: string } | { error: unknown };
+
+/** One `session/prompt` of the running turn. */
+interface SentPrompt {
+  seq: number;
+  content: Array<Record<string, unknown>>;
+  /** `steered` was sent into a running turn; `resent` again after the agent rejected that. */
+  kind: 'first' | 'steered' | 'resent';
+  answer?: PromptAnswer;
+}
+
+/**
+ * A turn's spend with another answer's added: each `session/prompt` answer
+ * reports only its own, and a turn whose rejected steer was sent again ran
+ * more than one.
+ */
+function addUsage(total: TokenUsage[], more: TokenUsage[]): TokenUsage[] {
+  const sum = total.map((entry) => ({ ...entry }));
+  for (const entry of more) {
+    const same = sum.find((existing) => existing.model === entry.model);
+    if (!same) sum.push({ ...entry });
+    else
+      for (const key of [
+        'inputTokens',
+        'outputTokens',
+        'cacheReadTokens',
+        'cacheWriteTokens',
+      ] as const)
+        same[key] += entry[key];
+  }
+  return sum;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 type Emittable<T = ProviderRuntimeEvent> = T extends ProviderRuntimeEvent
@@ -183,7 +263,14 @@ export class AcpAdapter implements ProviderAdapter {
     private readonly options: AcpAdapterOptions
   ) {
     this.provider = hooks.provider;
-    this.capabilities = hooks.capabilities;
+    // Steering follows the executable too: what a session advertises for a
+    // mid-turn message is read from here, so a runtime that cannot steer
+    // says so rather than having each steer refused.
+    const binaryPath = options.binaryPath ?? hooks.defaultBinary;
+    this.capabilities = {
+      ...hooks.capabilities,
+      steering: hooks.capabilities.steering && (hooks.steersRunningTurn?.(binaryPath) ?? true),
+    };
     this.logger = options.logger ?? noopLogger;
   }
 
@@ -226,12 +313,21 @@ export class AcpAdapter implements ProviderAdapter {
       nativeId: '',
       client,
       turn: null,
+      steering: this.capabilities.steering,
+      latestPrompt: undefined,
+      turnPrompts: [],
+      undelivered: [],
+      prompts: 0,
       queue: [],
+      compaction: null,
       items: new Map(),
       decisions: new Map(),
       questions: new Map(),
       messageId: '',
       messageText: '',
+      thought: null,
+      usage: [],
+      currentModelId: undefined,
       stopping: false,
       interrupted: false,
       refusedRequest: false,
@@ -307,17 +403,29 @@ export class AcpAdapter implements ProviderAdapter {
           );
         state.nativeId = input.resume.nativeSessionId.slice(prefix?.prefix.length ?? 0);
       }
-      const result = await client.request<AcpSessionResult>(method, {
-        cwd,
-        mcpServers,
-        ...(input.resume ? { sessionId: state.nativeId } : {}),
-      });
+      const result = await client
+        .request<AcpSessionResult>(method, {
+          cwd,
+          mcpServers,
+          ...(input.resume ? { sessionId: state.nativeId } : {}),
+        })
+        .catch((cause: unknown) => {
+          if (input.resume && cause instanceof JsonRpcError && hooks.conversationMissing?.(cause))
+            throw new ProviderConversationUnavailableError(
+              hooks.provider,
+              input.sessionId,
+              `${hooks.label} has no saved conversation ${state.nativeId} to resume.`,
+              { cause }
+            );
+          throw cause;
+        });
       state.nativeId = result.sessionId ?? state.nativeId;
       if (!state.nativeId) throw new Error(`${hooks.label} returned no session ID.`);
       state.configOptions = result.configOptions ?? [];
       state.models = modelConfigOption(state.configOptions)
         ? modelsFromConfig(state.configOptions)
         : modelsFromList(result.models);
+      state.currentModelId = result.models?.currentModelId;
       const mode = hooks.sessionMode?.(input.runtimeMode, result.modes);
       if (mode)
         await client.request('session/set_mode', { sessionId: state.nativeId, modeId: mode });
@@ -356,61 +464,305 @@ export class AcpAdapter implements ProviderAdapter {
     }
   }
 
-  async sendTurn(input: ProviderSendTurnInput) {
+  /**
+   * A message sent while a turn runs steers it where the session can. Through
+   * the agent's own steering request where it has one (OpenCode's), or else
+   * as another `session/prompt`, after which the turn ends with the answer
+   * to its latest prompt: agy (1.5.17) answers the earlier prompt `end_turn`
+   * as soon as the later one arrives and carries on in the same turn, so an
+   * earlier prompt's answer ends nothing. Otherwise the message queues as a
+   * turn of its own, except one sent with `expectedTurnId`: that is refused
+   * with {@link SteerNotSentError}, having sent nothing, so the host queues it
+   * instead.
+   */
+  async sendTurn(input: ProviderSendTurnInput): Promise<ProviderTurnStartResult> {
     const state = this.require(input.sessionId);
+    const { steerMethod } = this.hooks;
+    if (steerMethod) {
+      const running = state.turn && !state.interrupted ? state.turn : null;
+      if (input.expectedTurnId && running !== input.expectedTurnId)
+        throw new SteerNotSentError('The authorized turn is no longer running.');
+      // A message waits its turn behind queued ones, and one that changes the
+      // model runs as its own turn, where the model is applied.
+      const blocked = !running
+        ? null
+        : state.queue.length
+          ? 'Earlier messages are still waiting.'
+          : input.model && !this.isCurrentModel(state, input.model)
+            ? 'It changes the model.'
+            : null;
+      if (running && blocked && input.expectedTurnId)
+        throw new SteerNotSentError(`Not steered into the running turn: ${blocked}`);
+      if (running && !blocked) {
+        const context = state.context;
+        const answer = await state.client.request<{ outcome?: unknown }>(steerMethod, {
+          sessionId: state.nativeId,
+          prompt: await this.promptContent(state, input, context),
+        });
+        if (answer.outcome === 'injected') {
+          if (state.context === context) state.context = '';
+          return { turnId: input.turnId, steeredInto: running };
+        }
+        if (answer.outcome !== 'promptRequired')
+          throw new ProviderSessionError(
+            this.hooks.provider,
+            state.id,
+            `${this.hooks.label} answered a steer with ${JSON.stringify(answer)}.`
+          );
+        if (input.expectedTurnId)
+          throw new SteerNotSentError(`${this.hooks.label} had no running turn to steer.`);
+      }
+    } else if (state.steering) {
+      const turnId = state.turn;
+      if (input.expectedTurnId && turnId !== input.expectedTurnId)
+        throw new SteerNotSentError('The authorized turn is no longer running.');
+      if (turnId && this.canSteer(state, input)) {
+        const context = state.context;
+        const content = await this.promptContent(state, input, context);
+        // The turn may have ended, or stopped being steerable, while the
+        // attachments were read.
+        if (state.turn === turnId && this.canSteer(state, input)) {
+          if (state.context === context) state.context = '';
+          this.settle(
+            state,
+            turnId,
+            Promise.resolve(this.prompt(state, turnId, content, 'steered'))
+          );
+          return { turnId: input.turnId, steeredInto: turnId };
+        }
+      }
+      if (input.expectedTurnId)
+        throw new SteerNotSentError(`${this.hooks.label} is not ready to take a message mid-turn.`);
+    } else if (input.expectedTurnId) {
+      throw new SteerNotSentError(`${this.hooks.label} cannot steer a running turn.`);
+    }
     state.queue.push(input);
     if (!state.turn) this.drain(state);
     return { turnId: input.turnId };
   }
 
+  /**
+   * Whether a prompt sent now would steer the running turn: not before the
+   * turn's first prompt has been sent (the second would reach the agent
+   * first), once it is being interrupted, while it waits on an approval or a
+   * question (the prompt would be read in place of the answer), behind
+   * messages already waiting, or for a message that changes the model, which
+   * runs as its own turn where the model is applied.
+   */
+  private canSteer(state: State, input: ProviderSendTurnInput): boolean {
+    return (
+      state.steering &&
+      state.turn !== null &&
+      !state.queue.length &&
+      !(input.model && !this.isCurrentModel(state, input.model)) &&
+      state.latestPrompt !== undefined &&
+      !state.interrupted &&
+      !state.decisions.size &&
+      !state.questions.size
+    );
+  }
+
   private drain(state: State): void {
-    if (state.turn || state.stopping || !this.hasSession(state.id)) return;
+    if (state.turn || state.compaction || state.stopping || !this.hasSession(state.id)) return;
     const input = state.queue.shift();
     if (!input) return;
     state.turn = input.turnId;
+    state.latestPrompt = undefined;
+    state.turnPrompts = [];
+    state.undelivered = [];
     state.interrupted = false;
     state.refusedRequest = false;
     state.messageId = randomUUID();
+    state.thought = null;
+    state.usage = [];
     state.items.clear();
     state.mcpToolCalls.clear();
     this.emit(state, { type: 'turn.started', turnId: input.turnId });
     this.emit(state, { type: 'session.state.changed', status: 'running' });
-    void this.run(state, input).then(
-      (reason) => {
-        if (state.turn !== input.turnId) return;
-        // `cancelled` answers our own `session/cancel`, or follows a request
-        // someone cancelled or declined; an agent that cancels unasked (Junie,
-        // when every model refuses it) has failed.
-        const interrupted = state.interrupted || (reason === 'cancelled' && state.refusedRequest);
-        this.complete(
-          state,
-          interrupted ? 'interrupted' : reason === 'end_turn' ? 'completed' : 'error',
-          interrupted
-            ? 'Interrupted.'
-            : reason === 'end_turn'
-              ? undefined
-              : reason === 'cancelled'
-                ? `${this.hooks.label} cancelled the turn itself, without being interrupted.`
-                : `${this.hooks.label} stopped: ${reason}`
-        );
-      },
-      (error: unknown) => {
-        if (state.turn !== input.turnId) return;
-        this.complete(
-          state,
-          state.interrupted ? 'interrupted' : 'error',
-          state.interrupted ? 'Interrupted.' : String(error)
-        );
+    this.settle(state, input.turnId, this.run(state, input));
+  }
+
+  /**
+   * Ends turn `turnId` with the answer to one of its prompts, unless a later
+   * prompt has been sent into it since: that one's answer ends it instead. A
+   * steered prompt the agent rejects outright was never taken into the turn:
+   * it leaves the turn's prompts, the turn goes on to end with the latest
+   * real answer, and its message is sent again first, still in this turn.
+   */
+  private settle(
+    state: State,
+    turnId: string,
+    prompt: Promise<{ seq: number; stopReason: Promise<string> }>
+  ): void {
+    let entry: SentPrompt | undefined;
+    const answered = (answer: PromptAnswer) => {
+      if (state.turn !== turnId) return;
+      if (!entry) {
+        // The turn's first prompt failed before it was sent.
+        this.finish(state, answer);
+        return;
       }
+      entry.answer = answer;
+      if ('error' in answer && entry.kind !== 'first' && !state.interrupted) {
+        state.turnPrompts.splice(state.turnPrompts.indexOf(entry), 1);
+        if (entry.kind === 'resent') {
+          this.complete(
+            state,
+            'error',
+            `${this.hooks.label} did not take a message sent mid-turn, sent again after the turn: ${errorText(answer.error)}`
+          );
+          return;
+        }
+        state.undelivered.push(entry.content);
+        this.emit(state, {
+          type: 'runtime.warning',
+          message: `${this.hooks.label} did not take the message sent mid-turn (${errorText(answer.error)}); it will be sent again when the turn's current work is done.`,
+        });
+        if (entry.seq !== state.latestPrompt) return;
+        const latest = state.turnPrompts.at(-1)!;
+        state.latestPrompt = latest.seq;
+        if (latest.answer) this.conclude(state, turnId, latest.answer);
+        return;
+      }
+      if (entry.seq !== state.latestPrompt) return;
+      this.conclude(state, turnId, answer);
+    };
+    void prompt
+      .then((sent) => {
+        entry = state.turnPrompts.find((sentPrompt) => sentPrompt.seq === sent.seq);
+        return sent.stopReason;
+      })
+      .then(
+        (reason) => answered({ reason }),
+        (error: unknown) => answered({ error })
+      );
+  }
+
+  /**
+   * The turn's latest prompt has its answer. Messages the agent rejected
+   * mid-turn are sent again first, together, as the turn's next prompt; once
+   * none are left the turn ends with the answer.
+   */
+  private conclude(state: State, turnId: string, answer: PromptAnswer): void {
+    const undelivered = state.undelivered.splice(0);
+    if (
+      undelivered.length &&
+      !state.interrupted &&
+      !('error' in answer) &&
+      answer.reason === 'end_turn'
+    ) {
+      this.settle(
+        state,
+        turnId,
+        Promise.resolve(this.prompt(state, turnId, undelivered.flat(), 'resent'))
+      );
+      return;
+    }
+    if (undelivered.length)
+      this.emit(state, {
+        type: 'runtime.warning',
+        message: `${undelivered.length === 1 ? 'A message' : `${undelivered.length} messages`} sent mid-turn that ${this.hooks.label} did not take ${undelivered.length === 1 ? 'was' : 'were'} not sent again: the turn ended first.`,
+      });
+    this.finish(state, answer);
+  }
+
+  /** Ends the running turn with the answer to its latest prompt. */
+  private finish(state: State, answer: PromptAnswer): void {
+    if ('error' in answer) {
+      this.complete(
+        state,
+        state.interrupted ? 'interrupted' : 'error',
+        state.interrupted ? 'Interrupted.' : String(answer.error)
+      );
+      return;
+    }
+    const { reason } = answer;
+    // `cancelled` answers our own `session/cancel`, or follows a request
+    // someone cancelled or declined; an agent that cancels unasked (Junie,
+    // when every model refuses it) has failed.
+    const interrupted = state.interrupted || (reason === 'cancelled' && state.refusedRequest);
+    this.complete(
+      state,
+      interrupted ? 'interrupted' : reason === 'end_turn' ? 'completed' : 'error',
+      interrupted
+        ? 'Interrupted.'
+        : reason === 'end_turn'
+          ? undefined
+          : reason === 'cancelled'
+            ? `${this.hooks.label} cancelled the turn itself, without being interrupted.`
+            : `${this.hooks.label} stopped: ${reason}`
     );
   }
 
-  private async run(state: State, input: ProviderSendTurnInput): Promise<string> {
+  private async run(
+    state: State,
+    input: ProviderSendTurnInput
+  ): Promise<{ seq: number; stopReason: Promise<string> }> {
     if (input.model) await this.setModel(state.id, input.model);
+    const context = state.context;
+    const content = await this.promptContent(state, input, context);
+    if (state.context === context) state.context = '';
+    return this.prompt(state, input.turnId, content, 'first');
+  }
+
+  /**
+   * Sends one `session/prompt` into turn `turnId` and makes it the turn's
+   * latest. Its number is taken as it is sent, so a later prompt is always
+   * later here. agy reports usage only on the answer that ends its turn (an
+   * earlier prompt it answers early carries none), and every answer's usage
+   * is added to the turn's.
+   */
+  private prompt(
+    state: State,
+    turnId: string,
+    prompt: Array<Record<string, unknown>>,
+    kind: SentPrompt['kind']
+  ): { seq: number; stopReason: Promise<string> } {
+    const seq = ++state.prompts;
+    state.latestPrompt = seq;
+    state.turnPrompts.push({ seq, content: prompt, kind });
+    const stopReason = state.client
+      .request<{ stopReason: string; usage?: AcpPromptUsage }>('session/prompt', {
+        sessionId: state.nativeId,
+        prompt,
+      })
+      .then(({ stopReason, usage }) => {
+        if (usage && state.turn === turnId)
+          state.usage = addUsage(state.usage, this.turnUsage(state, usage));
+        return stopReason;
+      });
+    return { seq, stopReason };
+  }
+
+  /** A turn's spend, under the model selected when it ended. */
+  private turnUsage(state: State, usage: AcpPromptUsage): TokenUsage[] {
+    const counts = {
+      inputTokens: usage.inputTokens ?? 0,
+      outputTokens:
+        (usage.outputTokens ?? 0) +
+        (this.hooks.thoughtTokensSeparate ? (usage.thoughtTokens ?? 0) : 0),
+      cacheReadTokens: usage.cachedReadTokens ?? 0,
+      cacheWriteTokens: usage.cachedWriteTokens ?? 0,
+    };
+    if (Object.values(counts).every((count) => count === 0)) return [];
+    const model =
+      modelConfigOption(state.configOptions)?.currentValue ?? state.currentModelId ?? 'unknown';
+    return [{ model, ...counts }];
+  }
+
+  /**
+   * The ACP prompt content for a message: its text, with `context` first, and
+   * its attachments. The caller clears the pending context once a request has
+   * taken it.
+   */
+  private async promptContent(
+    state: State,
+    input: ProviderSendTurnInput,
+    context: string
+  ): Promise<Array<Record<string, unknown>>> {
     const prompt: Array<Record<string, unknown>> = [
-      { type: 'text', text: state.context ? `${state.context}\n\n${input.text}` : input.text },
+      { type: 'text', text: context ? `${context}\n\n${input.text}` : input.text },
     ];
-    state.context = '';
     for (const attachment of input.attachments ?? []) {
       const { mimeType, path } = attachment;
       const media = mimeType.startsWith('image/')
@@ -440,12 +792,47 @@ export class AcpAdapter implements ProviderAdapter {
         });
       }
     }
-    return (
-      await state.client.request<{ stopReason: string }>('session/prompt', {
+    return prompt;
+  }
+
+  async canCompact(id: string): Promise<boolean> {
+    this.require(id);
+    return this.hooks.compaction !== undefined;
+  }
+
+  /**
+   * Sends the agent's compaction prompt between turns and resolves once the
+   * agent reports the compaction completed. Messages sent meanwhile wait
+   * behind it.
+   */
+  async compactSession(id: string): Promise<void> {
+    const state = this.require(id);
+    const { compaction, label } = this.hooks;
+    if (!compaction)
+      throw new ProviderSessionError(
+        this.provider,
+        id,
+        `${label} sessions cannot be compacted from Switch.`
+      );
+    if (state.turn || state.queue.length || state.compaction) throw new Error('SESSION_BUSY');
+    const requested: { progress: AcpCompactionProgress | undefined } = { progress: undefined };
+    state.compaction = requested;
+    try {
+      const { stopReason } = await state.client.request<{ stopReason: string }>('session/prompt', {
         sessionId: state.nativeId,
-        prompt,
-      })
-    ).stopReason;
+        prompt: [{ type: 'text', text: compaction.prompt }],
+      });
+      const progress = requested.progress as AcpCompactionProgress | undefined;
+      if (progress?.status === 'failed')
+        throw new Error(`${label} could not compact the session: ${progress.message}`);
+      if (progress?.status !== 'completed')
+        throw new Error(
+          `${label} answered ${compaction.prompt} (${stopReason}) without completing a compaction.`
+        );
+    } finally {
+      state.compaction = null;
+      this.drain(state);
+    }
   }
 
   async interruptTurn(id: string): Promise<void> {
@@ -460,6 +847,10 @@ export class AcpAdapter implements ProviderAdapter {
     return this.require(id).models;
   }
 
+  /**
+   * Selects the model, then the reasoning effort it was chosen with. The
+   * model goes first because selecting one can change the levels on offer.
+   */
   async setModel(id: string, model: ModelSelection): Promise<void> {
     const state = this.require(id);
     if (!modelConfigOption(state.configOptions)) {
@@ -467,11 +858,38 @@ export class AcpAdapter implements ProviderAdapter {
         sessionId: state.nativeId,
         modelId: model.id,
       });
-      return;
+      state.currentModelId = model.id;
+    } else {
+      if (!state.models.some((choice) => choice.id === model.id))
+        throw new ProviderSessionError(this.provider, id, `Unavailable model: ${model.id}`);
+      await this.requestConfigOption(state, 'model', model.id);
     }
-    if (!state.models.some((choice) => choice.id === model.id))
-      throw new ProviderSessionError(this.provider, id, `Unavailable model: ${model.id}`);
-    await this.requestConfigOption(state, 'model', model.id);
+    for (const [key, value] of Object.entries(model.options ?? {})) {
+      const configId = this.optionConfigId(key);
+      if (effortConfigOption(state.configOptions)?.id !== configId)
+        throw new ProviderSessionError(
+          this.provider,
+          id,
+          `${this.hooks.label} offers no '${key}' option for ${model.id}. Choose the model again.`
+        );
+      await this.setConfigOption(state, configId, value);
+    }
+  }
+
+  /** The session config option a saved model option key sets. */
+  private optionConfigId(key: string): string {
+    return this.hooks.modelOptionAliases?.[key] ?? key;
+  }
+
+  /** Whether `model` is what the session runs now, options included. */
+  private isCurrentModel(state: State, model: ModelSelection): boolean {
+    const current = modelConfigOption(state.configOptions)?.currentValue ?? state.currentModelId;
+    if (current !== model.id) return false;
+    return Object.entries(model.options ?? {}).every(
+      ([key, value]) =>
+        state.configOptions.find((option) => option.id === this.optionConfigId(key))
+          ?.currentValue === value
+    );
   }
 
   /** Sets a session config option to a value it offers, as a provider's hooks ask for the runtime mode. */
@@ -548,6 +966,7 @@ export class AcpAdapter implements ProviderAdapter {
       get turnId() {
         return active();
       },
+      runtimeMode: state.runtimeMode,
       mcpServerNames: state.mcpNames,
       askQuestions: async (questions, answer) => {
         const turnId = active();
@@ -678,13 +1097,28 @@ export class AcpAdapter implements ProviderAdapter {
       this.applyConfigOptions(state, update.configOptions);
       return;
     }
+    const compaction = this.hooks.compaction?.progress(update);
+    if (compaction) {
+      this.compactionProgress(state, compaction);
+      return;
+    }
     if (!state.turn) return;
+    if (
+      update.sessionUpdate === 'agent_thought_chunk' &&
+      update.content &&
+      !Array.isArray(update.content) &&
+      update.content.type === 'text'
+    ) {
+      this.thoughtChunk(state, state.turn, update.messageId, update.content.text ?? '');
+      return;
+    }
     if (
       update.sessionUpdate === 'agent_message_chunk' &&
       update.content &&
       !Array.isArray(update.content) &&
       update.content.type === 'text'
     ) {
+      this.finishThought(state, 'completed');
       if (!state.messageText)
         this.emit(state, {
           type: 'item.started',
@@ -717,7 +1151,81 @@ export class AcpAdapter implements ProviderAdapter {
       });
   }
 
+  /** A piece of the agent's reasoning: a new item when its message changes, else more of the current one. */
+  private thoughtChunk(
+    state: State,
+    turnId: string,
+    agentMessageId: string | undefined,
+    text: string
+  ): void {
+    if (state.thought && state.thought.agentMessageId !== agentMessageId)
+      this.finishThought(state, 'completed');
+    if (!state.thought) {
+      state.thought = { id: randomUUID(), agentMessageId, text: '' };
+      this.emit(state, {
+        type: 'item.started',
+        turnId,
+        item: {
+          id: state.thought.id,
+          type: 'reasoning',
+          status: 'in_progress',
+          title: 'Reasoning',
+          text: '',
+        },
+      });
+    }
+    state.thought.text += text;
+    this.emit(state, { type: 'item.delta', turnId, itemId: state.thought.id, delta: text });
+  }
+
+  private finishThought(state: State, status: 'completed' | 'failed'): void {
+    const thought = state.thought;
+    if (!state.turn || !thought) return;
+    state.thought = null;
+    this.emit(state, {
+      type: 'item.completed',
+      turnId: state.turn,
+      item: { id: thought.id, type: 'reasoning', status, title: 'Reasoning', text: thought.text },
+    });
+  }
+
+  /**
+   * Progress of a compaction: the one `compactSession` waits for, or one the
+   * agent ran on its own inside a turn, which shows there as an item.
+   */
+  private compactionProgress(state: State, progress: AcpCompactionProgress): void {
+    if (state.compaction) {
+      state.compaction.progress = progress;
+      return;
+    }
+    const turnId = state.turn;
+    if (!turnId) return;
+    const running = [...state.items.values()].find(
+      (item) => item.type === 'context_compaction' && item.status === 'in_progress'
+    );
+    const item: ProviderItem = running ?? {
+      id: randomUUID(),
+      type: 'context_compaction',
+      status: 'in_progress',
+      title: 'Context compaction',
+    };
+    if (progress.status === 'started') {
+      if (running) return;
+      state.items.set(item.id, item);
+      this.emit(state, { type: 'item.started', turnId, item });
+      return;
+    }
+    const done: ProviderItem = {
+      ...item,
+      status: progress.status,
+      ...(progress.status === 'failed' ? { text: progress.message } : {}),
+    };
+    state.items.set(item.id, done);
+    this.emit(state, { type: 'item.completed', turnId, item: done });
+  }
+
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
+    this.finishThought(state, 'completed');
     const old = state.items.get(update.toolCallId);
     const kind = this.hooks.toolKind?.(update) ?? update.kind;
     const server = this.hooks.mcpServerOf?.(update, state.mcpNames);
@@ -804,6 +1312,7 @@ export class AcpAdapter implements ProviderAdapter {
   ): void {
     if (!state.turn) return;
     const turnId = state.turn;
+    this.finishThought(state, outcome === 'completed' ? 'completed' : 'failed');
     this.finishMessage(state, outcome === 'completed' ? 'completed' : 'failed');
     for (const item of state.items.values())
       if (item.status === 'in_progress') {
@@ -823,12 +1332,14 @@ export class AcpAdapter implements ProviderAdapter {
       }
     this.cancelPending(state);
     state.turn = null;
+    const usage = state.usage;
+    state.usage = [];
     this.emit(state, {
       type: 'turn.completed',
       turnId,
       outcome,
       ...(message ? { message } : {}),
-      usage: [],
+      usage,
     });
     if (!state.turn)
       this.emit(state, {

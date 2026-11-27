@@ -1,3 +1,11 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { TONE_DOT, TonePill } from '@switch-console/chat-ui/primitives/tone-pill';
 import { format } from 'date-fns';
 import { ExternalLink, MoreHorizontal, Pencil, Plus, RotateCw, Trash2 } from 'lucide-react';
 import { CopyButton } from '@renderer/features/admin/copy-button';
@@ -15,20 +23,14 @@ import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
 import { Progress } from '@renderer/lib/ui/progress';
 import { formatBytes } from '@renderer/utils/formatBytes';
 import { cn } from '@renderer/utils/utils';
 import type { MachineDetail, ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { Card } from './detail-card';
-import { MachineIcon, TONE_DOT, TonePill } from './machine-marks';
+import { DevicePermissionsCard } from './device-permissions-card';
+import { MachineIcon } from './machine-marks';
 import { MachineProviders } from './machine-providers';
 import {
   controllerRelease,
@@ -193,6 +195,9 @@ export function MachineDetails({
       {/* Kept on a removed device: its agents stay placed on it until they are moved. */}
       <AgentsCard machine={machine} placed={placed} mine={mine} />
       {!removed && <MachineProviders serverId={serverId} machine={machine} />}
+      {!removed && machine.local?.kind === 'this-computer' && (
+        <DevicePermissionsCard serverId={serverId} agents={mine} />
+      )}
     </div>
   );
 }
@@ -439,6 +444,7 @@ function AgentsCard({
                       className="flex max-w-full cursor-pointer items-center gap-2.5 text-left text-foreground underline-offset-2 hover:underline"
                     >
                       <AgentAvatar
+                        agentId={agent.agentId}
                         name={label}
                         iconUrl={agent.iconUrl}
                         serverId={agent.serverId}

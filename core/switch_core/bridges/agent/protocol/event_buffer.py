@@ -381,7 +381,7 @@ _UNREAD_IN_ROOM_SQL = text(
              coalesce((
                SELECT m.seq FROM messages m
                WHERE m.room_id = :room_id AND m.sent_at < :cutoff
-               ORDER BY m.sent_at DESC
+               ORDER BY m.sent_at DESC, m.seq DESC
                LIMIT 1
              ), 0) AS window_start,
              coalesce((
@@ -2474,6 +2474,36 @@ class EventBuffer:
             agent_id, after_seq, oldest, tuple(sorted(rooms)), resume_after
         )
 
+    async def replay_start(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        *,
+        after_seq: int | None,
+        since: datetime,
+        limit: int,
+    ) -> tuple[int, bool] | None:
+        """Where a reader that kept no cursor resumes so it gets the agent's
+        own events numbered after `after_seq` (any, when None) and created
+        after `since`: the number just before the oldest of them, and whether
+        `limit` cut older ones off, keeping the newest `limit`. None when
+        there are none, so the reader starts at its head as before."""
+        query = select(AgentEventRow.seq).where(
+            AgentEventRow.agent_id == agent_id, AgentEventRow.created_at > since
+        )
+        if after_seq is not None:
+            query = query.where(AgentEventRow.seq > after_seq)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            seqs = (
+                await session.scalars(
+                    query.order_by(AgentEventRow.seq.desc()).limit(limit + 1)
+                )
+            ).all()
+        if not seqs:
+            return None
+        kept = seqs[:limit]
+        return kept[-1] - 1, len(seqs) > limit
+
     async def before_retained(self, tenant_id: str, agent_id: str) -> int:
         """The own-events number just before the agent's oldest one still kept,
         and past every number `expire` deleted.
@@ -2534,12 +2564,13 @@ def _counting(agent_id: str, room_id: str, *, baseline: Any, occupant: Reader) -
 
 def _window_start(room_id: str, cutoff: datetime) -> Any:
     """A query for the `messages.seq` of the room's newest row sent before
-    `cutoff`. It reads one entry of the room's `sent_at` index instead of
-    scanning every row sent since."""
+    `cutoff`. It reads the room's `sent_at` index from the cutoff back instead
+    of scanning every row sent since. Rows written in one transaction share
+    their `sent_at`, so the last of them by `seq` is the newest."""
     return (
         select(Message.seq)
         .where(Message.room_id == room_id, Message.sent_at < cutoff)
-        .order_by(Message.sent_at.desc())
+        .order_by(Message.sent_at.desc(), Message.seq.desc())
         .limit(1)
     )
 

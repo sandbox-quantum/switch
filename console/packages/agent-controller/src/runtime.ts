@@ -1,7 +1,6 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rm, stat, unlink } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { mkdir, open, readFile, realpath, rm, stat, unlink } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -17,10 +16,12 @@ import {
   killProcessTree,
   materializeHostedProvider,
   type OpenAgentStream,
+  parseUntrustedJson,
   type ProviderReadiness,
   processCommandLine,
   providerReadinessSchema,
   readTakenOver,
+  readUntrusted,
   readWatchFlags,
   recordWatcherHealth,
   replaceFile,
@@ -39,20 +40,53 @@ import {
   watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
+import { z } from 'zod';
 import { ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
-import { agentWorkspace, type DataLayout } from './paths';
+import { agentWorkspace, type DataLayout, expandHome, insideDataDir } from './paths';
 import type { Isolation, Provider } from './schemas';
 import type { GivenLogin } from './sealed-logins';
 
 const execute = promisify(execFile);
 
+/**
+ * What only a box's agent hosts do, given to the runtime by a controller in
+ * box mode (`box/in-process-box.ts`, loaded through a dynamic import) and
+ * null everywhere else, where the runtime behaves exactly as upstream's:
+ *
+ * - each agent host's watcher posts its restart line keyed by its turn, and
+ *   takes the launcher's one-time hub tickets (`watcher`);
+ * - its session hosts are supervised the box's way: an owner marker in their
+ *   environment, stops marked as asked, records judged by start time
+ *   (`supervision`);
+ * - a recorded owner counts as alive only if it is a live process older than
+ *   its record (`recordedOwnerAlive`, `judgeOwnerRecord`), never whatever holds
+ *   that id after a restart;
+ * - a provider check that runs too long is ended with its whole process group,
+ *   so a CLI it started can't go on writing into a login check's folder.
+ */
+export type InProcessBox = {
+  watcher: (agentId: string) => NonNullable<ConstructorParameters<typeof WatcherControl>[0]>['box'];
+  supervision: (agentId: string) => NonNullable<Parameters<typeof inProcessSupervision>[2]>;
+  recordedOwnerAlive: (path: string, pid: number) => Promise<boolean>;
+  judgeOwnerRecord: (path: string, pid: number) => Promise<{ kind: string }>;
+};
+
 /** What is on disk and alive for one agent's agent host. */
 export type AgentObservation = {
   /** The agent host or its supervisor is running. */
   alive: boolean;
-  /** The provider and working directory its saved configuration was created with. */
-  configured: { provider: string; cwd: string } | null;
+  /**
+   * The provider, working directory and runtime mode its saved configuration
+   * holds, the runtime mode null in one written without it, and the
+   * permission mode the agent definition it runs as names, null for none.
+   */
+  configured: {
+    provider: string;
+    cwd: string;
+    runtimeMode: string | null;
+    permissionMode: string | null;
+  } | null;
   flags: WatchFlags | null;
   /** `current` is false when the process that wrote it is gone. */
   health: (WatcherHealthFile & { current: boolean }) | null;
@@ -93,6 +127,8 @@ export type LaunchOptions = {
   replaceIdentity: boolean;
   /** Someone asked for this agent host on purpose: a standing-down marker is cleared. */
   clearTakenOver: boolean;
+  /** Box mode: false when nobody in the agent's rooms asked for this restart, so a cut-off turn owes its line. */
+  asked?: boolean;
 };
 
 /**
@@ -105,14 +141,27 @@ export type RelayCredentials = {
   hub: string;
   /** A login Switch gave the machine for the agent's provider, which it has none of its own for. */
   providerLogin: GivenLogin | null;
+  /**
+   * Box only: when the login goes through the provider gateway instead, the
+   * agent's opaque gateway token and which login it fronts. The login itself
+   * is then not in the file (`providerLogin` is null). Never set on desktop or v1.
+   */
+  gateway?: GatewayRecord | null;
 };
+
+/** An agent's place on the provider gateway, as its credentials file keeps it (no secret). */
+export type GatewayRecord = { token: string; provider: string; kind: string; revision: string };
 
 /** Runs agent hosts one way: in this controller's process, or each in a process of its own. */
 export interface AgentRunner {
   observe(agentId: string): Promise<AgentObservation>;
   launch(agentId: string, template: SharedHostConfig, options: LaunchOptions): Promise<void>;
-  /** Turns the agent host off; with `wait`, returns once it and its sessions are gone. */
-  stop(agentId: string, options: { wait: boolean }): Promise<void>;
+  /**
+   * Turns the agent host off; with `wait`, returns once it and its sessions
+   * are gone. `asked: false` (box mode): a turn the stop cuts off owes its
+   * room a line.
+   */
+  stop(agentId: string, options: { wait: boolean; asked?: boolean }): Promise<void>;
   /** The controller is exiting. */
   close(): Promise<void>;
 }
@@ -182,6 +231,16 @@ export async function loginProbeEnvironment(
  * removes it: a decrypted copy of the login is never left behind. A copy that
  * cannot be removed is logged as an error; the probe's answer stands.
  */
+/**
+ * Deletes what a login check left under `dataDir` when the controller was
+ * stopped in the middle of one, so `probeWithLogin`'s clean-up never ran: a
+ * decrypted copy of a login. Box mode runs it once at start, before anything
+ * checks a login.
+ */
+export async function clearLeftLoginChecks(dataDir: string): Promise<void> {
+  await rm(join(dataDir, 'login-check'), { recursive: true, force: true });
+}
+
 export async function probeWithLogin<T>(
   dir: string,
   log: Logger,
@@ -260,16 +319,89 @@ export async function probeProvider(
   provider: Provider,
   binaryPath: string,
   cwd: string,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  options: { box: boolean; timeoutMs?: number } = { box: false }
 ): Promise<ProviderReadiness> {
-  const { stdout } = await execute(
-    process.execPath,
-    [bundlePath, '--probe', provider, cwd, binaryPath],
-    { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env, windowsHide: true }
-  );
+  const args = [bundlePath, '--probe', provider, cwd, binaryPath];
+  const stdout = options.box
+    ? await runProbeGrouped(args, env, options.timeoutMs ?? PROBE_TIMEOUT_MS)
+    : (
+        await execute(process.execPath, args, {
+          timeout: PROBE_TIMEOUT_MS,
+          maxBuffer: PROBE_MAX_OUTPUT,
+          env,
+          windowsHide: true,
+        })
+      ).stdout;
   const line = stdout.trim().split('\n').at(-1) ?? '';
   return providerReadinessSchema.parse(JSON.parse(line));
 }
+
+const PROBE_MAX_OUTPUT = 4 * 1024 * 1024;
+
+/**
+ * Box mode: runs the bundle's `--probe` in a process group of its own and
+ * returns what it printed. On a timeout, or too much output, the whole group
+ * is ended, not just the bundle: a CLI it started could otherwise go on
+ * writing into a given login's check folder after `probeWithLogin` deletes it.
+ */
+function runProbeGrouped(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number
+): Promise<string> {
+  const grouped = process.platform !== 'win32';
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, args, {
+      env,
+      windowsHide: true,
+      detached: grouped,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let output = '';
+    let settled = false;
+    const settle = (error: Error | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error === null) resolvePromise(output);
+      else reject(error);
+    };
+    // Ended while the bundle still runs, so its group still exists and the id
+    // cannot have passed to anyone else.
+    const end = (reason: string): void => {
+      void endProbeGroup(child.pid, grouped).finally(() => settle(new Error(reason)));
+    };
+    const timer = setTimeout(
+      () => end(`The provider check did not finish within ${timeoutMs / 1000} s.`),
+      timeoutMs
+    );
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      output += chunk;
+      if (output.length > PROBE_MAX_OUTPUT) end('The provider check printed too much.');
+    });
+    child.on('error', (error) => settle(error));
+    child.on('close', (code, signal) =>
+      settle(code === 0 ? null : new Error(`The provider check exited with ${code ?? signal}.`))
+    );
+  });
+}
+
+async function endProbeGroup(pid: number | undefined, grouped: boolean): Promise<void> {
+  if (pid === undefined) return;
+  if (!grouped) {
+    await killProcessTree(pid).catch(() => {});
+    return;
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ESRCH' && code !== 'EPERM') throw error;
+  }
+}
+
 /** What an agent host's credentials file holds; see `readSharedCredentials`. */
 export function relayCredentialsBody(agentId: string, credentials: RelayCredentials): string {
   return JSON.stringify({
@@ -280,13 +412,30 @@ export function relayCredentialsBody(agentId: string, credentials: RelayCredenti
       SWITCH_AGENT_HUB: credentials.hub,
     },
     providerLogin: credentials.providerLogin,
+    ...(credentials.gateway ? { gateway: credentials.gateway } : {}),
   });
+}
+
+function gatewayRecord(value: unknown): GatewayRecord | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  return typeof v.token === 'string' &&
+    v.token.startsWith('swpg_') &&
+    typeof v.provider === 'string' &&
+    typeof v.kind === 'string' &&
+    typeof v.revision === 'string'
+    ? { token: v.token, provider: v.provider, kind: v.kind, revision: v.revision }
+    : null;
 }
 
 /** A credentials file's relay, token and hub; null when it is not one, or is another agent's. */
 export function parseRelayCredentials(text: string, agentId: string): RelayCredentials | null {
   try {
-    const parsed = JSON.parse(text) as { env?: Record<string, unknown>; providerLogin?: unknown };
+    const parsed = JSON.parse(text) as {
+      env?: Record<string, unknown>;
+      providerLogin?: unknown;
+      gateway?: unknown;
+    };
     const env = parsed.env ?? {};
     const endpoint = env.SWITCH_API_ENDPOINT;
     const token = env.SWITCH_API_TOKEN;
@@ -296,8 +445,10 @@ export function parseRelayCredentials(text: string, agentId: string): RelayCrede
     const login = hostedCredentialSchema.nullable().safeParse(parsed.providerLogin ?? null);
     // A login it cannot read is none: the file is written again with the one wanted.
     const providerLogin = login.success && login.data?.status === 'connected' ? login.data : null;
+    // Only a box's controller writes one; a file without it reads exactly as before.
+    const gateway = gatewayRecord(parsed.gateway);
     return typeof endpoint === 'string' && typeof token === 'string'
-      ? { endpoint, token, hub, providerLogin }
+      ? { endpoint, token, hub, providerLogin, ...(gateway ? { gateway } : {}) }
       : null;
   } catch {
     return null;
@@ -395,16 +546,19 @@ export const OWNER_RECORDS = ['shared-owner.lock', join('supervisor', 'owner.jso
 /** What is on disk for one agent's agent host, read by a process that does not run it (`status`). */
 export async function observeOnDisk(
   layout: DataLayout,
-  agentId: string
+  agentId: string,
+  box: Pick<InProcessBox, 'recordedOwnerAlive'> | null
 ): Promise<AgentObservation> {
   const root = layout.watcherRoot(agentId);
-  const pid = await recordedPid(join(root, 'shared-owner.lock'));
-  const running = pid !== null && isProcessAlive(pid, 'recorded');
-  const healthText = await readOptional(join(root, WATCHER_HEALTH_FILE));
-  const health =
-    healthText === null
-      ? null
-      : { ...watcherHealthFileSchema.parse(JSON.parse(healthText)), current: running };
+  const lock = join(root, 'shared-owner.lock');
+  const pid = await recordedPid(lock);
+  // In a box, not whatever holds that id after a restart: a lock older than
+  // the process holding its id now was left by an earlier one.
+  const running =
+    pid !== null &&
+    (box ? await box.recordedOwnerAlive(lock, pid) : isProcessAlive(pid, 'recorded'));
+  const record = await readHealth(root);
+  const health = record === null ? null : { ...record, current: running };
   return { ...(await readRoot(root)), alive: running, health, outdated: false };
 }
 
@@ -412,11 +566,17 @@ export async function observeOnDisk(
 export async function readRoot(
   root: string
 ): Promise<Omit<AgentObservation, 'alive' | 'outdated'>> {
-  const config = await readOptional(join(root, 'config.json'));
+  const configPath = join(root, 'config.json');
+  const config = await readUntrusted(configPath, { maxBytes: MAX_CONFIG_BYTES, within: root });
   let configured: AgentObservation['configured'] = null;
   if (config !== null) {
-    const parsed = JSON.parse(config) as SharedHostConfig;
-    configured = { provider: parsed.start.provider, cwd: parsed.start.input.cwd };
+    const parsed = parseUntrustedJson(config, sharedConfigSchema, configPath);
+    configured = {
+      provider: parsed.start.provider,
+      cwd: parsed.start.input.cwd,
+      runtimeMode: parsed.start.input.runtimeMode ?? null,
+      permissionMode: parsed.start.input.agentDefinition?.permissionMode ?? null,
+    };
   }
   let flags: WatchFlags | null = null;
   try {
@@ -424,19 +584,50 @@ export async function readRoot(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  const failureText = await readOptional(join(root, 'supervisor', 'failure.json'));
-  const failure =
-    failureText === null
-      ? null
-      : String((JSON.parse(failureText) as { message?: unknown }).message ?? failureText);
-  return { configured, flags, health: null, failure, takenOver: await readTakenOver(root) };
+  return {
+    configured,
+    flags,
+    health: null,
+    failure: await readFailure(root),
+    takenOver: await readTakenOver(root),
+  };
+}
+
+const MAX_CONFIG_BYTES = 1024 * 1024;
+const MAX_RECORD_BYTES = 64 * 1024;
+const failureRecordSchema = z.object({ message: z.string() });
+
+/**
+ * The failure the agent host's supervisor recorded: its message, or, for a
+ * record that cannot be read, why not, never the record's own text.
+ */
+async function readFailure(root: string): Promise<string | null> {
+  const path = join(root, 'supervisor', 'failure.json');
+  try {
+    const text = await readUntrusted(path, { maxBytes: MAX_RECORD_BYTES, within: root });
+    return text === null ? null : parseUntrustedJson(text, failureRecordSchema, path).message;
+  } catch (error) {
+    return `The agent host recorded a failure that could not be read: ${errorMessage(error)}`;
+  }
+}
+
+/**
+ * The agent host's health record under `root`, null when it wrote none. A
+ * record that cannot be read rejects with why, never with its text.
+ */
+export async function readHealth(root: string): Promise<WatcherHealthFile | null> {
+  const path = join(root, WATCHER_HEALTH_FILE);
+  const text = await readUntrusted(path, { maxBytes: MAX_RECORD_BYTES, within: root });
+  return text === null ? null : parseUntrustedJson(text, watcherHealthFileSchema, path);
 }
 
 type RunningAgentHost = {
+  /** Box mode: its stop is not one anyone in its rooms asked for, so cut-off turns owe a line. */
+  unasked: boolean;
   stop: AbortController;
   done: Promise<void>;
   control: WatcherControl;
-  sessions: Supervision & { close: () => Promise<void> };
+  sessions: Supervision & { close: (options?: { asked?: boolean }) => Promise<void> };
 };
 
 /**
@@ -469,6 +660,8 @@ export class InProcessRuntime implements AgentRuntime {
       log: Logger;
       /** How long a failed agent host waits before it is started again. */
       crashBackoffMs: number;
+      /** What only a box's agent hosts do (`InProcessBox`); null off a box. */
+      box: InProcessBox | null;
     }
   ) {}
 
@@ -517,23 +710,22 @@ export class InProcessRuntime implements AgentRuntime {
   ): Promise<string> {
     if (directory === null) {
       const path = agentWorkspace(this.deps.workspaces, name);
+      await this.refuseDataDir(path, path);
       await mkdir(path, { recursive: true });
+      await this.refuseDataDir(path, await realpath(path));
       return path;
     }
-    const expanded =
-      directory === '~' ||
-      directory.startsWith('~/') ||
-      (process.platform === 'win32' && directory.startsWith('~\\'))
-        ? join(homedir(), directory.slice(1))
-        : directory;
+    const expanded = expandHome(directory);
     if (!isAbsolute(expanded))
       throw new ReasonedError(
         'definition_invalid',
         `The working directory '${directory}' is not an absolute path.`
       );
+    await this.refuseDataDir(expanded, expanded);
     if (isInside(this.deps.workspaces, expanded)) {
       const path = resolve(expanded);
       await mkdir(path, { recursive: true });
+      await this.refuseDataDir(path, await realpath(path));
       return path;
     }
     let isDirectory: boolean;
@@ -548,7 +740,29 @@ export class InProcessRuntime implements AgentRuntime {
     }
     if (!isDirectory)
       throw new ReasonedError('definition_invalid', `${expanded} is not a directory.`);
+    await this.refuseDataDir(expanded, await realpath(expanded));
     return expanded;
+  }
+
+  /**
+   * Refuses `directory` (which is `target` once links are followed) when an
+   * agent working there would work in the controller's data directory, by
+   * its path as given or as found on disk.
+   */
+  private async refuseDataDir(directory: string, target: string): Promise<void> {
+    const root = this.deps.layout.root;
+    const realRoot = await realpath(root).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!insideDataDir(root, target) && (realRoot === null || !insideDataDir(realRoot, target)))
+      return;
+    throw new ReasonedError(
+      'definition_invalid',
+      directory === target
+        ? `The working directory ${directory} is inside this controller's data directory ${root}, which holds its credentials. Choose another directory.`
+        : `The working directory ${directory} leads to ${target}, inside this controller's data directory ${root}, which holds its credentials. Choose another directory.`
+    );
   }
 
   async observe(agentId: string): Promise<AgentObservation> {
@@ -573,7 +787,11 @@ export class InProcessRuntime implements AgentRuntime {
   async launch(agentId: string, template: SharedHostConfig, options: LaunchOptions): Promise<void> {
     const root = this.deps.layout.watcherRoot(agentId);
     await mkdir(root, { recursive: true, mode: 0o700 });
-    if (options.restart || options.replaceIdentity) await this.stop(agentId, { wait: true });
+    if (options.restart || options.replaceIdentity)
+      await this.stop(agentId, {
+        wait: true,
+        ...(options.asked === false ? { asked: false } : {}),
+      });
     await this.stopDetached(root);
     if (options.replaceIdentity) await removeOptional(join(root, 'config.json'));
     if (options.clearTakenOver) await clearTakenOver(root);
@@ -582,12 +800,13 @@ export class InProcessRuntime implements AgentRuntime {
     await this.ensure(agentId, root, template);
   }
 
-  async stop(agentId: string, options: { wait: boolean }): Promise<void> {
+  async stop(agentId: string, options: { wait: boolean; asked?: boolean }): Promise<void> {
     const root = this.deps.layout.watcherRoot(agentId);
     await mkdir(root, { recursive: true, mode: 0o700 });
     await this.writeFlags(root, { enabled: false, spawn: false });
     const running = this.hosts.get(agentId);
     if (!running) return;
+    if (options.asked === false) running.unasked = true;
     running.stop.abort();
     if (!options.wait) return;
     const stopped = await Promise.race([
@@ -635,10 +854,14 @@ export class InProcessRuntime implements AgentRuntime {
     if (this.hosts.has(agentId) || this.lifetime.signal.aborted) return;
     const stop = new AbortController();
     const signal = AbortSignal.any([stop.signal, this.lifetime.signal]);
-    const control = new WatcherControl();
-    const sessions = inProcessSupervision(this.deps.bundlePath, this.links);
+    const box = this.deps.box;
+    const control = new WatcherControl(box ? { box: box.watcher(agentId) } : {});
+    const sessions = box
+      ? inProcessSupervision(this.deps.bundlePath, this.links, box.supervision(agentId))
+      : inProcessSupervision(this.deps.bundlePath, this.links);
     // For `status`, which runs in another process and reads only disk.
     const stopRecording = recordWatcherHealth(root, control, null);
+    const entry = { unasked: false };
     const forget = () => {
       if (this.hosts.get(agentId)?.done === done) this.hosts.delete(agentId);
     };
@@ -647,7 +870,11 @@ export class InProcessRuntime implements AgentRuntime {
         await runAgentHost(root, config, signal, sessions, control, this.deps.openStream(agentId));
       } finally {
         stopRecording();
-        await sessions.close();
+        // Box mode: the agent turned off (or removed) is a stop someone asked
+        // for; the controller exiting, as when the whole box goes down, is
+        // not, and nor is a restart for new credentials. Off a box, as before.
+        if (box) await sessions.close({ asked: !this.lifetime.signal.aborted && !entry.unasked });
+        else await sessions.close();
       }
     })()
       .then(
@@ -661,7 +888,7 @@ export class InProcessRuntime implements AgentRuntime {
         forget();
         if (again) this.start(agentId, root, config);
       });
-    this.hosts.set(agentId, { stop, done, control, sessions });
+    this.hosts.set(agentId, Object.assign(entry, { stop, done, control, sessions }));
     this.deps.log.info('Agent host started', { agentId });
   }
 
@@ -717,7 +944,12 @@ export class InProcessRuntime implements AgentRuntime {
     for (const record of OWNER_RECORDS) {
       const path = join(root, record);
       const pid = await recordedPid(path);
-      if (pid === null || pid === process.pid || !(await ownsRoot(pid, root))) continue;
+      if (pid === null || pid === process.pid) continue;
+      // In a box, a stop needs positive proof the record still names its owner:
+      // judged alive (a process, older than the record), not just a live id.
+      if (this.deps.box && (await this.deps.box.judgeOwnerRecord(path, pid)).kind !== 'alive')
+        continue;
+      if (!(await ownsRoot(pid, root))) continue;
       this.deps.log.warn('Stopping an agent host left running by an earlier controller', {
         root,
         pid,
@@ -740,13 +972,19 @@ export class InProcessRuntime implements AgentRuntime {
     cwd: string,
     login: GivenLogin | null
   ): Promise<ProviderReadiness> {
-    if (!login) return probeProvider(this.deps.bundlePath, provider, binaryPath, cwd, process.env);
+    const box = this.deps.box !== null;
+    if (!login)
+      return probeProvider(this.deps.bundlePath, provider, binaryPath, cwd, process.env, { box });
     const dir = join(this.deps.layout.root, 'login-check', provider);
     return probeWithLogin(dir, this.deps.log, provider, async () =>
-      probeProvider(this.deps.bundlePath, provider, binaryPath, cwd, {
-        ...process.env,
-        ...(await loginProbeEnvironment(dir, login, binaryPath)),
-      })
+      probeProvider(
+        this.deps.bundlePath,
+        provider,
+        binaryPath,
+        cwd,
+        { ...process.env, ...(await loginProbeEnvironment(dir, login, binaryPath)) },
+        { box }
+      )
     );
   }
 

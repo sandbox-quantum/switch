@@ -11,6 +11,7 @@ import pytest
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     AgentPresentation,
+    MessagePartlySent,
     RichContentFailed,
     TurnActivity,
 )
@@ -94,6 +95,34 @@ async def test_a_long_message_is_split_in_order_into_the_same_thread(
         post["tmid"] == "root" and post["alias"] == "Coder [bot]" for post in posts
     )
     assert "\n".join(post["text"] for post in posts) == body
+
+
+async def test_a_refusal_part_way_through_a_long_message_says_so_and_raises(
+    adapter: RocketChatAdapter, fake: FakeRocketChat
+) -> None:
+    taken = 0
+
+    def second_part_refused(call: Call) -> Any:
+        nonlocal taken
+        taken += 1
+        if taken == 2:
+            return refused(400, "Message too long", "error-message-size-exceeded")
+        return {"message": {"_id": f"posted-{taken}", **call.body}}
+
+    fake.on("chat.postMessage", second_part_refused)
+    body = "\n".join(f"line {i:04d} " + "x" * 90 for i in range(100))
+
+    with pytest.raises(MessagePartlySent) as raised:
+        await adapter.send_message(ROOM, "coder", body, "root")
+
+    partial = raised.value
+    assert (partial.first_ref, partial.delivered, partial.total) == ("posted-1", 1, 3)
+    notice = _posts(fake)[-1]
+    assert notice["text"] == (
+        "_Only 1 of 3 parts of this message could be delivered; Rocket.Chat "
+        "refused the rest._"
+    )
+    assert (notice["tmid"], notice["alias"]) == ("root", "Coder [bot]")
 
 
 async def test_a_split_never_tears_a_code_block(

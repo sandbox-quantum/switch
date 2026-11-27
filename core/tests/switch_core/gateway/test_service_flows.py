@@ -635,6 +635,30 @@ class TestLoopback:
         assert flow["status"] == "failed"
         assert flow["error"] == refused.json()["detail"]
 
+    async def test_a_sign_in_that_fails_unexpectedly_fails_the_flow_and_says_why(
+        self, session_factory, tmp_path, caplog, monkeypatch
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("synthetic failure")
+
+        monkeypatch.setattr(world.broker, "connect", broken)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            failed = await console.complete(await _loopback_code(world, console))
+            flow = (await console.status()).json()
+        saved = "Switch couldn't save your Example connection. Connect again."
+        assert (failed.status_code, failed.json()) == (500, {"detail": saved})
+        assert (flow["status"], flow["error"]) == ("failed", saved)
+        assert await _connection(session_factory, ada.id) is None
+        assert any(
+            record.levelname == "ERROR"
+            and "from Switch Console failed" in record.message
+            for record in caplog.records
+        )
+
     async def test_an_outage_at_the_code_exchange_is_a_503_and_revokes_nothing(
         self, session_factory, tmp_path
     ) -> None:

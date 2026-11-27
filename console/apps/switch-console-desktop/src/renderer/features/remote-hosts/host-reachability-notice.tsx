@@ -1,7 +1,7 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { Loader2, PlugZap, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
-import { Button } from '@renderer/lib/ui/button';
 import { hostReachabilityStore } from './host-reachability-store';
 
 /**
@@ -51,7 +51,9 @@ export const HostReachabilityNotice = observer(function HostReachabilityNotice({
         <p className="text-xs font-medium text-foreground">
           {reachability.status === 'suspended'
             ? `SSH authentication to ${sshHost} failed`
-            : `Can’t reach ${sshHost}`}
+            : reachability.status === 'untrusted'
+              ? `The SSH host key of ${sshHost} was refused`
+              : `Can’t reach ${sshHost}`}
         </p>
         {reachability.lastError && (
           <p className="text-xs break-words text-foreground-muted">{reachability.lastError}</p>

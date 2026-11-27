@@ -25,7 +25,7 @@ init-env:
     deploy/local/generate-env-secrets.sh .env local
     echo "✅ Wrote .env with freshly generated secrets."
     echo "   Gateway admin login: $(grep '^GATEWAY_ADMIN_EMAIL=' .env | cut -d= -f2-) / $(grep '^GATEWAY_ADMIN_PASSWORD=' .env | cut -d= -f2-)"
-    echo "   The stack binds to 127.0.0.1 only (set SWITCH_BIND_ADDR to expose it)."
+    echo "   The stack binds to 127.0.0.1 only (set SWITCH_BIND_ADDR to expose Switch; Postgres stays on loopback)."
 
 # ── Dev infrastructure ─────────────────────────────────────────────────────────
 # Refuses an `.env` written before the two-role split, rather than starting a
@@ -101,7 +101,8 @@ run:
 # For testing Switch Console against this checkout instead of whatever a shared
 # deployment runs. Needs `just up` first. Invitation e-mails go to the Mailpit
 # catcher, and their links point at :8000 so that pasting one into the Console
-# matches the stand-in. docs/old/LOCAL_DEVELOPMENT.md, "A local Switch Cloud".
+# matches the stand-in. `just gateway-dev` on :5173 can sign in to it too.
+# docs/old/LOCAL_DEVELOPMENT.md, "A local Switch Cloud".
 # Run switch-core as Switch Cloud, with invitation e-mail caught at :8025
 local-cloud:
     docker compose -f deploy/local/docker-compose.yml --project-directory . --profile mail up -d mailpit
@@ -109,6 +110,7 @@ local-cloud:
     GATEWAY_SMTP_USERNAME= GATEWAY_SMTP_PASSWORD= \
     GATEWAY_SMTP_FROM="Switch <invites@switch.local>" \
     FRONTEND_BASE_URL=http://localhost:8000 GATEWAY_COOKIE_SECURE=false \
+    GATEWAY_EXTRA_ORIGINS='["http://localhost:5173"]' \
     uv run --project core python -m switch_core.main
 
 # Run Switch Console with "Switch Cloud" pointing at `just local-cloud`, in
@@ -182,8 +184,15 @@ migration msg:
     uv run --project core alembic -c core/alembic.ini revision --autogenerate -m "{{ msg }}"
 
 # ── Run tests ──────────────────────────────────────────────────────────────────
+# Six workers by default, each with a Postgres container of its own: on a
+# 10-core machine more workers only wait on the databases sharing the cores
+# (13.7k tests took 9 min at 6, 10 at 10 and 14 at 14). `worksteal` lets an
+# idle worker take tests queued behind a slow one. SWITCH_TEST_WORKERS sets
+# the count, `0` runs in one process.
+test_workers := env("SWITCH_TEST_WORKERS", "6")
+
 test *args:
-    uv run --project core pytest -c core/pyproject.toml core/tests/ {{ args }}
+    uv run --project core pytest -c core/pyproject.toml core/tests/ -n {{ test_workers }} --dist worksteal {{ args }}
 
 # ── End-to-end proof for "follow the conversation" ─────────────────────────────
 # Plays every journey as two people in a fresh local Mattermost against

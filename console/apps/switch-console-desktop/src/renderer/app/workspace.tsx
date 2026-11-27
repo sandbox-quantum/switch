@@ -1,3 +1,5 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState, type ReactNode } from 'react';
 import { shouldCatchUpIntro } from '@renderer/features/onboarding/intro-catch-up';
@@ -29,8 +31,6 @@ import { useTheme } from '@renderer/lib/hooks/useTheme';
 import { useCurrentViewId, useWorkspaceWrapParams } from '@renderer/lib/layout/navigation-provider';
 import { WorkspaceContentLayout, WorkspaceLayout } from '@renderer/lib/layout/workspace-layout';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
-import { Button } from '@renderer/lib/ui/button';
-import { Spinner } from '@renderer/lib/ui/spinner';
 import { Toaster } from '@renderer/lib/ui/toaster';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import { shellShape } from './shell-shape';

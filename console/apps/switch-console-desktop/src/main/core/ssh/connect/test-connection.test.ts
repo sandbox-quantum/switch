@@ -66,6 +66,7 @@ describe('testSshConnection', () => {
           },
           cleanup: () => cleanups.push('cleanup'),
           debugLogs: ['resolved via alias'],
+          hostKeyRejection: () => undefined,
         }),
       })
     ).resolves.toMatchObject({
@@ -103,6 +104,7 @@ describe('testSshConnection', () => {
             },
             cleanup: () => cleanups.push('cleanup'),
             debugLogs: ['resolved'],
+            hostKeyRejection: () => undefined,
           }),
         }
       )
@@ -159,6 +161,7 @@ describe('testSshConnection', () => {
             config: { host: '127.0.0.1', port: 22, username: 'alice' },
             cleanup: () => cleanups.push('cleanup'),
             debugLogs: ['resolved'],
+            hostKeyRejection: () => undefined,
           }),
         }
       )
@@ -193,6 +196,7 @@ describe('testSshConnection', () => {
             config: { host: '127.0.0.1', port: 22, username: 'alice' },
             cleanup: () => cleanups.push('cleanup'),
             debugLogs: [],
+            hostKeyRejection: () => undefined,
           }),
         }
       )

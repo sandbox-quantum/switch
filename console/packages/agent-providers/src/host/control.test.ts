@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
+import type * as NodeCrypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
@@ -8,11 +9,23 @@ import { PassThrough } from 'node:stream';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { AttachmentTransfers } from './attachment-transfers';
-import { CONTROL_FILE, ControlClient, ensureSessions, serveControl } from './control';
+import {
+  CONTROL_FILE,
+  ControlClient,
+  controlMessageSchema,
+  ensureSessions,
+  serveControl,
+} from './control';
 import type { Supervision } from './launch';
 import { SessionHostFailedError, SessionLinks } from './session-channel';
 import { WatcherControl } from './watcher-tools';
 
+const crypto = vi.hoisted(() => ({ timingSafeEqual: vi.fn() }));
+vi.mock('node:crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeCrypto>();
+  crypto.timingSafeEqual.mockImplementation(actual.timingSafeEqual);
+  return { ...actual, timingSafeEqual: crypto.timingSafeEqual };
+});
 const paths = vi.hoisted(() => ({ base: '' }));
 const launched = vi.hoisted(() => ({ ensureSharedProcess: vi.fn() }));
 vi.mock('./launch', () => ({
@@ -21,6 +34,9 @@ vi.mock('./launch', () => ({
   liveSupervisor: async (root: string) =>
     (await readFile(join(root, 'running'), 'utf8').catch(() => null)) ? { build: 'b' } : null,
 }));
+
+/** What Console sends to start a new session of the host's agent: only the identity is read here. */
+const OWN_CONFIG = { session: { sessionId: 'fresh', agentId: 'agent' } };
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -115,12 +131,17 @@ it('relays requests to a session host and its events back', async () => {
   unsubscribe();
 
   expect(
-    await console.ensure({ config: {}, resuming: false, restart: false, startSource: 'room' })
+    await console.ensure({
+      config: OWN_CONFIG,
+      resuming: false,
+      restart: false,
+      startSource: 'room',
+    })
   ).toEqual({
     created: true,
   });
   expect(ensure).toHaveBeenCalledWith({
-    config: {},
+    config: OWN_CONFIG,
     resuming: false,
     restart: false,
     startSource: 'room',
@@ -247,6 +268,36 @@ it('never reads or commands a session of another agent', async () => {
   await serving;
 });
 
+it('never starts or reattaches a session of another agent', async () => {
+  const { ensure, stop, serving, client } = await started();
+  const console = client();
+  await console.ready;
+  const ask = (config: unknown) =>
+    console.ensure({ config, resuming: false, restart: true, startSource: null });
+  const refused = 'not a session of agent agent';
+
+  // Another agent's saved session, asked for under that agent's name or this one's.
+  await expect(ask({ session: { sessionId: 'theirs', agentId: 'other' } })).rejects.toThrow(
+    refused
+  );
+  await expect(ask({ session: { sessionId: 'theirs', agentId: 'agent' } })).rejects.toThrow(
+    refused
+  );
+  // A new session made out to another agent.
+  await expect(ask({ session: { sessionId: 'new', agentId: 'other' } })).rejects.toThrow(refused);
+  // A configuration that names no session to check.
+  await expect(ask({})).rejects.toThrow('names no session and agent');
+  expect(ensure).not.toHaveBeenCalled();
+
+  await ask({ session: { sessionId: 'session', agentId: 'agent' } });
+  await ask({ session: { sessionId: 'new', agentId: 'agent' } });
+  expect(ensure).toHaveBeenCalledTimes(2);
+
+  console.close();
+  stop.abort();
+  await serving;
+});
+
 it('forgets a session with no config and waits on one until its config is saved', async () => {
   const { base, links, stop, serving, client, watcher } = await started();
   const forgot = vi.fn();
@@ -302,6 +353,25 @@ it('forgets a session with no config and waits on one until its config is saved'
 it('refuses a client without the secret', async () => {
   const { stop, serving, client } = await started();
   await expect(client('wrong').ready).rejects.toThrow();
+  stop.abort();
+  await serving;
+});
+
+it('compares the secret in constant time, and refuses one that is nearly right', async () => {
+  const { stop, serving, client, control } = await started();
+  const last = control.token.at(-1) === '0' ? '1' : '0';
+  for (const near of [
+    `${control.token.slice(0, -1)}${last}`,
+    control.token.slice(0, -1),
+    `${control.token}0`,
+  ])
+    await expect(client(near).ready).rejects.toThrow();
+  crypto.timingSafeEqual.mockClear();
+  await client().ready;
+  expect(crypto.timingSafeEqual).toHaveBeenCalledWith(
+    Buffer.from(control.token),
+    Buffer.from(control.token)
+  );
   stop.abort();
   await serving;
 });
@@ -405,13 +475,13 @@ it('still starts a session for a Console that sends no start source', async () =
   });
   socket.write(`${JSON.stringify({ token: control.token })}\n`);
   socket.write(
-    `${JSON.stringify({ id: 1, ensure: { config: {}, resuming: false, restart: false } })}\n`
+    `${JSON.stringify({ id: 1, ensure: { config: OWN_CONFIG, resuming: false, restart: false } })}\n`
   );
 
   await vi.waitFor(() =>
     expect(replies).toContainEqual({ id: 1, ok: true, value: { created: true } })
   );
-  expect(ensure).toHaveBeenCalledWith({ config: {}, resuming: false, restart: false });
+  expect(ensure).toHaveBeenCalledWith({ config: OWN_CONFIG, resuming: false, restart: false });
 
   socket.destroy();
   stop.abort();
@@ -490,10 +560,10 @@ it('carries a start source Console could not name as null, which a resume always
   const console = client();
   await console.ready;
 
-  await console.ensure({ config: {}, resuming: true, restart: false, startSource: null });
+  await console.ensure({ config: OWN_CONFIG, resuming: true, restart: false, startSource: null });
 
   expect(ensure).toHaveBeenCalledWith({
-    config: {},
+    config: OWN_CONFIG,
     resuming: true,
     restart: false,
     startSource: null,
@@ -520,7 +590,7 @@ it('starts a session whose start source is newer than this sidecar, as not known
   socket.write(
     `${JSON.stringify({
       id: 1,
-      ensure: { config: {}, resuming: false, restart: false, startSource: 'scheduled' },
+      ensure: { config: OWN_CONFIG, resuming: false, restart: false, startSource: 'scheduled' },
     })}\n`
   );
 
@@ -528,7 +598,7 @@ it('starts a session whose start source is newer than this sidecar, as not known
     expect(replies).toContainEqual({ id: 1, ok: true, value: { created: true } })
   );
   expect(ensure).toHaveBeenCalledWith({
-    config: {},
+    config: OWN_CONFIG,
     resuming: false,
     restart: false,
     startSource: null,
@@ -594,4 +664,37 @@ it('reads as a health ask to a sidecar that predates reasoning, so its connectio
   expect(await console.reasoning('session', null)).toEqual({ state: 'connected' });
   expect(console.isClosed).toBe(false);
   expect(toSidecar).toHaveLength(2);
+});
+
+it('validates attachmentCancel transferId and rejects path traversal', async () => {
+  expect(controlMessageSchema.safeParse({ attachmentCancel: 't1' }).success).toBe(true);
+  expect(controlMessageSchema.safeParse({ attachmentCancel: '../../../tmp/target' }).success).toBe(
+    false
+  );
+  expect(controlMessageSchema.safeParse({ attachmentCancel: '' }).success).toBe(false);
+  expect(controlMessageSchema.safeParse({ attachmentCancel: 'bad/slash' }).success).toBe(false);
+
+  const { stop, serving, control } = await started();
+  const socket = connect(control.port, '127.0.0.1');
+  const replies: unknown[] = [];
+  let buffered = '';
+  socket.on('data', (chunk: Buffer) => {
+    buffered += chunk.toString();
+    let end: number;
+    while ((end = buffered.indexOf('\n')) >= 0) {
+      replies.push(JSON.parse(buffered.slice(0, end)));
+      buffered = buffered.slice(end + 1);
+    }
+  });
+  socket.write(`${JSON.stringify({ token: control.token })}\n`);
+
+  socket.write(`${JSON.stringify({ id: 1, attachmentCancel: 't1' })}\n`);
+  await vi.waitFor(() => expect(replies).toContainEqual({ id: 1, ok: true, value: null }));
+
+  const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
+  socket.write(`${JSON.stringify({ id: 2, attachmentCancel: '../../../tmp/target' })}\n`);
+  await closed;
+
+  stop.abort();
+  await serving;
 });

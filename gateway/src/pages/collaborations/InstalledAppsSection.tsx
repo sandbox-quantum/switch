@@ -26,9 +26,7 @@ import {
   platformLabel,
   sentenceCase,
 } from "../../theme/format";
-import discordIcon from "../../assets/bridges/discord.svg";
-import slackIcon from "../../assets/bridges/slack.svg";
-import telegramIcon from "../../assets/bridges/telegram.svg";
+import { useAppLogos } from "../messaging-apps/appLogos";
 import ClaimChatDialog from "./ClaimChatDialog";
 import DisconnectAppDialog, { installNoun } from "./DisconnectAppDialog";
 
@@ -59,13 +57,6 @@ import DisconnectAppDialog, { installNoun } from "./DisconnectAppDialog";
  * and is turned off by deleting it with the other connections.
  */
 
-// The platform's own logo on its Add button, as Switch Console shows it.
-const PLATFORM_ICON: Record<string, string> = {
-  discord: discordIcon,
-  slack: slackIcon,
-  telegram: telegramIcon,
-};
-
 const ENDED_COLOR: Record<string, "warning" | "default"> = {
   // Ended at the platform rather than here — somebody removed the app, or its
   // token was killed. Warned rather than greyed out, because unlike
@@ -87,6 +78,9 @@ interface Props {
 export default function InstalledAppsSection({ onConnectionsChanged, memberView }: Props) {
   const { data: offered, error: offeredError, refetch: refetchOffered } = useInstallablePlatforms();
   const { data: installs, error: installsError, loading, refetch } = useInstalledApps();
+  // The platform's own logo on its Add button, as Switch serves it for every
+  // platform it ships, so a platform added later is not left without one.
+  const logos = useAppLogos();
   const [starting, setStarting] = useState<string | null>(null);
   const [claim, setClaim] = useState<{
     platform: string;
@@ -220,6 +214,7 @@ export default function InstalledAppsSection({ onConnectionsChanged, memberView 
               <PlatformCard
                 key={platform}
                 platform={platform}
+                logo={logos.get(platform) ?? null}
                 installs={rows.filter((row) => row.platform === platform)}
                 claimable={claimed}
                 canInstall={installable.includes(platform)}
@@ -251,6 +246,8 @@ export default function InstalledAppsSection({ onConnectionsChanged, memberView 
 
 interface CardProps {
   platform: string;
+  // A data: URL for the platform's logo, or null where Switch ships none.
+  logo: string | null;
   installs: InstalledApp[];
   // Set for a claim-based platform, with what this caller may do on it.
   claimable: ClaimablePlatform | undefined;
@@ -264,6 +261,7 @@ interface CardProps {
 
 function PlatformCard({
   platform,
+  logo,
   installs,
   claimable,
   canInstall,
@@ -278,7 +276,6 @@ function PlatformCard({
   const active = installs.filter((row) => row.status === "active");
   const ended = installs.filter((row) => row.status !== "active");
   const canAdd = claimable ? claimable.can_add_chat : canInstall;
-  const icon = PLATFORM_ICON[platform];
 
   return (
     <Paper variant="outlined" sx={{ borderRadius: 2 }}>
@@ -309,10 +306,10 @@ function PlatformCard({
             startIcon={
               starting === platform ? (
                 <CircularProgress size={16} />
-              ) : icon ? (
+              ) : logo ? (
                 <Box
                   component="img"
-                  src={icon}
+                  src={logo}
                   alt=""
                   sx={{ width: 16, height: 16 }}
                 />

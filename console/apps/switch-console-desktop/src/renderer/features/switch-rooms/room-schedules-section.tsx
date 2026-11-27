@@ -1,3 +1,8 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Checkbox } from '@switch-console/chat-ui/primitives/checkbox';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
+import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Pause, Pencil, Play, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
@@ -7,11 +12,6 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { AbsoluteTime } from '@renderer/lib/ui/absolute-time';
-import { Button } from '@renderer/lib/ui/button';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
-import { Input } from '@renderer/lib/ui/input';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import { Textarea } from '@renderer/lib/ui/textarea';
 import type {
   RemoteRoomDetail,
   RemoteRoomSchedule,

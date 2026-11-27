@@ -31,10 +31,12 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 from pydantic import Field, field_validator
 
+from switch_core.agent_display_name import ZERO_WIDTH_SPACE
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     AgentIdentity,
+    MessagePartlySent,
     PlatformAdapter,
     RequestCard,
     RichContent,
@@ -59,7 +61,11 @@ from switch_core.bridges.collaboration.models import (
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import request_summary
-from switch_core.outbound import OutboundPolicy, guarded_async_client
+from switch_core.outbound import (
+    OutboundPolicy,
+    OutboundURLRefused,
+    guarded_async_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +106,23 @@ _ACTIVITY_EMOJI: dict[ActivityMark, str] = {"working": "eyes", "queued": "hourgl
 _REACTION_AS_ASKED = ("REACTION_ALREADY_EXISTS", "REACTION_DOES_NOT_EXIST")
 # A file a person attached, as Zulip writes its link into the message.
 _UPLOAD_LINK = re.compile(r"\[([^\]]*)\]\(/user_uploads/([^)\s]+)\)")
+# What follows `/user_uploads/` in a link Zulip writes: the realm id, one or
+# more random segments, and the file's sanitised, percent-encoded name. The
+# bot fetches it with its own credentials, so nothing that could step out of
+# `/api/v1/user_uploads/` is accepted: no `.` or `..` segment, query or
+# fragment, and no percent-encoded dot, slash, backslash or control character.
+_UPLOAD_PATH = re.compile(
+    r"\d{1,20}/(?:[A-Za-z0-9_-]{1,128}/){1,4}(?!\.{1,2}$)"
+    r"(?:[A-Za-z0-9._~+-]|%(?![01]|2[EeFf]|5[Cc])[0-9A-Fa-f]{2}){1,255}"
+)
 # `@**name**` and `@_**name**` (silent), each optionally `|user_id`.
 _MENTION = re.compile(r"@_?\*\*([^*|]+)(?:\|\d+)?\*\*")
+# The `@` of a mention that notifies: `@**Name**` for a person, `@*group*` for
+# everyone in a user group. The silent `@_**name**` notifies nobody, and the
+# stream-wide ones are `defuse_mass_mentions`'s, which a room-wide post skips.
+_NOTIFYING_MENTION = re.compile(
+    r"@(?=\*)(?!\*\*(?:all|everyone|stream|channel|topic)\*\*)", re.IGNORECASE
+)
 # The mentions that notify everyone in a stream or topic.
 _MASS_MENTION = re.compile(
     r"@_?\*\*(all|everyone|stream|channel|topic)\*\*", re.IGNORECASE
@@ -176,7 +197,7 @@ class ZulipAdapter(PlatformAdapter):
     def __init__(self, *, config: ZulipConnectionConfig) -> None:
         super().__init__()
         self._config = config
-        self._http = _client(config)
+        self._http: httpx.AsyncClient | None = None
         self._bot_user_id: int | None = None
         self._bot_name = ""
         self._message_limit = _DEFAULT_MESSAGE_LIMIT
@@ -196,14 +217,26 @@ class ZulipAdapter(PlatformAdapter):
     # ── Who we are ───────────────────────────────────────────────────────────
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         config = ZulipConnectionConfig.model_validate(connection_config)
-        async with _client(config) as http:
+        # Through the guarded client, as a running bridge connects: checking
+        # `server_url` once and then letting a plain client resolve it again
+        # would let the name point somewhere else before the API key is sent.
+        async with _client(config, outbound_policy) as http:
             try:
                 me = await _call(http, "GET", "/api/v1/users/me")
             except ZulipError as exc:
                 raise BridgeCredentialError(
                     f"Zulip refused the bot: {exc.msg}"
+                ) from exc
+            except OutboundURLRefused as exc:
+                raise BridgeCredentialError(
+                    f"Switch may not connect to Zulip at {config.server_url}: {exc}"
                 ) from exc
             except httpx.HTTPError as exc:
                 raise BridgeCredentialError(
@@ -239,6 +272,7 @@ class ZulipAdapter(PlatformAdapter):
     ) -> None:
         self._on_message = on_message
         self._on_command = on_command
+        self._http = _client(self._config, self.outbound_policy)
         try:
             me = await self._call("GET", "/api/v1/users/me")
         except BaseException:
@@ -276,7 +310,8 @@ class ZulipAdapter(PlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._listener = None
-        await self._http.aclose()
+        if self._http is not None:
+            await self._http.aclose()
 
     async def _listen(self) -> None:
         """Hear the organization through one event queue, made again when it lapses.
@@ -510,6 +545,14 @@ class ZulipAdapter(PlatformAdapter):
         async with _download_client(self.outbound_policy) as download:
             for name, path in links:
                 filename = name or path.rsplit("/", 1)[-1]
+                if not _UPLOAD_PATH.fullmatch(path):
+                    failures.append(
+                        AttachmentFailure(
+                            filename=filename,
+                            reason="its link is not a Zulip upload",
+                        )
+                    )
+                    continue
                 try:
                     grant = await self._call("GET", f"/api/v1/user_uploads/{path}")
                     fetched = await self._download(
@@ -619,20 +662,61 @@ class ZulipAdapter(PlatformAdapter):
             else _new_topic(content, self._topic_limit)
         )
         body = await self._labelled(sender_name, content, room_wide_mention)
+        parts = _split(body, self._message_limit)
         first: str | None = None
-        for part in _split(body, self._message_limit):
-            sent = await self._call(
-                "POST",
-                "/api/v1/messages",
-                data={
-                    "type": "stream",
-                    "to": channel_id,
-                    "topic": topic,
-                    "content": part,
-                },
-            )
+        for index, part in enumerate(parts):
+            try:
+                sent = await self._post_to_topic(channel_id, topic, part)
+            except (ZulipError, httpx.HTTPError) as exc:
+                if first is None:
+                    raise
+                logger.error(
+                    "Only %d of %d parts of a message reached Zulip stream %s: %s",
+                    index,
+                    len(parts),
+                    channel_id,
+                    exc,
+                )
+                await self._note_truncation(channel_id, topic, index, len(parts))
+                raise MessagePartlySent(
+                    platform="Zulip",
+                    first_ref=first,
+                    delivered=index,
+                    total=len(parts),
+                ) from exc
             first = first or str(sent["id"])
         return first
+
+    async def _post_to_topic(
+        self, channel_id: str, topic: str, content: str
+    ) -> dict[str, Any]:
+        return await self._call(
+            "POST",
+            "/api/v1/messages",
+            data={
+                "type": "stream",
+                "to": channel_id,
+                "topic": topic,
+                "content": content,
+            },
+        )
+
+    async def _note_truncation(
+        self, channel_id: str, topic: str, delivered: int, total: int
+    ) -> None:
+        notice = (
+            f"_Only {delivered} of {total} parts of this message could be "
+            "delivered; Zulip refused the rest._"
+        )
+        try:
+            await self._post_to_topic(channel_id, topic, notice)
+        except (ZulipError, httpx.HTTPError) as exc:
+            logger.error(
+                "Could not tell Zulip stream %s that a message is cut short; "
+                "nothing there says so: %s",
+                channel_id,
+                exc,
+            )
 
     async def send_attachment(
         self,
@@ -933,8 +1017,18 @@ class ZulipAdapter(PlatformAdapter):
     # ── Markup ───────────────────────────────────────────────────────────────
 
     def _render_outbound(self, content: str) -> str:
-        """Switch Markdown is Zulip's Markdown for everything Switch writes."""
-        return content
+        """Switch Markdown is Zulip's Markdown for everything Switch writes.
+
+        Except a mention. Switch writes `@**…**` for nobody but the app itself
+        (`render_app_mention`), which notifies no person, so any other
+        `@**Name**` or `@*group*` in a body came from somewhere else — text an
+        agent echoed — and a zero-width space after its `@` shows it as
+        written without notifying anyone."""
+        own = self.render_app_mention(self._bot_name) if self._bot_name else ""
+        pieces = content.split(own) if own else [content]
+        return own.join(
+            _NOTIFYING_MENTION.sub("@" + ZERO_WIDTH_SPACE, piece) for piece in pieces
+        )
 
     def translate_inbound(self, raw_message: str) -> str:
         """Zulip's mentions as the `@name` Switch addresses agents by."""
@@ -949,11 +1043,15 @@ class ZulipAdapter(PlatformAdapter):
         return _MASS_MENTION.sub(lambda match: f"@​{match.group(1)}", text)
 
     async def _call(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        if self._http is None:
+            raise RuntimeError("The Zulip adapter called its API before it started")
         return await _call(self._http, method, path, **kwargs)
 
 
-def _client(config: ZulipConnectionConfig) -> httpx.AsyncClient:
-    return httpx.AsyncClient(
+def _client(config: ZulipConnectionConfig, policy: OutboundPolicy) -> httpx.AsyncClient:
+    """The bot's API client, connecting only where the outbound policy allows."""
+    return guarded_async_client(
+        policy,
         base_url=config.server_url,
         auth=(config.bot_email, config.api_key),
         timeout=httpx.Timeout(30.0),

@@ -1,3 +1,7 @@
+import { Alert, AlertAction, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { format } from 'date-fns';
 import { useState } from 'react';
 import {
@@ -13,10 +17,6 @@ import {
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
-import { Spinner } from '@renderer/lib/ui/spinner';
-import { Switch } from '@renderer/lib/ui/switch';
 import type { WorkspaceService } from '@shared/core/switch-servers/connection-catalog';
 import { cannotWorkOnThisServer, switchStanding, switchTiles } from './workspace-switches';
 

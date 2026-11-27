@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     testing: 'src/testing/index.ts',
+    box: 'src/host/box/index.ts',
     'host-daemon': 'src/host/daemon.ts',
     'shared-host-daemon': 'src/host/shared-daemon.ts',
   },

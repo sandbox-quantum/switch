@@ -1,3 +1,15 @@
+import { Alert, AlertDescription } from '@switch-console/chat-ui/primitives/alert';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogContentArea,
+  DialogHeader,
+  DialogTitle,
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft,
@@ -23,24 +35,12 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { useReadableRoomsInWorkspace } from '@renderer/features/switch-servers/use-listed-rooms';
 import { administersWorkspaceInScope } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { PageHeader } from '@renderer/lib/components/page-header';
+import { openContentLink } from '@renderer/lib/content-link';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { openExternalUrl } from '@renderer/lib/open-external';
-import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogContentArea,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Input } from '@renderer/lib/ui/input';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import type {
   LibraryDocument,
@@ -268,7 +268,7 @@ function ItemBody({ item }: { item: LibraryItem | LibraryDocument }) {
                   key={url}
                   type="button"
                   className="flex w-full cursor-pointer items-center gap-2 px-3.5 py-2.5 text-left text-sm hover:bg-background-1"
-                  onClick={() => void openExternalUrl(url, 'Could not open the link')}
+                  onClick={() => openContentLink(url)}
                 >
                   <span className="min-w-0 flex-1 truncate font-mono text-xs">{url}</span>
                   <ExternalLink className="size-3.5 shrink-0 text-foreground-muted" />

@@ -111,6 +111,7 @@ const {
   probeGateway,
   fetchBridges,
   fetchMe,
+  gatewayFetch,
   ownsOwnerAddressedAgent,
   recordTemplateRun,
   registerKnownAgent,
@@ -1561,6 +1562,8 @@ describe('GitHub connection transport', () => {
         unavailable_reason: entry.unavailable_reason,
         // A server that predates them says none of these.
         unavailable_code: null,
+        sign_in_unavailable_reason: null,
+        server_setup_needed: false,
         read_only_reason: null,
         pass_through: false,
         token_lifetime: null,
@@ -1700,7 +1703,10 @@ describe('GitHub connection transport', () => {
       expect.objectContaining({
         slug: 'datadog',
         status: 'needs_reauthorization',
-        paste: [token, keys],
+        paste: [
+          { ...token, create_url: null },
+          { ...keys, create_url: null },
+        ],
         method: 'token',
         access_note: 'Reaches what your token allows.',
         reconnect_code: 'token_refused',
@@ -1756,6 +1762,8 @@ describe('GitHub connection transport', () => {
         connectable: true,
         unavailable_reason: null,
         unavailable_code: null,
+        sign_in_unavailable_reason: null,
+        server_setup_needed: false,
         read_only_reason: null,
         pass_through: false,
         token_lifetime: null,
@@ -2637,6 +2645,35 @@ describe('sign-up support', () => {
       message: 'Switch gateway returned 502',
       body: '<html>Bad Gateway</html>',
     });
+  });
+
+  it('hands back a page someone uploaded from a route that serves files', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('<!doctype html><title>report</title>', {
+        status: 200,
+        headers: { 'content-type': 'text/html', 'content-disposition': 'attachment' },
+      })
+    );
+    const response = await gatewayFetch(SERVER, '/chats/room-1/media?uri=mxc%3A%2F%2Fx%2Fy', {
+      authenticated: true,
+      servesFiles: true,
+    });
+    expect(await response.text()).toBe('<!doctype html><title>report</title>');
+  });
+
+  it('still says a route that serves files is not routed when a proxy’s 404 page answers', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html>Not Found</html>', {
+        status: 404,
+        headers: { 'content-type': 'text/html' },
+      })
+    );
+    await expect(
+      gatewayFetch(SERVER, '/chats/room-1/media?uri=mxc%3A%2F%2Fx%2Fy', {
+        authenticated: true,
+        servesFiles: true,
+      })
+    ).rejects.toMatchObject({ name: 'NoManagementApiError' });
   });
 
   it('warms the cloud machine with an authenticated POST', async () => {

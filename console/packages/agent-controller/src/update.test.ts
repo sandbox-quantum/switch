@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { installPrefix, isNewer, latestRelease, releasesRepository } from './update';
+import {
+  compareVersions,
+  installPrefix,
+  isNewer,
+  latestRelease,
+  releasesRepository,
+  UnreadableVersionError,
+} from './update';
 
 function release(tag: string, extra: Partial<{ draft: boolean; prerelease: boolean }> = {}) {
   const version = tag.replace('switch-agent-controller-v', '');
@@ -39,6 +46,39 @@ describe('isNewer', () => {
     expect(isNewer('0.31.1-rc.1', '0.31.1-dev.99.g1')).toBe(true);
     expect(isNewer('1.0.0-alpha.1', '1.0.0-alpha')).toBe(true);
     expect(isNewer('1.0.0-alpha', '1.0.0-alpha')).toBe(false);
+  });
+});
+
+describe('compareVersions', () => {
+  it('ranks canary builds by their number, and before the release they preview', () => {
+    expect(compareVersions('0.32.0-canary.3', '0.32.0-canary.2')).toBeGreaterThan(0);
+    expect(compareVersions('0.32.0-canary.10', '0.32.0-canary.9')).toBeGreaterThan(0);
+    expect(compareVersions('0.32.0-canary.rc.1', '0.32.0-canary.9')).toBeGreaterThan(0);
+    expect(compareVersions('0.32.0', '0.32.0-canary.10')).toBeGreaterThan(0);
+    expect(compareVersions('0.32.0-canary.1', '0.31.5')).toBeGreaterThan(0);
+    expect(compareVersions('0.32.0-canary.2', '0.32.0-canary.3')).toBeLessThan(0);
+    expect(compareVersions('0.32.0-canary.2', '0.32.0-canary.2')).toBe(0);
+  });
+
+  it('says which version it cannot read, rather than ranking it', () => {
+    for (const [candidate, current, unreadable] of [
+      ['0.32.0', '1.2', '1.2'],
+      ['0.32.0', '0.31.0+build.5', '0.31.0+build.5'],
+      ['0.32.0', '0.31.0-canary_1', '0.31.0-canary_1'],
+      ['v0.32.0', '0.31.0', 'v0.32.0'],
+    ] as const) {
+      let thrown: unknown;
+      try {
+        compareVersions(candidate, current);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(UnreadableVersionError);
+      expect((thrown as UnreadableVersionError).version).toBe(unreadable);
+      expect((thrown as Error).message).toBe(
+        `'${unreadable}' is not a version this controller can compare: it is not x.y.z or x.y.z-<prerelease>.`
+      );
+    }
   });
 });
 

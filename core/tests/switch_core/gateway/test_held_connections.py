@@ -118,6 +118,9 @@ class _RunningClients:
     def get_by_agent_id(self, agent_id: str) -> Any:
         return self._by_agent.get(agent_id)
 
+    def get_tenant_agent(self, agent_id: str, tenant_id: str) -> Any:
+        return self.get_by_agent_id(agent_id)
+
     def get(self, client_id: str) -> Any:
         return next(
             (c for c in self._by_agent.values() if c.client_id == client_id), None
@@ -282,6 +285,7 @@ def _config() -> SimpleNamespace:
         gateway_tenant_choice_enabled=False,
         gateway_password_login_enabled=True,
         gateway_signup_open=True,
+        gateway_signup_mode="default_tenant",
         gateway_signup_max_per_hour=100,
         gateway_signup_refused_header=None,
         gateway_admin_email="admin@example.invalid",
@@ -289,6 +293,7 @@ def _config() -> SimpleNamespace:
         decision_endpoint_url=None,
         decision_api_key=None,
         decision_bedrock_enabled=False,
+        decision_auto_route_default_on=False,
         **LOGIN_LIMIT_DEFAULTS,
     )
 

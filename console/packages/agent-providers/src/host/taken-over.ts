@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { open, readFile, unlink } from 'node:fs/promises';
+import { open, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { fileMode } from './host-permissions';
 import { replaceFile } from './replace-file';
+import { parseUntrustedJson, readUntrusted } from './untrusted-file';
 
 /**
  * The record a watcher leaves behind when something else took its connection.
@@ -28,6 +29,7 @@ const takenOverSchema = z.strictObject({
 export type TakenOver = z.infer<typeof takenOverSchema>;
 
 const FILE = 'taken-over.json';
+const MAX_BYTES = 64 * 1024;
 
 export async function recordTakenOver(root: string, info: TakenOver): Promise<void> {
   const path = join(root, FILE);
@@ -48,13 +50,11 @@ export async function recordTakenOver(root: string, info: TakenOver): Promise<vo
   }
 }
 
+/** Written by the agent host, so on a machine running agents as users of their own, the agent's. */
 export async function readTakenOver(root: string): Promise<TakenOver | null> {
-  try {
-    return takenOverSchema.parse(JSON.parse(await readFile(join(root, FILE), 'utf8')));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
-  }
+  const path = join(root, FILE);
+  const text = await readUntrusted(path, { maxBytes: MAX_BYTES });
+  return text === null ? null : parseUntrustedJson(text, takenOverSchema, path);
 }
 
 export async function clearTakenOver(root: string): Promise<void> {

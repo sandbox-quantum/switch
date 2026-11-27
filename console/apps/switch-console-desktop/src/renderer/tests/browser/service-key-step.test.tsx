@@ -28,9 +28,9 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
 
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }));
 
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import { serverServiceCalls } from '@renderer/features/switch-servers/service-calls';
 import { ServiceKeyStep } from '@renderer/features/switch-servers/service-key-step';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 
 const API_KEY = 'synthetic-datadog-api-key';
 const APP_KEY = 'synthetic-datadog-application-key';
@@ -48,6 +48,8 @@ function keyed(status: ConnectionCatalogEntry['status']): ConnectionCatalogEntry
     status,
     unavailable_reason: null,
     unavailable_code: null,
+    sign_in_unavailable_reason: null,
+    server_setup_needed: false,
     read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,

@@ -457,6 +457,19 @@ def test_outbound_prefers_a_real_person_over_an_agent_group() -> None:
     assert adapter._translate_mentions_to_slack("@ambiguous") == "<@U123>"
 
 
+def test_outbound_leaves_inline_code_mentions_literal() -> None:
+    adapter, _ = _adapter(groups=[_agent_group("S001", "flint-tracker")])
+    _run(adapter._load_agent_usergroups())
+    adapter.prime_mention_targets({"alice": "U123"})
+
+    assert (
+        adapter._translate_mentions_to_slack(
+            "Hi @alice, try `@flint-tracker what's waiting on me?`"
+        )
+        == "Hi <@U123>, try `@flint-tracker what's waiting on me?`"
+    )
+
+
 # ── Two workspaces in one org ────────────────────────────────────────────────
 #
 # A bot token lists only its own workspace's groups, so each bridge mints its

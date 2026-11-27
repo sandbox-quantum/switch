@@ -58,6 +58,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
 )
+from switch_core.outbound import OutboundPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -362,7 +363,12 @@ class SignalAdapter(PlatformAdapter):
             ) from exc
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         config = SignalConnectionConfig.model_validate(connection_config)
         try:
             async with cls._client(config, timeout=10.0) as client:

@@ -18,6 +18,12 @@ const SETTLE_TIMEOUT_MS = 15_000;
 const STREAMING = new Set(['eventsource', 'websocket']);
 
 /**
+ * The server's live feeds the dashboard's chats read with `fetch` rather than
+ * an EventSource (to resume from where they reached), which stay open the same.
+ */
+const STREAMING_PATHS = new Set(['/gateway/chats/events', '/gateway/chats/activity/events']);
+
+/**
  * How each browser reports a request it cancelled itself: the page navigated
  * away mid-request, or a component unmounted and aborted its fetch. Nothing
  * went wrong on the server.
@@ -78,7 +84,7 @@ export class GatewayUi {
     page.on('pageerror', (error) => this.problems.push(`page error: ${error.message}`));
     page.on('console', (entry) => this.onConsole(entry));
     page.on('request', (request) => {
-      if (!this.isGatewayApi(request.url()) || STREAMING.has(request.resourceType())) return;
+      if (!this.isGatewayApi(request.url()) || this.isStream(request)) return;
       this.inFlight.set(request, this.path());
       this.lastActivityMs = Date.now();
     });
@@ -216,11 +222,58 @@ export class GatewayUi {
     await this.goto('/');
     await expect.poll(() => this.path(), { timeout: 15_000 }).toBe('/login');
     await this.page.getByLabel('Email').fill(account.email);
+    await this.page.getByRole('button', { name: 'Continue with email', exact: true }).click();
     await this.page.getByLabel('Password').fill(account.password);
-    await this.page.getByRole('button', { name: 'Sign in' }).click();
+    await this.page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await this.finishFirstRunSteps();
+    // Where cloud machines are offered, a first visit to a workspace with no
+    // agents opens Get started once, before the page is drawn.
+    await expect
+      .poll(() => this.page.getByRole('main').isVisible(), { timeout: 15_000 })
+      .toBe(true);
+    if (this.path() === '/get-started') {
+      await this.page.getByRole('button', { name: 'Finish later', exact: true }).click();
+    }
     await expect.poll(() => this.path(), { timeout: 15_000 }).toBe(this.landing);
     await this.recordSessionCookie();
     this.signedIn = true;
+  }
+
+  /**
+   * Where the dashboard onboards people (gateway_onboarding), a first sign-in
+   * asks about the person's team and for the license to be accepted before
+   * the app opens: answer the first choice of each question, and accept.
+   */
+  private async finishFirstRunSteps(): Promise<void> {
+    const survey = this.page.getByRole('heading', { name: 'Tell us about your team' });
+    const accept = this.page.getByRole('button', {
+      name: 'I have reviewed and accept the license',
+    });
+    const step = async (): Promise<'survey' | 'license' | 'app' | null> =>
+      (await survey.isVisible())
+        ? 'survey'
+        : (await accept.isVisible())
+          ? 'license'
+          : this.path() !== '/login'
+            ? 'app'
+            : null;
+    await expect.poll(step, { timeout: 30_000 }).not.toBeNull();
+    if ((await step()) === 'survey') {
+      for (const question of ['Company size', 'Your role', 'Number of AI agents']) {
+        await this.page.getByRole('radiogroup', { name: question }).getByRole('radio').first().click();
+      }
+      await this.page
+        .getByRole('group', { name: 'Primary use cases' })
+        .getByRole('checkbox')
+        .first()
+        .check();
+      await this.page.getByRole('button', { name: 'Continue', exact: true }).click();
+      await expect.poll(step, { timeout: 15_000 }).toMatch(/^(license|app)$/);
+    }
+    if ((await step()) === 'license') {
+      await expect.poll(() => accept.isEnabled(), { timeout: 15_000 }).toBe(true);
+      await accept.click();
+    }
   }
 
   async signOut(): Promise<void> {
@@ -385,6 +438,10 @@ export class GatewayUi {
     this.problems.push(
       `${response.request().method()} ${this.pathOf(response.url())} answered ${status} on ${from}`
     );
+  }
+
+  private isStream(request: Request): boolean {
+    return STREAMING.has(request.resourceType()) || STREAMING_PATHS.has(this.pathOf(request.url()));
   }
 
   private isGatewayApi(url: string): boolean {

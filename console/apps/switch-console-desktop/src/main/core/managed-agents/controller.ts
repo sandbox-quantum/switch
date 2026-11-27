@@ -1,12 +1,12 @@
 import {
   parseGoogleCredentials,
   type ProviderLogin,
-  sealingKeyId,
   sealProviderLogin,
   signsInThroughVertex,
   VERTEX_PROVIDERS_ONLY,
   vertexLoginCredential,
 } from '@switch-console/agent-providers';
+import type { MachineLoginInput } from '@switch-console/chat-ui/contracts/machine-logins';
 import { agentMigrationService } from '@main/core/agent-migration/agent-migration';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { hostControllerService } from '@main/core/host-controllers/host-controllers';
@@ -44,9 +44,9 @@ import type {
   AdvancedConfigField,
   ManagedAgentChanges,
   ManagedAgentView,
-  MachineLoginInput,
   MachineDetail,
   MachineLoginOutcome,
+  MachineSealingKey,
   ManagedMachine,
   OwnedMachine,
   ThisComputerReport,
@@ -58,20 +58,74 @@ import { createRPCController } from '@shared/lib/ipc/rpc';
 import {
   type LocalControllers,
   machineDetails,
+  machineLocal,
   ownedMachines,
   preferredFirst,
   thisComputerReport,
 } from './owned-machines';
+import { sealingKeyPins } from './sealing-key-pins';
+import {
+  keyToSealTo,
+  type ResolvedSealingKey,
+  resolveSealingKey,
+  type SealingKeyDeps,
+  sealingKeyView,
+} from './sealing-keys';
+
+/** This Console's own controllers on a server: this computer's, and its SSH hosts'. */
+async function localControllersOn(serverId: string): Promise<LocalControllers> {
+  const [thisComputer, hosts] = await Promise.all([
+    embeddedControllerService.enrolledControllerId(serverId),
+    hostControllerService.recordsOn(serverId),
+  ]);
+  return {
+    thisComputer,
+    sshHosts: hosts.map(({ controllerId, sshHost }) => ({ controllerId, sshHost })),
+  };
+}
+
+const sealingKeyDeps: SealingKeyDeps = {
+  pins: sealingKeyPins,
+  hostKey: async (serverId, sshHost) => {
+    const record = await hostControllerService.record(sshHost, serverId);
+    return record
+      ? hostControllerService.sealingPublicKey(record)
+      : { kind: 'unknown', reason: `Console no longer has a record of ${sshHost}.` };
+  },
+  warn: (message, fields) => log.warn(message, fields),
+};
+
+/**
+ * One of the owner's machines on a server, and the key a login given to it
+ * would be sealed to (`resolveSealingKey`).
+ */
+async function sealingKeyFor(
+  server: SwitchServer,
+  machineId: string
+): Promise<{ controller: ManagementController; key: ResolvedSealingKey }> {
+  const [controllers, local] = await Promise.all([
+    fetchManagementControllers(server),
+    localControllersOn(server.id),
+  ]);
+  const controller = controllers.find((candidate) => candidate.id === machineId);
+  if (!controller) throw new Error('That machine is not one of yours on this server.');
+  return {
+    controller,
+    key: await resolveSealingKey(
+      sealingKeyDeps,
+      server.id,
+      controller,
+      machineLocal(controller, local)
+    ),
+  };
+}
 
 /** The owner's controllers on a server, as `view` makes them; null without agent management. */
 async function controllersOn<T>(
   serverId: string,
   view: (controllers: ManagementController[], local: LocalControllers) => T
 ): Promise<T | null> {
-  const [thisComputer, hosts] = await Promise.all([
-    embeddedControllerService.enrolledControllerId(serverId),
-    hostControllerService.recordsOn(serverId),
-  ]);
+  const local = await localControllersOn(serverId);
   return withReachableServerWorkspaceSession(serverId, async (server) => {
     let controllers;
     try {
@@ -80,10 +134,7 @@ async function controllersOn<T>(
       if (error instanceof AgentManagementUnavailableError) return null;
       throw error;
     }
-    return view(controllers, {
-      thisComputer,
-      sshHosts: hosts.map(({ controllerId, sshHost }) => ({ controllerId, sshHost })),
-    });
+    return view(controllers, local);
   });
 }
 
@@ -193,35 +244,74 @@ export const managedAgentsController = createRPCController({
     ),
 
   /**
+   * The key a login given to one of the owner's machines would be sealed to,
+   * by fingerprint, and whether Console read it from the machine, holds the
+   * server to the key it pinned, would pin it now, or refuses it.
+   */
+  machineSealingKey: (params: {
+    serverId: string;
+    machineId: string;
+  }): Promise<MachineSealingKey> =>
+    withReachableServerWorkspaceSession(params.serverId, async (server) =>
+      sealingKeyView((await sealingKeyFor(server, params.machineId)).key)
+    ),
+
+  /**
+   * Pins the key Switch now sends for a machine in place of the one Console
+   * pinned before, once the user has checked it is the machine's. Only the
+   * key the user was shown, by `fingerprint`, is trusted.
+   */
+  trustMachineSealingKey: (params: {
+    serverId: string;
+    machineId: string;
+    fingerprint: string;
+  }): Promise<void> =>
+    withReachableServerWorkspaceSession(params.serverId, async (server) => {
+      const { controller, key } = await sealingKeyFor(server, params.machineId);
+      if (key.state === 'refused') throw new Error(key.reason);
+      if (key.state !== 'changed')
+        throw new Error(
+          `Switch sends no new key for ${controller.name}: there is nothing to trust.`
+        );
+      if (key.fingerprint !== params.fingerprint)
+        throw new Error(
+          `Switch now sends yet another key for ${controller.name} (${key.fingerprint}). Look at it again before trusting it.`
+        );
+      await sealingKeyPins.set(server.id, controller.id, key.key);
+      log.warn('Trusted a new sealing key for a machine in place of the pinned one', {
+        serverId: server.id,
+        controllerId: controller.id,
+        previousFingerprint: key.previousFingerprint,
+        fingerprint: key.fingerprint,
+      });
+    }),
+
+  /**
    * Gives one of the owner's machines a provider login, sealed here to the
-   * machine's own key so the server only ever holds ciphertext. Answers the
-   * operation the machine takes it up with; `machineLoginOutcome` says how
-   * that went.
+   * machine's own key so the server only ever holds ciphertext: the key read
+   * from the machine, or the one Console pinned the first time, never one the
+   * server swapped in since (`resolveSealingKey`). `fingerprint` is the key
+   * the user was shown; a first login pins it. Answers the operation the
+   * machine takes it up with; `machineLoginOutcome` says how that went.
    */
   giveMachineLogin: (params: {
     serverId: string;
     machineId: string;
     provider: AgentProviderId;
     login: MachineLoginInput;
+    fingerprint: string;
   }): Promise<{ operationId: string }> =>
     withReachableServerWorkspaceSession(params.serverId, async (server) => {
-      const controller = (await fetchManagementControllers(server)).find(
-        (candidate) => candidate.id === params.machineId
-      );
-      if (!controller) throw new Error('That machine is not one of yours on this server.');
-      if (!controller.sealingKey)
-        throw new Error(
-          `${controller.name} cannot be given a login: its controller has no key for one. Update the controller on it.`
-        );
-      if (sealingKeyId(controller.sealingKey.key) !== controller.sealingKey.keyId)
-        throw new Error(`The server sent a key for ${controller.name} that does not match its id.`);
+      const { controller, key } = await sealingKeyFor(server, params.machineId);
+      const publicKey = keyToSealTo(controller.name, key, params.fingerprint);
       const login = await loginToGive(params.provider, params.login);
+      if (key.state === 'first-use') await sealingKeyPins.set(server.id, controller.id, publicKey);
       const { operationId } = await giveMachineLogin(
         server,
         controller.id,
         params.provider,
         sealProviderLogin({
-          publicKey: controller.sealingKey.key,
+          publicKey,
           controllerId: controller.id,
           provider: params.provider,
           login,

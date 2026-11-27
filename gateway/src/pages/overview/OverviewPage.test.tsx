@@ -1,19 +1,38 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { ChatSummary } from "@switch-console/chat-ui/contracts/chats";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary, Member, RoomSummary, Session } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { capabilitiesOf } from "../../data/capabilities";
-import { ALL_OFF } from "../../data/featureFlags";
+import {
+  AGENT_MANAGEMENT,
+  ALL_OFF,
+  type FeatureFlags,
+  GATEWAY_CHATS,
+  GATEWAY_ONBOARDING,
+} from "../../data/featureFlags";
+import WebChatHost from "../chats/WebChatHost";
 import OverviewPage from "./OverviewPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
+
+const chatsClient = vi.hoisted(() => ({
+  listChats: vi.fn(async () => []),
+  listArchivedChats: vi.fn(async () => []),
+  createChat: vi.fn(),
+  sendChatMessage: vi.fn(),
+}));
+vi.mock("../chats/webChatClient", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../chats/webChatClient")>()),
+  webChatsClient: chatsClient,
+}));
 
 type Role = "member" | "workspace_admin" | "org_admin";
 
 /** Ada, signed in to Acme as `role`. An organization admin holds only a
  * member's row here and administers it through the organization. */
-function signedInAs(role: Role) {
+function signedInAs(role: Role, flags: FeatureFlags = ALL_OFF) {
   const tenant = {
     id: "t1",
     slug: "acme",
@@ -35,6 +54,7 @@ function signedInAs(role: Role) {
   };
   vi.mocked(useAuth).mockReturnValue({
     session,
+    user: session.user,
     capabilities: capabilitiesOf(
       session,
       {
@@ -46,7 +66,7 @@ function signedInAs(role: Role) {
         can_delete: false,
         can_manage_data_protection: false,
       },
-      ALL_OFF,
+      flags,
     ),
   } as unknown as ReturnType<typeof useAuth>);
 }
@@ -175,16 +195,159 @@ describe("OverviewPage", () => {
     );
   });
 
-  it("opens each list from its card, and the graph from the page", async () => {
-    signedInAs("member");
+  it.each([
+    ["Chats' Rooms tab where there are Chats", true, "/chats?tab=rooms"],
+    ["the Rooms page where there are none", false, "/rooms"],
+  ])("opens each list from its card, rooms in %s, and the graph from the page", async (_, chats, rooms) => {
+    signedInAs("member", { ...ALL_OFF, [GATEWAY_CHATS]: chats });
     answer(WORKSPACE);
     renderPage();
     await counts();
     expect(card("Agents").getAttribute("href")).toBe("/agents");
     expect(card("Users").getAttribute("href")).toBe("/settings/users");
-    expect(card("Rooms").getAttribute("href")).toBe("/rooms");
+    expect(card("Rooms").getAttribute("href")).toBe(rooms);
     expect(screen.getByRole("link", { name: "View graph" }).getAttribute("href")).toBe(
       "/ecosystem",
     );
+  });
+
+  describe("while getting started is unfinished", () => {
+    const onboarding = { ...ALL_OFF, [GATEWAY_ONBOARDING]: true, [AGENT_MANAGEMENT]: true };
+    const withoutAgentsOfAda = {
+      ...WORKSPACE,
+      "/agents": [200, [agent("b1", "u2")]] as [number, unknown],
+    };
+
+    it("leads back to Get started while the person has no agent of their own", async () => {
+      signedInAs("member", onboarding);
+      answer(withoutAgentsOfAda);
+      renderPage();
+      const link = await screen.findByRole("link", { name: "Get started" });
+      expect(link.getAttribute("href")).toBe("/get-started");
+    });
+
+    it("leaves it out once they have one", async () => {
+      signedInAs("member", onboarding);
+      answer(WORKSPACE);
+      renderPage();
+      await counts();
+      expect(screen.queryByRole("link", { name: "Get started" })).toBeNull();
+    });
+
+    it("leaves it out where getting started on the web is off", async () => {
+      signedInAs("member");
+      answer(withoutAgentsOfAda);
+      renderPage();
+      await counts();
+      expect(screen.queryByRole("link", { name: "Get started" })).toBeNull();
+    });
+  });
+});
+
+describe("OverviewPage where the dashboard has chats", () => {
+  const withChats = { ...ALL_OFF, [GATEWAY_CHATS]: true, [AGENT_MANAGEMENT]: true, [GATEWAY_ONBOARDING]: true };
+  const buddy = { agent_id: "buddy1", name: "switch-buddy-ada", template: null };
+  let fetched: string[] = [];
+
+  /** The workspace's lists as `routes` answers them; the live chat feeds stay open. */
+  function serve(routes: Record<string, unknown>) {
+    fetched = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input).replace(/^\/gateway/, "").split("?")[0];
+        fetched.push(path);
+        if (path.endsWith("/events")) return new Promise<Response>(() => {});
+        if (!(path in routes)) return new Response(JSON.stringify({ detail: `unmocked ${path}` }), { status: 404 });
+        return new Response(JSON.stringify(routes[path]), { status: 200 });
+      }),
+    );
+  }
+
+  function Where() {
+    const location = useLocation();
+    return <p data-testid="where">{location.pathname + location.search}</p>;
+  }
+
+  function renderHome() {
+    render(
+      <MemoryRouter initialEntries={["/overview"]}>
+        <WebChatHost>
+          <Routes>
+            <Route path="/overview" element={<OverviewPage />} />
+            <Route path="*" element={<Where />} />
+          </Routes>
+        </WebChatHost>
+      </MemoryRouter>,
+    );
+  }
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("asks switch-buddy, opening a new chat with it that holds the message, with the chat feeds running", async () => {
+    signedInAs("member", withChats);
+    serve({ "/management/agents": [buddy], "/agents": [], "/rooms": [], "/collaborations": [] });
+    const made = { roomId: "room-new", name: "New Chat", channelType: "direct", agents: [{ id: "buddy1" }] };
+    chatsClient.createChat.mockResolvedValue(made as unknown as ChatSummary);
+    chatsClient.sendChatMessage.mockReturnValue(new Promise(() => {}));
+    renderHome();
+
+    const box = await screen.findByRole("textbox", { name: "Ask switch-buddy anything" });
+    expect(screen.getByRole("heading", { name: "Let’s work together" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create my first agent" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "View graph" })).toBeNull();
+    expect(fetched).toContain("/chats/events");
+
+    fireEvent.change(box, { target: { value: "Set up a room for my team" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("where").textContent).toBe("/chats/agents/buddy1?chat=room-new"),
+    );
+    expect(chatsClient.createChat).toHaveBeenCalledWith(
+      expect.objectContaining({ agentIds: ["buddy1"], name: null, greeting: null }),
+    );
+    expect(chatsClient.sendChatMessage).toHaveBeenCalledWith(
+      "room-new",
+      expect.objectContaining({ body: "Set up a room for my team" }),
+    );
+  });
+
+  it("keeps the message and says why when the chat cannot be made", async () => {
+    signedInAs("member", withChats);
+    serve({ "/management/agents": [buddy], "/agents": [], "/rooms": [], "/collaborations": [] });
+    chatsClient.createChat.mockRejectedValue(new Error("Switch is down."));
+    renderHome();
+
+    const box = (await screen.findByRole("textbox", { name: "Ask switch-buddy anything" })) as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "Hello" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+
+    expect(await screen.findByText(/Could not open the chat with switch-buddy/)).toBeTruthy();
+    expect(box.value).toBe("Hello");
+    expect(chatsClient.sendChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("leads to Get started while the person has no switch-buddy", async () => {
+    signedInAs("member", withChats);
+    serve({ "/management/agents": [] });
+    renderHome();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect to AI" }));
+
+    expect(screen.getByTestId("where").textContent).toBe("/get-started");
+  });
+
+  it("offers no way to set one up where getting started on the web is off", async () => {
+    signedInAs("member", { ...withChats, [GATEWAY_ONBOARDING]: false });
+    serve({ "/management/agents": [] });
+    renderHome();
+
+    const connect = (await screen.findByRole("button", { name: "Connect to AI" })) as HTMLButtonElement;
+    expect(connect.disabled).toBe(true);
   });
 });

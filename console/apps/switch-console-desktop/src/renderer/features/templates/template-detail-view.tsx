@@ -1,16 +1,17 @@
 import {
-  ArrowLeft,
-  Bot,
-  Check,
-  CircleAlert,
-  Copy,
-  DoorOpen,
-  Download,
-  FileText,
-  Loader2,
-  Pencil,
-  Trash2,
-} from 'lucide-react';
+  FactRow,
+  TemplateCreates,
+  TemplateDetailError,
+  TemplateDetailFrame,
+  TemplateDetailHeader,
+  TemplateDetailLoading,
+  TemplateDocument,
+  TemplateProblem,
+} from '@switch-console/chat-ui/components/template-detail';
+import { accessLine, accessOf } from '@switch-console/chat-ui/model/template-visibility';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { DisclosureRow } from '@switch-console/chat-ui/primitives/disclosure-row';
+import { Check, Copy, Download, FileText, Pencil, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -18,20 +19,14 @@ import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { PageHeader } from '@renderer/lib/components/page-header';
+import { openContentLink } from '@renderer/lib/content-link';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
-import { openExternalUrl } from '@renderer/lib/open-external';
-import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
-import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { cn } from '@renderer/utils/utils';
 import { type LoadedTemplate, loadTemplateById } from './agent-template-data';
 import { recordTemplateOpened } from './recent-templates';
-import { accessLine, accessOf } from './template-visibility';
 import { isRequired, paramLabel, typeLabel } from './use/use-template-model';
 
 function useViewParams() {
@@ -78,21 +73,17 @@ function useTemplateName(): string | null {
   return name;
 }
 
-function FactRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-start gap-3 text-sm">
-      <span className="w-28 shrink-0 text-foreground-muted">{label}</span>
-      <div className="min-w-0 flex-1">{children}</div>
-    </div>
-  );
-}
-
+/**
+ * A link the template's author chose, under their label or its address: it
+ * opens through the same confirmation as a link in a chat, which shows where
+ * it really leads.
+ */
 function Link({ url, label }: { url: string; label?: string | null }) {
   return (
     <button
       type="button"
       className="cursor-pointer underline underline-offset-2"
-      onClick={() => void openExternalUrl(url, 'Could not open the page')}
+      onClick={() => openContentLink(url)}
     >
       {label ?? url.replace(/^https?:\/\//, '')}
     </button>
@@ -152,12 +143,6 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-const KIND_LABEL: Record<LoadedTemplate['kind'], string> = {
-  agent: 'Agent',
-  room: 'Room',
-  group: 'Group',
-};
-
 const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   const { serverId, templateId } = useViewParams();
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
@@ -206,34 +191,10 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
     }
   }, [loaded, workspaceId, meId, templateId]);
 
-  const back = (
-    <Button
-      size="sm"
-      variant="ghost"
-      className="-ml-2"
-      onClick={() => navigate('templates', { serverId })}
-    >
-      <ArrowLeft className="size-4" /> All templates
-    </Button>
-  );
+  const back = () => navigate('templates', { serverId });
 
-  if (error) {
-    return (
-      <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
-        <div className="space-y-6 px-8 pb-10">
-          <PageHeader sticky title="Template" back={back} />
-          <p className="text-sm text-destructive">{error}</p>
-        </div>
-      </div>
-    );
-  }
-  if (!loaded) {
-    return (
-      <div className="flex flex-1 items-center justify-center">
-        <Loader2 className="size-5 animate-spin text-foreground-muted" />
-      </div>
-    );
-  }
+  if (error) return <TemplateDetailError error={error} onBack={back} />;
+  if (!loaded) return <TemplateDetailLoading />;
 
   const official = loaded.server.official;
   const mine = !official && me !== null && loaded.server.ownerId === me.id;
@@ -298,37 +259,18 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
   const visibilityLine = accessLine(accessOf(loaded.server));
 
   return (
-    <div className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto bg-background">
-      <div className="mx-auto w-full max-w-[820px] space-y-7 px-8 pb-10">
-        <PageHeader
-          sticky
-          title={loaded.name}
-          description={
-            <span className="flex flex-col gap-1.5">
-              <span>{loaded.description || 'No description.'}</span>
-              <span className="flex items-center gap-2 text-xs text-foreground-passive">
-                <span>{ownerLine}</span>
-                <span>·</span>
-                <span>{visibilityLine}</span>
-                {loaded.server.version > 1 && (
-                  <>
-                    <span>·</span>
-                    <span>Version {loaded.server.version}</span>
-                  </>
-                )}
-              </span>
-            </span>
-          }
-          back={back}
-        >
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="secondary">{KIND_LABEL[loaded.kind]}</Badge>
-            {official && (
-              <Badge variant="outline" title="Comes with Switch">
-                Official
-              </Badge>
-            )}
-            <span className="flex-1" />
+    <TemplateDetailFrame>
+      <TemplateDetailHeader
+        name={loaded.name}
+        description={loaded.description}
+        ownerLine={ownerLine}
+        accessLine={visibilityLine}
+        version={loaded.server.version}
+        kind={loaded.kind}
+        official={official}
+        onBack={back}
+        actions={
+          <>
             {canEdit && (
               <Button
                 type="button"
@@ -386,184 +328,134 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
             >
               Use template
             </Button>
-          </div>
-        </PageHeader>
+          </>
+        }
+      />
 
-        {loaded.problem && (
-          <Alert variant="destructive">
-            <CircleAlert />
-            <AlertDescription>
-              This template cannot be used. {loaded.problem}{' '}
-              {canEdit || canManage
-                ? 'Edit it to fix the document, or remove it.'
-                : 'Ask whoever saved it to fix it.'}
-            </AlertDescription>
-          </Alert>
-        )}
+      {loaded.problem && <TemplateProblem problem={loaded.problem} canFix={canEdit || canManage} />}
 
-        <section className="flex flex-col gap-2.5">
-          <h2 className="text-sm font-semibold text-foreground">What it creates</h2>
-          {loaded.summary.creates.length > 0 ? (
-            <div className="flex flex-col divide-y divide-border overflow-hidden rounded-[11px] border border-border bg-background-1">
-              {loaded.summary.creates.map((c, i) => {
-                const Icon = c.kind === 'room' ? DoorOpen : Bot;
-                return (
-                  <div key={i} className="flex items-center gap-3 px-3.5 py-3">
-                    <span className="flex size-6 shrink-0 items-center justify-center rounded-lg bg-background-2 text-foreground-muted">
-                      <Icon className="size-3.5" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-mono text-[13px] font-medium">{c.name}</div>
-                      <div className="mt-0.5 text-xs leading-snug text-foreground-muted">
-                        {c.description}
-                      </div>
-                    </div>
-                    <span className="shrink-0 text-[11px] text-foreground-passive">
-                      {c.kind === 'room' ? 'Room' : 'Agent'}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="text-sm text-foreground-muted">Nothing yet: the document is empty.</p>
-          )}
-          {singleAgent && (
-            <div className="flex flex-col gap-2 pt-1">
-              {singleAgent.repoUrl && (
-                <FactRow label="Repository">
-                  <Link url={singleAgent.repoUrl} />
-                  <span className="text-foreground-muted">, cloned into its directory</span>
-                </FactRow>
-              )}
-              {singleAgent.sources.length > 0 && (
-                <FactRow label="Sources">
-                  <span className="flex flex-wrap gap-x-1.5">
-                    {singleAgent.sources.map((src, i) => (
-                      <span key={src.url}>
-                        {i > 0 && <span className="text-foreground-muted">· </span>}
-                        <Link url={src.url} label={src.label} />
-                      </span>
-                    ))}
-                  </span>
-                </FactRow>
-              )}
-              <FactRow label="Answers">
-                {ADDRESSING_LABEL[singleAgent.addressing ?? 'owner-agents']}
-              </FactRow>
-              {loaded.room?.kickoff && (
-                <FactRow label="Kickoff">
-                  <span className="text-foreground-muted">Posted as you once the room exists</span>
-                </FactRow>
-              )}
-            </div>
-          )}
-          {!singleAgent && loaded.room?.kickoff && (
-            <FactRow label="Kickoff">
-              <span className="whitespace-pre-wrap">{loaded.room.kickoff.trim()}</span>
-            </FactRow>
-          )}
-        </section>
-
-        {params.length > 0 && (
-          <section className="flex flex-col gap-2.5">
-            <div className="flex items-baseline gap-2">
-              <h2 className="text-sm font-semibold text-foreground">Inputs</h2>
-              <span className="text-xs text-foreground-passive">
-                You fill these in when you use it.
-              </span>
-            </div>
-            <div className="flex flex-col divide-y divide-border overflow-hidden rounded-[11px] border border-border bg-background-1">
-              {params.map((p) => (
-                <div key={p.name} className="flex items-start gap-3 px-3.5 py-2.5 text-[12.5px]">
-                  <span
-                    className={cn(
-                      'w-36 shrink-0 truncate',
-                      paramLabel(p) === p.name && 'font-mono'
-                    )}
-                  >
-                    {paramLabel(p)}
-                  </span>
-                  <span className="w-16 shrink-0 text-[11.5px] text-foreground-passive">
-                    {typeLabel(p.type)}
-                  </span>
-                  <span className="min-w-0 flex-1 leading-snug text-foreground-muted">
-                    {p.description ??
-                      (Array.isArray(p.default)
-                        ? `Tries ${p.default.join(', then ')}`
-                        : p.default !== null
-                          ? `Defaults to ${String(p.default)}`
-                          : '')}
-                  </span>
-                  <span
-                    className={cn(
-                      'shrink-0 text-[11.5px]',
-                      isRequired(p)
-                        ? 'text-amber-600 dark:text-amber-400'
-                        : 'text-foreground-passive'
-                    )}
-                  >
-                    {p.input === 'fixed'
-                      ? 'Set by the template'
-                      : p.input === 'advanced'
-                        ? 'Advanced'
-                        : isRequired(p)
-                          ? 'Required'
-                          : 'Optional'}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
+      <TemplateCreates creates={loaded.summary.creates} summary={null}>
         {singleAgent && (
-          <section className="flex flex-col gap-2.5">
-            <DisclosureRow
-              open={showInstructions}
-              title={showInstructions ? 'Hide the instructions' : 'Show the instructions'}
-              meta={`${singleAgent.instructions.split('\n').length} lines`}
-              onToggle={() => setShowInstructions((o) => !o)}
-            />
-            {showInstructions && (
-              <ExpandableTextBlock text={singleAgent.instructions} collapsedHeight="max-h-none" />
+          <div className="flex flex-col gap-2 pt-1">
+            {singleAgent.repoUrl && (
+              <FactRow label="Repository">
+                <Link url={singleAgent.repoUrl} />
+                <span className="text-foreground-muted">, cloned into its directory</span>
+              </FactRow>
             )}
-          </section>
+            {singleAgent.sources.length > 0 && (
+              <FactRow label="Sources">
+                <span className="flex flex-wrap gap-x-1.5">
+                  {singleAgent.sources.map((src, i) => (
+                    <span key={src.url}>
+                      {i > 0 && <span className="text-foreground-muted">· </span>}
+                      <Link url={src.url} label={src.label} />
+                    </span>
+                  ))}
+                </span>
+              </FactRow>
+            )}
+            <FactRow label="Answers">
+              {ADDRESSING_LABEL[singleAgent.addressing ?? 'owner-agents']}
+            </FactRow>
+            {loaded.room?.kickoff && (
+              <FactRow label="Kickoff">
+                <span className="text-foreground-muted">Posted as you once the room exists</span>
+              </FactRow>
+            )}
+          </div>
         )}
+        {!singleAgent && loaded.room?.kickoff && (
+          <FactRow label="Kickoff">
+            <span className="whitespace-pre-wrap">{loaded.room.kickoff.trim()}</span>
+          </FactRow>
+        )}
+      </TemplateCreates>
 
+      {params.length > 0 && (
+        <section className="flex flex-col gap-2.5">
+          <div className="flex items-baseline gap-2">
+            <h2 className="text-sm font-semibold text-foreground">Inputs</h2>
+            <span className="text-xs text-foreground-passive">
+              You fill these in when you use it.
+            </span>
+          </div>
+          <div className="flex flex-col divide-y divide-border overflow-hidden rounded-[11px] border border-border bg-background-1">
+            {params.map((p) => (
+              <div key={p.name} className="flex items-start gap-3 px-3.5 py-2.5 text-[12.5px]">
+                <span
+                  className={cn('w-36 shrink-0 truncate', paramLabel(p) === p.name && 'font-mono')}
+                >
+                  {paramLabel(p)}
+                </span>
+                <span className="w-16 shrink-0 text-[11.5px] text-foreground-passive">
+                  {typeLabel(p.type)}
+                </span>
+                <span className="min-w-0 flex-1 leading-snug text-foreground-muted">
+                  {p.description ??
+                    (Array.isArray(p.default)
+                      ? `Tries ${p.default.join(', then ')}`
+                      : p.default !== null
+                        ? `Defaults to ${String(p.default)}`
+                        : '')}
+                </span>
+                <span
+                  className={cn(
+                    'shrink-0 text-[11.5px]',
+                    isRequired(p) ? 'text-amber-600 dark:text-amber-400' : 'text-foreground-passive'
+                  )}
+                >
+                  {p.input === 'fixed'
+                    ? 'Set by the template'
+                    : p.input === 'advanced'
+                      ? 'Advanced'
+                      : isRequired(p)
+                        ? 'Required'
+                        : 'Optional'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {singleAgent && (
         <section className="flex flex-col gap-2.5">
           <DisclosureRow
-            open={showDocument}
-            title={showDocument ? 'Hide the document' : 'Show the document'}
-            onToggle={() => setShowDocument((o) => !o)}
+            open={showInstructions}
+            title={showInstructions ? 'Hide the instructions' : 'Show the instructions'}
+            meta={`${singleAgent.instructions.split('\n').length} lines`}
+            onToggle={() => setShowInstructions((o) => !o)}
           />
-          {showDocument && (
-            <div className="overflow-hidden rounded-[11px] border border-border bg-background-1">
-              <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-[11.5px] text-foreground-passive">
-                <span className="min-w-0 flex-1 truncate font-mono">{slug}.template.yaml</span>
-                <span className="shrink-0">
-                  {loaded.server ? 'Stored exactly as uploaded' : 'Bundled with the Console'}
-                </span>
-                <CopyButton text={loaded.document} />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  disabled={busy !== null}
-                  onClick={() => void exportYaml()}
-                >
-                  <Download className="size-3.5" />
-                  Export YAML
-                </Button>
-              </div>
-              <pre className="overflow-x-auto p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap text-foreground-muted">
-                {loaded.document}
-              </pre>
-            </div>
+          {showInstructions && (
+            <ExpandableTextBlock text={singleAgent.instructions} collapsedHeight="max-h-none" />
           )}
         </section>
-      </div>
-    </div>
+      )}
+
+      <TemplateDocument
+        open={showDocument}
+        onToggle={() => setShowDocument((o) => !o)}
+        fileName={`${slug}.template.yaml`}
+        note={loaded.server ? 'Stored exactly as uploaded' : 'Bundled with the Console'}
+        actions={
+          <>
+            <CopyButton text={loaded.document} />
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              disabled={busy !== null}
+              onClick={() => void exportYaml()}
+            >
+              <Download className="size-3.5" />
+              Export YAML
+            </Button>
+          </>
+        }
+        document={loaded.document}
+      />
+    </TemplateDetailFrame>
   );
 });
 

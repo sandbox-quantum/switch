@@ -30,7 +30,7 @@ from switch_core.bridges.agent.protocol.agent_core import (
     AgentRenameRefused,
     AgentRenameResult,
 )
-from switch_core.clients.agent_admin import AgentDeletionRequests
+from switch_core.clients.agent_admin import AgentRequests
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -203,7 +203,7 @@ async def world(session_factory: async_sessionmaker[AsyncSession]) -> _World:
     )
     host._room_store = RoomStore()
     host._resolve_room_meta = resolve_room_meta  # type: ignore[method-assign]
-    host._deletion_requests = AgentDeletionRequests()
+    host._agent_requests = AgentRequests()
     host._agent_store = AgentStore()
     host._external_user_store = ExternalUserStore()
     host._user_store = UserStore()
@@ -424,7 +424,7 @@ class TestAnAgentsRequest:
     can carry it out, by confirming in the same room."""
 
     async def test_a_person_confirms_what_an_agent_asked(self, world: _World) -> None:
-        world.host._deletion_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
+        world.host._agent_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
 
         await _delete(world, "notes-taker confirm", world.owner_chat)
 
@@ -432,7 +432,7 @@ class TestAnAgentsRequest:
         assert "as helper asked" in world.replies[0]
 
     async def test_someone_else_cannot_confirm_it(self, world: _World) -> None:
-        world.host._deletion_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
+        world.host._agent_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
 
         await _delete(world, "notes-taker confirm", world.stranger_chat)
         await _delete(world, "notes-taker confirm", world.unlinked_chat)
@@ -441,7 +441,7 @@ class TestAnAgentsRequest:
         assert world.core.deleted == []
 
     async def test_an_admin_may_confirm_it(self, world: _World) -> None:
-        world.host._deletion_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
+        world.host._agent_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
 
         await _delete(world, "notes-taker confirm", world.admin_chat)
 
@@ -450,14 +450,14 @@ class TestAnAgentsRequest:
     async def test_a_request_from_another_room_does_not_count(
         self, world: _World
     ) -> None:
-        world.host._deletion_requests.add("another-room", world.agent_id, "helper")
+        world.host._agent_requests.add("another-room", world.agent_id, "helper")
 
         await _delete(world, "notes-taker confirm", world.owner_chat)
 
         assert world.core.deleted == []
 
     async def test_a_request_is_used_once(self, world: _World) -> None:
-        world.host._deletion_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
+        world.host._agent_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
 
         await _delete(world, "notes-taker confirm", world.owner_chat)
         await _delete(world, "notes-taker confirm", world.owner_chat)
@@ -469,7 +469,7 @@ class TestAfterADelete:
     async def test_it_is_recorded_in_the_audit_log_with_who_confirmed(
         self, world: _World
     ) -> None:
-        world.host._deletion_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
+        world.host._agent_requests.add(_SWITCH_ROOM_ID, world.agent_id, "helper")
 
         await _delete(world, "notes-taker confirm", world.owner_chat)
 

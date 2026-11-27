@@ -18,6 +18,7 @@ import { AddAgentModal } from '@renderer/features/locations/components/add-agent
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
 import { AddMachineModal } from '@renderer/features/machines/add-machine-modal';
+import { DeviceConsentModal } from '@renderer/features/machines/device-consent-modal';
 import { MoveAgentModal } from '@renderer/features/machines/move-agent-modal';
 import { RenameMachineModal } from '@renderer/features/machines/rename-machine-modal';
 import { AddHostModal } from '@renderer/features/remote-hosts/add-host-modal';
@@ -80,6 +81,7 @@ export const modalRegistry = {
   addAgentModal: createModal(AddAgentModal, { size: 'lg', dismissOnOutsideClick: false }),
   addMachineModal: createModal(AddMachineModal, { size: 'lg' }),
   moveAgentModal: createModal(MoveAgentModal, { size: 'md' }),
+  deviceConsentModal: createModal(DeviceConsentModal, { size: 'md', dismissOnOutsideClick: false }),
   renameMachineModal: createModal(RenameMachineModal, {
     size: 'sm',
     dismissOnOutsideClick: false,

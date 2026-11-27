@@ -5,6 +5,7 @@ import { events } from '@main/lib/events';
 import { registerExternalLinkHandlers } from '@main/utils/externalLinks';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { appCommandNavigateChannel } from '@shared/events/appEvents';
+import { DEVTOOLS_ENABLED } from './devtools';
 import { APP_ORIGIN } from './protocol';
 
 let mainWindow: BrowserWindow | null = null;
@@ -25,6 +26,7 @@ export function createMainWindow(): BrowserWindow {
       sandbox: false,
       // import.meta.dirname resolves to out/main/ at runtime; preload is at out/preload/index.mjs
       preload: join(import.meta.dirname, '../preload/index.mjs'),
+      devTools: DEVTOOLS_ENABLED,
     },
     ...(process.platform === 'darwin'
       ? {
@@ -39,8 +41,8 @@ export function createMainWindow(): BrowserWindow {
           //
           // A transparent `backgroundColor` is what stops Electron painting an
           // opaque sheet over the effect. The renderer must not repaint one
-          // either: `index.html` keys its translucent material on the same
-          // platform test this branch does.
+          // either: its boot script (`renderer/public/theme-boot.js`) keys its
+          // translucent material on the same platform test this branch does.
           vibrancy: 'under-window',
           visualEffectState: 'active',
           backgroundColor: '#00000000',
@@ -56,7 +58,7 @@ export function createMainWindow(): BrowserWindow {
   }
 
   // Route external links to the user’s default browser
-  registerExternalLinkHandlers(mainWindow, import.meta.env.DEV);
+  registerExternalLinkHandlers(mainWindow);
 
   // Show when ready
   mainWindow.once('ready-to-show', () => {

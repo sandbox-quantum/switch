@@ -12,19 +12,25 @@ const agentMigration = vi.hoisted(() => ({
   getOverview: vi.fn<() => Promise<MigrationOverview>>(),
   runNow: vi.fn(async () => {}),
 }));
+const hostControllers = vi.hoisted(() => ({ enable: vi.fn(async () => {}) }));
+const embeddedController = vi.hoisted(() => ({ enable: vi.fn(async () => {}) }));
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { agentMigration },
+  rpc: { agentMigration, hostControllers, embeddedController },
 }));
-vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: {
-    servers: [
-      { id: 'pilot', name: 'Switch Pilot' },
-      { id: 'local', name: 'Local dev' },
-    ],
-  },
-}));
+vi.mock('@renderer/features/switch-servers/switch-servers-store', () => {
+  const servers = [
+    { id: 'pilot', name: 'Switch Pilot', url: 'https://pilot.example.com' },
+    { id: 'local', name: 'Local dev', url: 'http://127.0.0.1:8000' },
+  ];
+  return {
+    switchServersStore: {
+      servers,
+      serverById: (id: string) => servers.find((server) => server.id === id) ?? null,
+    },
+  };
+});
 
 import { MigrationSettingsPage } from '@renderer/features/agent-migration/migration-settings-page';
 
@@ -130,4 +136,42 @@ it('runs a check when asked', async () => {
   )!;
   await act(async () => button.click());
   expect(agentMigration.runNow).toHaveBeenCalled();
+});
+
+it('makes a computer a machine only once the person confirms, then moves its agents', async () => {
+  agentMigration.runNow.mockClear();
+  const el = await render({
+    machines: [
+      {
+        machine: 'dev-vm',
+        sshHost: 'dev-vm',
+        serverId: 'pilot',
+        total: 3,
+        moved: 0,
+        controller: { kind: 'needs-consent', workspaceId: 'ws-1' },
+        checkedAt: '2026-10-07T17:00:00Z',
+        problems: [],
+      },
+    ],
+    leftAlone: 0,
+    unasked: 0,
+    running: false,
+    lastPassAt: '2026-10-07T17:00:00Z',
+  });
+  const buttonNamed = (text: string) =>
+    [...el.querySelectorAll('button')].find((b) => b.textContent === text);
+  expect(el.textContent).toContain('Waiting for you');
+  await act(async () => buttonNamed('Make dev-vm a machine')!.click());
+  expect(hostControllers.enable).not.toHaveBeenCalled();
+  expect(el.textContent).toContain('Make dev-vm a machine?');
+  expect(el.textContent).toContain('Switch Pilot (pilot.example.com) can then start');
+
+  await act(async () => buttonNamed('Turn on')!.click());
+  await vi.waitFor(() => expect(agentMigration.runNow).toHaveBeenCalled());
+  expect(hostControllers.enable).toHaveBeenCalledWith({
+    sshHost: 'dev-vm',
+    serverId: 'pilot',
+    workspaceId: 'ws-1',
+  });
+  expect(embeddedController.enable).not.toHaveBeenCalled();
 });

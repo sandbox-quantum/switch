@@ -1,3 +1,9 @@
+import { SidebarItemMiniButton } from '@switch-console/chat-ui/primitives/sidebar';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import {
   ChevronRight,
   Plus,
@@ -37,7 +43,6 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@renderer/lib/ui/context-menu';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';
 import {
@@ -47,7 +52,6 @@ import {
 import { type AgentPresence, SidebarAgentRow } from './agent-row';
 import { DiscoveryFailureIndicator } from './discovery-failure-indicator';
 import { MigrationProblemIndicator } from './migration-problem-indicator';
-import { SidebarItemMiniButton } from './sidebar-primitives';
 import { agentExpandKey } from './sidebar-store';
 
 /**
@@ -123,6 +127,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
     <ContextMenu>
       <ContextMenuTrigger>
         <SidebarAgentRow
+          agentId={agent.switchAgentId}
           label={label}
           iconUrl={iconUrl}
           serverId={agent.serverId}
