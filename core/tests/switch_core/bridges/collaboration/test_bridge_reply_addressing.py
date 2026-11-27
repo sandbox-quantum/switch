@@ -38,6 +38,9 @@ class _HumanActor:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str | None]] = []
 
+    def admit_message(self, authored: str | None) -> None:
+        return None
+
     async def send_message(
         self, room_id: str, content: str, *, thread_root_id: str | None, **_kw: Any
     ) -> str:

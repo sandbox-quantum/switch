@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleAlert, CircleCheck, KeyRound, TriangleAlert, Upload } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import type { MachineLoginInput } from '../contracts/machine-logins';
 import { type LoginKind, type LoginKindOption, loginHint } from '../model/provider-catalogue';
 import { signInFileCredential } from '../model/seal-login';
@@ -29,6 +29,8 @@ const VERTEX_SOURCES: { value: VertexSource; label: string }[] = [
  * signs in with it there. The app seals and sends it (`give`) and reads how
  * the machine took it up (`outcome`); the app keeps its machines under
  * `[...queryKey, 'machines']`, read again once the provider signs in.
+ * An app that checks which key the login is sealed to says so in `sealing`,
+ * and holds the login back until it has a key it trusts.
  */
 export function GiveMachineLogin({
   machineName,
@@ -40,6 +42,7 @@ export function GiveMachineLogin({
   give,
   outcome: readOutcome,
   failureText,
+  sealing,
   onClose,
 }: {
   machineName: string;
@@ -54,6 +57,8 @@ export function GiveMachineLogin({
   give: (login: MachineLoginInput) => Promise<string>;
   outcome: (operationId: string) => Promise<OperationOutcome>;
   failureText: (error: unknown, fallback: string) => string;
+  /** Which key the login is sealed to (`note`), and whether that key is trusted (`ready`). */
+  sealing: { note: ReactNode; ready: boolean } | null;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -113,6 +118,7 @@ export function GiveMachineLogin({
     giving.isPending || (operationId !== null && (!result || result.state === 'pending'));
   const needsCredential = kind === 'vertex' ? vertexSource === 'key' : kind !== 'this-computer';
   const ready =
+    (sealing === null || sealing.ready) &&
     (!needsCredential || credential.trim() !== '') &&
     (kind !== 'vertex' || (project.trim() !== '' && region.trim() !== ''));
 
@@ -284,6 +290,7 @@ export function GiveMachineLogin({
           disabled={waiting}
         />
       )}
+      {sealing?.note}
       {waiting && operationId !== null && (
         <p className="flex items-center gap-2 text-xs text-foreground-muted" role="status">
           <Spinner className="size-3.5" />

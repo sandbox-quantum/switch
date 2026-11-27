@@ -22,6 +22,8 @@ const TONE_CLASS = {
 export type RosterAgent = {
   id: string;
   label: string;
+  /** The name the server keeps unique, shown beside `label` when it differs (`chatAgentNaming`). */
+  uniqueName: string | null;
   /** Its picture, drawn as the app draws agents. */
   mark: ReactNode;
   /** What the server reports it doing here; undefined where nothing is known. */
@@ -172,7 +174,12 @@ function AgentRow({
         )}
       </span>
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-[13px] text-foreground">{agent.label}</span>
+        <span className="truncate text-[13px] text-foreground">
+          {agent.label}
+          {agent.uniqueName && (
+            <span className="text-foreground-passive"> @{agent.uniqueName}</span>
+          )}
+        </span>
         {detail && <span className="truncate text-xs text-foreground-muted">{detail}</span>}
       </span>
     </>

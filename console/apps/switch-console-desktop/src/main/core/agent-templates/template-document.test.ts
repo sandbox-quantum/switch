@@ -413,6 +413,29 @@ resources:
     expect(templateKind(V2)).toBe('agent');
   });
 
+  it('keeps auto_approve and addressing as written, cases and rooms included', () => {
+    const doc = `
+version: 2
+resources:
+  reviewer:
+    type: agent
+    instructions: Review.
+    provider: claude
+    machine: laptop
+    directory: /work
+    auto_approve:
+      - if: "{fast}"
+        value: true
+    addressing: { anyone_in: [review_room] }
+`;
+    const [agent] = parseTemplateAgents(doc).agents;
+    expect(agent!.permissionsAsWritten).toEqual({
+      autoApprove: [{ if: '{fast}', value: true }],
+      addressing: { anyone_in: ['review_room'] },
+    });
+    expect([agent!.autoApprove, agent!.addressing]).toEqual([null, null]);
+  });
+
   it('reads rooms with their key, condition and the params they read', () => {
     const { rooms } = version2Rooms(V2);
     expect(rooms).toMatchObject([

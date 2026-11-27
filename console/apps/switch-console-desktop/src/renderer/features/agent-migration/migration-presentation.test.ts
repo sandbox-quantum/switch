@@ -34,6 +34,22 @@ describe('migrationMachineState', () => {
     ).toEqual({ tone: 'error', label: 'Needs attention', note: 'ssh: timed out' });
   });
 
+  it('says a machine that is not set up waits for the person, not for Console', () => {
+    expect(
+      migrationMachineState(
+        machine({
+          sshHost: 'dev-vm',
+          moved: 0,
+          controller: { kind: 'needs-consent', workspaceId: 'ws-1' },
+        })
+      )
+    ).toEqual({
+      tone: 'warn',
+      label: 'Waiting for you',
+      note: 'dev-vm is not a machine of this server yet. Its agents move once you make it one; until then Console runs them.',
+    });
+  });
+
   it('tells a server too old for the controller apart from a failure', () => {
     expect(
       migrationMachineState(

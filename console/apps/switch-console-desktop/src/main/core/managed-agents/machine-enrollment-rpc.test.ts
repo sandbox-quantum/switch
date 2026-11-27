@@ -8,6 +8,7 @@ vi.mock('@main/core/embedded-controller/embedded-controllers', () => ({
   embeddedControllerService: {},
 }));
 vi.mock('@main/core/host-controllers/host-controllers', () => ({ hostControllerService: {} }));
+vi.mock('./sealing-key-pins', () => ({ sealingKeyPins: {} }));
 vi.mock('@main/core/workspaces/workspaces-store', () => ({ requireWorkspaceForServer: vi.fn() }));
 vi.mock('@main/core/workspaces/workspace-session', () => ({
   withReachableServerWorkspaceSession: (_serverId: string, run: (server: unknown) => unknown) =>

@@ -91,6 +91,7 @@ export {
   ensureSharedProcess,
   inProcessSupervision,
   liveSupervisor,
+  SDK_SESSIONS_DIR_ENV,
   sessionsBaseIn,
   sharedSessionRoot,
 } from './host/launch';
@@ -114,6 +115,29 @@ export {
   type ProviderRecheckReply,
   type ProviderRecheckRequest,
 } from './host/provider-recheck';
+export {
+  allowInPolicy,
+  changeDevicePolicy,
+  DEVICE_CONSENT_NEEDED_KIND,
+  DEVICE_POLICY_CHANGED_KIND,
+  DEVICE_POLICY_FILE,
+  type DeviceConsentNeed,
+  type DeviceConsentNeededMessage,
+  type DeviceGrant,
+  type DevicePolicy,
+  type DevicePolicyChangedMessage,
+  disallowInPolicy,
+  emptyDevicePolicy,
+  EVERY_AGENT,
+  isDeviceConsentNeededMessage,
+  isDevicePolicyChangedMessage,
+  policyAllowsBypass,
+  allowedDirectories,
+  policyAllowsDirectory,
+  readDevicePolicy,
+  withinDirectory,
+  writeDevicePolicy,
+} from './host/device-policy';
 export { hostStartSources, type HostStartSource } from './host/session-start';
 export {
   type AgentEventStream,
@@ -163,6 +187,7 @@ export {
   SEALED_LOGIN_ALG,
   type SealedLogin,
   sealedLoginSchema,
+  sealingKeyFingerprint,
   sealingKeyId,
   sealProviderLogin,
   type SealingKeyPair,

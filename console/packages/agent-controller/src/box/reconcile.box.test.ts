@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { VERTEX_CREDENTIALS_FILE } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { DefinitionContext } from '../device-policy';
 import { silentLogger } from '../log';
 import { dataLayout } from '../paths';
 import {
@@ -75,11 +76,21 @@ let clock: number;
 let missingProvider: boolean;
 let givenLogin: GivenLogin | null;
 
+/** Box mode's definition context: no device policy, and only the box's providers. */
+function boxContext(): DefinitionContext {
+  return {
+    dataDir: join(dir, 'data'),
+    workspaces: '/data/workspaces',
+    policy: null,
+    offered: PROVIDERS,
+  };
+}
+
 function deps(): ReconcileDeps {
   return {
     store,
     runtime,
-    offered: PROVIDERS,
+    context: boxContext,
     box: true,
     ensureCredentials: async (agentId) => {
       if (runtime.credentials.get(agentId)?.endpoint === endpoint) return false;
@@ -358,7 +369,7 @@ describe('reconcile', () => {
 describe('planReconcile', () => {
   it('holds an agent whose desired state it does not know', () => {
     const actions = planReconcile({
-      offered: PROVIDERS,
+      context: boxContext(),
       box: true,
       assignment: assignment(agent({ desired_state: 'unknown' })),
       rows: [],
@@ -371,7 +382,7 @@ describe('planReconcile', () => {
 
   it('restarts a running watcher that is being turned off', () => {
     const actions = planReconcile({
-      offered: PROVIDERS,
+      context: boxContext(),
       box: true,
       assignment: assignment(agent()),
       rows: [
@@ -407,7 +418,7 @@ describe('an agent whose host is stopped until its next message', () => {
   it('is not started for being down, nor restarted for new credentials', () => {
     const plan = (suspended: Set<string>, credentialsChanged = new Set<string>()) =>
       planReconcile({
-        offered: PROVIDERS,
+        context: boxContext(),
         box: true,
         assignment: assignment(agent()),
         rows: [rowAt(1)],
@@ -692,7 +703,7 @@ describe('a login given while a session is mid-turn', () => {
   const t0 = Date.parse('2026-01-01T01:00:00Z');
   const plan = (observation: AgentObservation, nowMs: number, owedSince?: number) =>
     planReconcile({
-      offered: PROVIDERS,
+      context: boxContext(),
       box: true,
       assignment: assignment(agent()),
       rows: [
@@ -742,7 +753,7 @@ describe('a login given while a session is mid-turn', () => {
   it('leaves a resting agent alone: it takes the new login at its next wake', () => {
     expect(
       planReconcile({
-        offered: PROVIDERS,
+        context: boxContext(),
         box: true,
         assignment: assignment(agent()),
         rows: [

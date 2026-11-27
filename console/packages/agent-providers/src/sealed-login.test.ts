@@ -3,6 +3,7 @@ import {
   generateSealingKeyPair,
   openProviderLogin,
   sealedLoginSchema,
+  sealingKeyFingerprint,
   sealingKeyId,
   sealProviderLogin,
 } from './sealed-login';
@@ -53,6 +54,12 @@ describe('sealed provider logins', () => {
         sealed: { ...sealed, ciphertext: body.toString('base64') },
       })
     ).toThrow(/does not open/);
+  });
+
+  it('gives a key a fingerprint of eight groups of its SHA-256', () => {
+    expect(sealingKeyFingerprint(Buffer.alloc(32).toString('base64'))).toBe(
+      '6668 7aad f862 bd77 6c8f c18b 8e9f 8e20'
+    );
   });
 
   it('names a key by the same id Core computes', () => {

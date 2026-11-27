@@ -103,6 +103,7 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import MENTIONS_KEY, AddressingResolver
+from switch_core.delivery.send_limits import MessageTooLong, SendRateLimited
 from switch_core.messages.notify import MessageListener
 from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import MESSAGES_SENT
@@ -2082,7 +2083,12 @@ class ChatService:
 
         Switch Trust checks the text and each file first, as it does a
         message from any other platform, and a refusal of either raises
-        ChatError TRUST_BLOCKED with nothing posted.
+        ChatError TRUST_BLOCKED with nothing posted. Before that, a message
+        longer than any may be raises MESSAGE_TOO_LONG, and one sent faster
+        than one sender's allowance RATE_LIMITED (`send_limits.py`). The
+        length is of `body` as typed: the notes and mentions Switch adds to it
+        below do not count against the person. A retry of a send already
+        posted is neither charged nor checked again (`_admitted_and_checked`).
         """
         mentions = sorted(set(mention_agent_ids))
         people = sorted(set(mention_user_ids))
@@ -2109,13 +2115,14 @@ class ChatService:
         people = sorted(
             {*people, *(span.id for span in mention_spans if span.kind == "user")}
         )
-        body = await self._checked_by_trust(
+        body = await self._admitted_and_checked(
             tenant_id,
             user,
             room_id,
             request_id=request_id,
             body=body,
             upload_ids=upload_ids,
+            command=None if command is None else command[0],
         )
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, client = await self.require_member(session, tenant_id, user, room_id)
@@ -2241,8 +2248,8 @@ class ChatService:
                     content=content,
                     client_txn_id=f"{request_id}:{index}",
                 )
-                routed.append(
-                    await self._router.store(
+                try:
+                    stored = await self._router.store(
                         session,
                         tenant_id=tenant_id,
                         room_id=room.id,
@@ -2250,7 +2257,12 @@ class ChatService:
                         message=message,
                         attachments=attachments_in(content),
                     )
-                )
+                except MessageTooLong as error:
+                    # Within the limit as typed (`_admitted_and_checked`),
+                    # and past even the room a row keeps for the notes and
+                    # mentions Switch wrote into it (`SWITCH_ADDITIONS_MAX_CHARS`).
+                    raise ChatError(422, "MESSAGE_TOO_LONG", str(error)) from error
+                routed.append(stored)
                 posted.append(message)
             # A command is not something said, so it is neither metered nor
             # reported as a message, as one typed on a platform is not.
@@ -2330,6 +2342,10 @@ class ChatService:
         a typed `!interrupt`, so the agents' own command handling, addressing
         gate and in-room acknowledgement apply unchanged. The addressing check
         here only turns a refusal into an answer instead of a room message.
+        Drawn from the user's message allowance as the same command typed is
+        (`_admit`): a retry, reset or compact sets the agent to work, and only
+        an interrupt draws nothing, so the agent can always be stopped. A
+        retry of a request already made is not charged again.
         """
         if (command == "retry") != (message_id is not None):
             raise ChatError(
@@ -2382,6 +2398,10 @@ class ChatService:
                         "NOTHING_RUNNING_HERE",
                         f"{agent.name}'s current turn is not in this chat.",
                     )
+            args = f"@{agent.name}" + (
+                f" {message_id}" if message_id is not None else ""
+            )
+            self._admit_message(user.id, args, command)
 
             if not await self._claim(
                 session,
@@ -2413,8 +2433,7 @@ class ChatService:
                     event_type=COMMAND_EVENT_TYPE,
                     content={
                         "command": command,
-                        "args": f"@{agent.name}"
-                        + (f" {message_id}" if message_id is not None else ""),
+                        "args": args,
                         "user_id": client.transport_user_id,
                         "user_name": user.name,
                     },
@@ -2528,7 +2547,7 @@ class ChatService:
         )
         return sorted(rows, key=lambda m: m.seq)
 
-    async def _checked_by_trust(
+    async def _admitted_and_checked(
         self,
         tenant_id: str,
         user: User,
@@ -2537,17 +2556,24 @@ class ChatService:
         request_id: str,
         body: str,
         upload_ids: list[str],
+        command: str | None,
     ) -> str:
-        """The body to post once Switch Trust has checked it and the files
+        """The body to post once the sender's allowance has let it in
+        (`_admit`) and Switch Trust has checked it and the files
         (`trust/attachments.py`): redacted if it redacted the text, with a
-        note for anything flagged or not checked. Runs before the send's own
-        transaction, so no database work waits on Switch Trust."""
-        if not await trust_is_active(self._trust_client, tenant_id):
-            return body
+        note for anything flagged or not checked. A retry of a send already
+        posted is neither: `send` answers it with what was posted the first
+        time, so it is never refused for a pace the first attempt used up.
+        Admitted before Switch Trust is asked, so a refusal costs no check,
+        and run before the send's own transaction, so no database work waits
+        on Switch Trust."""
+        active = await trust_is_active(self._trust_client, tenant_id)
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, _ = await self.require_member(session, tenant_id, user, room_id)
             if await self._operation(session, user.id, request_id) is not None:
-                # A retry: `send` answers it with what was posted the first time.
+                return body
+            self._admit_message(user.id, body, command)
+            if not active:
                 return body
             files: list[tuple[bytes, str, str]] = []
             for upload_id in upload_ids:
@@ -2646,6 +2672,21 @@ class ChatService:
             notes_text = "\n".join(notes)
             body = f"{body}\n\n{notes_text}" if body.strip() else notes_text
         return body
+
+    def _admit_message(self, user_id: str, body: str, command: str | None) -> None:
+        """Refuse a message too long or sent too fast, as a ChatError. A
+        typed room command is held to the same allowance, except one that
+        stops an agent (`SendLimits.admit_command`)."""
+        limits = self._router.send_limits
+        try:
+            if command is None:
+                limits.admit(user_id, body, actor="human")
+            else:
+                limits.admit_command(user_id, command, body, actor="human")
+        except MessageTooLong as error:
+            raise ChatError(422, "MESSAGE_TOO_LONG", str(error)) from error
+        except SendRateLimited as error:
+            raise ChatError(429, "RATE_LIMITED", str(error)) from error
 
     async def _staged_upload(
         self, session: AsyncSession, user_id: str, room_id: str, upload_id: str

@@ -5,7 +5,7 @@ it has been added to the team, and Mattermost has by then already dropped it
 into the team's default channels. Adoption used to depend entirely on those
 `user_added` broadcasts, so a join was noticed only when some *other* agent's
 socket happened to be listening — the first agent on an instance bridged
-nothing at all, and the second one dragged Town Square and Off-Topic in behind
+nothing at all, and the second one dragged the first one's channels in behind
 it.
 
 So the adapter asks Mattermost which channels the bot is in rather than waiting
@@ -76,22 +76,23 @@ def _run(adapter: MattermostAdapter, agent: str = "worker") -> None:
 
 
 def test_bridges_every_channel_the_bot_is_already_in() -> None:
-    # The exact shape of a first agent's membership: Mattermost put it in both
-    # defaults at team-join, and nobody was listening when it happened.
+    # Channels the bot was added to while nobody was listening. The team's
+    # default channels, which Mattermost puts it in itself, are another matter
+    # (test_mattermost_team_default_channels.py).
     adapter = _adapter()
     endpoint, seen = _wire(
         adapter,
         [
-            {"id": "c-town", "type": "O", "display_name": "Town Square"},
-            {"id": "c-off", "type": "O", "display_name": "Off-Topic"},
+            {"id": "c-eng", "type": "O", "name": "eng", "display_name": "Engineering"},
+            {"id": "c-ops", "type": "O", "name": "ops", "display_name": "Ops"},
         ],
     )
 
     _run(adapter)
 
     assert endpoint.calls == [("bot-1", "team-1")]
-    assert [join.channel_id for join in seen] == ["c-town", "c-off"]
-    assert [join.channel_name for join in seen] == ["Town Square", "Off-Topic"]
+    assert [join.channel_id for join in seen] == ["c-eng", "c-ops"]
+    assert [join.channel_name for join in seen] == ["Engineering", "Ops"]
     assert {join.agent_name for join in seen} == {"worker"}
 
 

@@ -1,3 +1,4 @@
+import { checkHostKey } from '@main/core/ssh/host-keys/production-host-keys';
 import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-connection-manager';
 import { resolveSshConnectConfig } from './resolve-ssh-connect-config';
 
@@ -10,19 +11,23 @@ import { resolveSshConnectConfig } from './resolve-ssh-connect-config';
  * host/port/username in the transient config are fallbacks: the real values
  * (and identity/agent) are resolved from the alias via `ssh -G`. Auth goes
  * through the SSH agent — Switch Console stores no credentials of its own.
+ * Every connection checks the host's key (`checkHostKey`).
  */
 export function registerSshResolver(connectionId: string, sshHost: string): void {
   sshConnectionManager.register(connectionId, () =>
-    resolveSshConnectConfig({
-      kind: 'transient',
-      config: {
-        name: sshHost,
-        host: sshHost,
-        port: 22,
-        username: '',
-        sshConfigAlias: sshHost,
-        authType: 'agent',
+    resolveSshConnectConfig(
+      {
+        kind: 'transient',
+        config: {
+          name: sshHost,
+          host: sshHost,
+          port: 22,
+          username: '',
+          sshConfigAlias: sshHost,
+          authType: 'agent',
+        },
       },
-    })
+      checkHostKey
+    )
   );
 }

@@ -115,6 +115,14 @@ describe('deriveHostStatus', () => {
       expect(status.kind).toBe('auth-failed');
       expect(status.label).toBe('SSH auth failed');
     });
+
+    it('distinguishes a refused host key, which waits on the user', () => {
+      const status = deriveHostStatus(reachability('untrusted'), plan([step('git', 'satisfied')]));
+
+      expect(status.kind).toBe('host-key-refused');
+      expect(status.label).toBe('Host key refused');
+      expect(isHostUsable(status)).toBe(false);
+    });
   });
 
   describe('not knowing is its own answer', () => {

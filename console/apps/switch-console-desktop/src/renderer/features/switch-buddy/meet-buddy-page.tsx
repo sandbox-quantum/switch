@@ -4,6 +4,7 @@ import { Button } from '@switch-console/chat-ui/primitives/button';
 import { TermInfo } from '@switch-console/chat-ui/primitives/term-info';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { MachineConsentPrompt } from '@renderer/features/machines/turn-on-machine';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
@@ -14,6 +15,7 @@ import { findBuddy, firstNameOf } from './buddy-identity';
 import { buddyPerson } from './buddy-person';
 import { buddyProviders, startButtons } from './buddy-providers';
 import { reportBuddyStep } from './buddy-telemetry';
+import { ComputerNote } from './provider-cards';
 import { ProviderSetup } from './provider-setup';
 import { useStartBuddy } from './use-start-buddy';
 import { useThisComputer } from './use-this-computer';
@@ -35,8 +37,11 @@ const CHECK_PATIENCE_MS = 45_000;
  * there. Someone who already has a buddy (replaying these pages) is offered
  * to open it instead.
  *
- * This computer starts running agents for the workspace as the page opens, so
- * what its providers are ready for is known by the time it has been read.
+ * A computer that does not run agents for the workspace yet says so here,
+ * with the button that turns it on once the person confirms; until then the
+ * providers Console found as onboarding opened are what the page goes by.
+ * Picking one of those while it is off asks the same confirmation, and starts
+ * the buddy with it once the computer is on.
  */
 export const MeetBuddyPage = observer(function MeetBuddyPage({
   serverId,
@@ -100,6 +105,19 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
     computer,
     onCreated,
   });
+  // A provider picked while this computer runs no managed agents: it waits
+  // on the person turning the computer on, and is forgotten if they do not.
+  const [pickedWhileOff, setPickedWhileOff] = useState<string | null>(null);
+  const asking = computer.kind === 'off' ? pickedWhileOff : null;
+  const pick = (providerId: string) => {
+    if (computer.kind === 'off') setPickedWhileOff(providerId);
+    else start(providerId);
+  };
+  const turnOnAndStart = (providerId: string) => {
+    setPickedWhileOff(null);
+    void thisComputer.turnOn();
+    start(providerId);
+  };
   const firstName = firstNameOf(buddyPerson(serverId).name);
   // The opening plays once: back from setting up a provider, it is at rest.
   const introPlayed = useRef(false);
@@ -176,17 +194,39 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
         }}
         after={
           existing ? null : (
-            <StartChoices
-              checking={computer.kind !== 'failed' && !checked}
-              ready={ready}
-              starting={starting}
-              onStart={start}
-              onSetUp={openSetup}
-              onSkip={skip}
-            />
+            <div className="flex flex-col gap-3">
+              <StartChoices
+                checking={computer.kind !== 'failed' && !checked}
+                ready={ready}
+                starting={starting}
+                onStart={pick}
+                onSetUp={openSetup}
+                onSkip={skip}
+              />
+              {asking !== null && (
+                <MachineConsentPrompt
+                  serverId={serverId}
+                  label="This computer"
+                  sshHost={null}
+                  confirmLabel="Turn on and start"
+                  onCancel={() => setPickedWhileOff(null)}
+                  onConfirm={() => turnOnAndStart(asking)}
+                />
+              )}
+            </div>
           )
         }
       />
+      {computer.kind === 'off' && asking === null && (
+        <div className="flex justify-center">
+          <ComputerNote
+            serverId={serverId}
+            computer={computer}
+            onRetry={thisComputer.retry}
+            onTurnOn={() => void thisComputer.turnOn()}
+          />
+        </div>
+      )}
       {computer.kind === 'failed' && (
         <div className="flex flex-col items-center gap-2">
           <p role="alert" className="text-center text-sm text-destructive">

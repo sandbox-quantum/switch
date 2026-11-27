@@ -1,5 +1,5 @@
 import { createContext, type ComponentType, type ReactNode, useContext } from 'react';
-import type { ChatAgent, ChatCommand, ChatSummary } from './contracts/chats';
+import type { ChatAgent, ChatAttachment, ChatCommand, ChatSummary } from './contracts/chats';
 import type { AgentActivities } from './stores/chat-activity-store';
 import type { ChatsStore } from './stores/chats-store';
 
@@ -8,6 +8,12 @@ export type ChatPerson = { userId: string; name: string; email: string | null };
 export type ChatToast = { title: string; description?: string; variant?: 'destructive' };
 
 export type AgentAvatarProps = {
+  /**
+   * The agent drawn, when known: only the person's own switch-buddy wears
+   * switch-buddy's picture. Null for an agent the app draws before it exists,
+   * whose picture the app chose itself.
+   */
+  agentId?: string | null;
   name: string;
   iconUrl: string | null;
   serverId: string;
@@ -36,8 +42,22 @@ export type ChatHost = {
     roomId: string,
     uri: string
   ) => Promise<{ mimeType: string; data: string }>;
-  /** Opens a link from a message; the chat never navigates the page itself. */
+  /**
+   * Saves an attachment to the person's computer. Anyone in a room can name a
+   * file, so the host saves it under `attachmentFilename` and never renders it.
+   */
+  saveAttachment: (serverId: string, roomId: string, attachment: ChatAttachment) => Promise<void>;
+  /**
+   * Follows any link in a message, whatever its scheme; the chat never
+   * navigates the page itself. The host decides which links it opens and how.
+   */
   openLink: (href: string) => void;
+  /**
+   * Whether `agentId` is the person's own switch-buddy on this server. Only it
+   * goes by switch-buddy's name and picture; any other agent whose name reads
+   * as switch-buddy's is shown by its unique name.
+   */
+  isOwnBuddy: (serverId: string, agentId: string) => boolean;
   /** Whether a dialog is open over the chat, so typing should not go to its composer. */
   isModalOpen: () => boolean;
   toast: (toast: ChatToast) => void;

@@ -5,7 +5,7 @@ import {
   type RosterPerson,
   RoomRoster,
 } from "@switch-console/chat-ui/components/room-roster";
-import { type ChatSummary, chatAgentLabel } from "@switch-console/chat-ui/contracts/chats";
+import { type ChatSummary, chatAgentNaming } from "@switch-console/chat-ui/contracts/chats";
 import { AgentAvatar, useChatHost } from "@switch-console/chat-ui/host";
 import { Button } from "@switch-console/chat-ui/primitives/button";
 import {
@@ -156,7 +156,7 @@ const WebRoomRoster = observer(function WebRoomRoster({
   serverId: string;
   chat: ChatSummary;
 }) {
-  const { chats } = useChatHost();
+  const { chats, isOwnBuddy } = useChatHost();
   const { user, session } = useAuth();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -194,16 +194,19 @@ const WebRoomRoster = observer(function WebRoomRoster({
   const agentRows: RosterAgent[] = agentIds.map((agentId) => {
     const listed = byId.get(agentId);
     const inChat = chatAgents.get(agentId);
-    const label = inChat
-      ? chatAgentLabel(inChat)
-      : (listed?.display_name ?? listed?.name ?? "Agent");
+    const named = inChat ?? (listed ? { name: listed.name, displayName: listed.display_name ?? null } : null);
+    const { label, uniqueName } = named
+      ? chatAgentNaming(named, isOwnBuddy(serverId, agentId))
+      : { label: "Agent", uniqueName: null };
     const ownedHere = listed?.owner_id !== null && listed?.owner_id === viewerId;
     return {
       id: agentId,
       label,
+      uniqueName,
       mark: (
         <span className="flex size-7 shrink-0 items-center justify-center">
           <AgentAvatar
+            agentId={agentId}
             name={label}
             iconUrl={inChat?.iconUrl ?? listed?.icon_url ?? null}
             serverId={serverId}

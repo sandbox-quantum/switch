@@ -60,6 +60,18 @@ paths = [
   '''(dash/apps/switchdash-desktop|console/apps/switch-console-desktop)/src/main/lib/file-logger\.test\.ts$''',
 ]
 
+[[allowlists]]
+description = "SSH public host keys in Console's host-key tests"
+# The fixtures are OpenSSH public keys (ed25519 and ECDSA), which are published
+# by design and are not credentials. Each match must be a public-key blob in one
+# of the host-key test files (condition = "AND"), so a real secret anywhere else,
+# or a non-key value in those files, is still scanned.
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^console/apps/switch-console-desktop/src/main/core/ssh/host-keys/[^/]+\.test\.ts$''']
+regexTarget = "match"
+regexes = ['''AAAA(?:C3NzaC1lZDI1NTE5|E2VjZHNhLXNoYTItbmlzdHA)[A-Za-z0-9+/]+={0,2}''']
+
 # Hosted agents v2 test fixtures. Each entry below needs BOTH its file path and
 # its exact line (condition = "AND"), so the same text anywhere else, or any
 # other value in the same file, is still scanned. Paths of files since moved or

@@ -253,6 +253,7 @@ async def _fake_collab_core_full(
             thread_root_id: str | None = None,
             metered: bool = False,
             extra_content: dict[str, Any] | None = None,
+            authored: str | None = None,
         ) -> str:
             # Use the real provisioning to send the message
             from switch_core.messages.row import message_row, new_event_id
@@ -291,6 +292,7 @@ async def _fake_collab_core_full(
                 return event_id
 
         actor = SimpleNamespace(
+            admit_message=lambda _authored: None,
             send_message=send_message,
             client_id=f"fake-client-{external_user_id}",
             transport_user_id=f"@fake-{external_user_id}:switch.test",

@@ -24,6 +24,16 @@ def test_unset_gateway_public_url_is_allowed() -> None:
     assert _config().gateway_public_url is None
 
 
+@pytest.mark.parametrize("blank", ["", " "])
+def test_blank_public_urls_are_unset(blank: str) -> None:
+    """The standalone compose file passes `GATEWAY_PUBLIC_URL: ${...:-}`, which
+    is an empty string when .env leaves it out. That is no address, not an
+    address that is neither https nor loopback."""
+    config = _config(gateway_public_url=blank, messaging_public_url=blank)
+    assert config.gateway_public_url is None
+    assert config.messaging_public_url is None
+
+
 @pytest.mark.parametrize(
     "url",
     ["https://gateway.example", "https://gateway.example/", "http://localhost:8000"],

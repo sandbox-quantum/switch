@@ -19,11 +19,11 @@ import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { openContentLink } from '@renderer/lib/content-link';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
-import { openExternalUrl } from '@renderer/lib/open-external';
 import { cn } from '@renderer/utils/utils';
 import { type LoadedTemplate, loadTemplateById } from './agent-template-data';
 import { recordTemplateOpened } from './recent-templates';
@@ -73,12 +73,17 @@ function useTemplateName(): string | null {
   return name;
 }
 
+/**
+ * A link the template's author chose, under their label or its address: it
+ * opens through the same confirmation as a link in a chat, which shows where
+ * it really leads.
+ */
 function Link({ url, label }: { url: string; label?: string | null }) {
   return (
     <button
       type="button"
       className="cursor-pointer underline underline-offset-2"
-      onClick={() => void openExternalUrl(url, 'Could not open the page')}
+      onClick={() => openContentLink(url)}
     >
       {label ?? url.replace(/^https?:\/\//, '')}
     </button>

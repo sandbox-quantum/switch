@@ -180,6 +180,7 @@ describe('GiveMachineLogin', () => {
       give: vi.fn(async () => 'op-9'),
       outcome: vi.fn(async (): Promise<OperationOutcome> => ({ state: 'succeeded' })),
       failureText: (_error, fallback) => fallback,
+      sealing: null,
       onClose: vi.fn(),
       ...extra,
     };

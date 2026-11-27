@@ -1,7 +1,7 @@
 import { MoreVertical, RotateCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { ReactNode } from 'react';
-import { type ChatSummary, chatAgentLabel } from '../contracts/chats';
+import { type ChatSummary, chatAgentNaming } from '../contracts/chats';
 import { AgentAvatar, useChatHost } from '../host';
 import { failureText } from '../model/failures';
 import { Button } from '../primitives/button';
@@ -22,24 +22,41 @@ const STREAM_LABEL = {
   live: null,
 } as const;
 
-export function ChatHeaderTitle({ serverId, chat }: { serverId: string; chat: ChatSummary }) {
+/** Who and where: the chat's agent, named as its rows name it (`chatAgentNaming`), and the chat's name. */
+export const ChatHeaderTitle = observer(function ChatHeaderTitle({
+  serverId,
+  chat,
+}: {
+  serverId: string;
+  chat: ChatSummary;
+}) {
+  const { isOwnBuddy } = useChatHost();
   const agent = chat.agents[0] ?? null;
+  const naming = agent ? chatAgentNaming(agent, isOwnBuddy(serverId, agent.id)) : null;
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm">
-      {agent && (
-        <AgentAvatar
-          name={chatAgentLabel(agent)}
-          iconUrl={agent.iconUrl}
-          serverId={serverId}
-          size={18}
-        />
+      {agent && naming && (
+        <>
+          <AgentAvatar
+            agentId={agent.id}
+            name={naming.label}
+            iconUrl={agent.iconUrl}
+            serverId={serverId}
+            size={18}
+          />
+          <span className="truncate text-foreground-muted">
+            {naming.label}
+            {naming.uniqueName !== null && (
+              <span className="text-foreground-passive"> @{naming.uniqueName}</span>
+            )}
+          </span>
+        </>
       )}
-      {agent && <span className="truncate text-foreground-muted">{chatAgentLabel(agent)}</span>}
       <span className="text-foreground-passive">/</span>
       <span className="truncate font-medium">{chat.name}</span>
     </div>
   );
-}
+});
 
 export const ChatHeaderControls = observer(function ChatHeaderControls({
   serverId,

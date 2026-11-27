@@ -74,6 +74,7 @@ jobs:
       artifacts: ${{ steps.filter.outputs.artifacts }}
       migrations: ${{ steps.filter.outputs.migrations }}
       chart: ${{ steps.filter.outputs.chart }}
+      deploy_hardening: ${{ steps.filter.outputs.deploy_hardening }}
       decision: ${{ steps.filter.outputs.decision }}
       observability: ${{ steps.filter.outputs.observability }}
       hosted_controller: ${{ steps.filter.outputs.hosted_controller }}
@@ -195,6 +196,18 @@ jobs:
               - 'scripts/release_charts.sh'
               - 'scripts/check_chart_decision.py'
               - '.github/workflows/switch-release.yml'
+            # What the deployment files promise about hardening (the gateway's
+            # security headers, images pinned by digest, and the rest
+            # check_deploy_hardening.py names), CI's own docker run images
+            # included.
+            deploy_hardening:
+              - *shared
+              - 'deploy/remote/helm/**'
+              - 'deploy/shared_resources/**'
+              - 'deploy/local/**'
+              - '.env.example'
+              - '.github/workflows/**'
+              - 'scripts/check_deploy_hardening.py'
             # Spans every tree, so it gets its own filter rather than riding
             # any one of them. Includes the files whose versions the registry is
             # checked against, so a release bump cannot land without the check.
@@ -244,6 +257,41 @@ jobs:
       - name: E2E surface snapshot is current
         run: uv run --project core python scripts/e2e_surface.py --check
 
+  # Known advisories in every package core/uv.lock pins, runtime and dev. A
+  # job of its own, so that an advisory published against a dependency, which
+  # can turn a PR red without any change in it, says so in the check's name
+  # rather than looking like a failure in the PR's code. An advisory that
+  # cannot be fixed yet goes in core/pip-audit-ignore.txt, with its reason.
+  backend-audit:
+    name: Backend (core) dependency audit
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+
+      # From the lock, with its hashes, so what is audited is exactly what
+      # `uv sync` installs, and pip-audit resolves nothing of its own.
+      - name: pip-audit
+        run: |
+          uv export --project core --frozen --all-groups --no-emit-project \
+            --format requirements-txt > "$RUNNER_TEMP/core-requirements.txt"
+          ignored=()
+          for id in $(awk '!/^[[:space:]]*(#|$)/ {print $1}' core/pip-audit-ignore.txt); do
+            ignored+=(--ignore-vuln "$id")
+          done
+          uvx pip-audit@2.10.1 \
+            --requirement "$RUNNER_TEMP/core-requirements.txt" \
+            --disable-pip \
+            --progress-spinner off \
+            "${ignored[@]}"
+
   # The tests, apart from the checks above so they can be split across
   # runners. Store tests boot real Postgres via testcontainers; ubuntu-latest
   # ships Docker so the containers come up without extra setup. The slow
@@ -278,7 +326,8 @@ jobs:
       # (`least_duration` with no durations file to read). The slow tests sit
       # together, so equal contiguous slices would leave one runner with most
       # of the time; dealt out, the three come within a few percent of each
-      # other. Within a runner, one pytest-xdist worker per CPU. The Postgres
+      # other. Within a runner, one pytest-xdist worker per CPU, and an idle
+      # worker takes tests queued behind a slow one (`worksteal`). The Postgres
       # fixture is session-scoped, and a session is per worker, so each worker
       # boots and owns a container of its own: no test shares a database with
       # another running at the same time.
@@ -288,7 +337,7 @@ jobs:
       - name: pytest
         run: >-
           uv run --project core pytest -c core/pyproject.toml core/tests/
-          -n auto
+          -n auto --dist worksteal
           --splits 3 --group ${{ matrix.group }}
           --splitting-algorithm least_duration
           --timeout 300
@@ -580,6 +629,24 @@ jobs:
         # keyed-id key; on without a value v2 needs, the chart refuses.
         run: python3 scripts/check_chart_hosted_v2.py
 
+  deploy-hardening:
+    name: Deployment hardening
+    # The security settings the chart, the compose files, the images and the
+    # gateway's nginx carry, which a render or a config dump shows no sign of
+    # missing: scripts/check_deploy_hardening.py names each one.
+    needs: changes
+    if: ${{ needs.changes.outputs.deploy_hardening == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Check the deployment files' hardening
+        run: python3 scripts/check_deploy_hardening.py
+
   gateway:
     name: Gateway UI
     needs: changes
@@ -687,7 +754,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           docker run --rm -v "$PWD:/repo" -w /repo \
-            zricethezav/gitleaks:v8.30.1 detect \
+            zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f detect \
             --source=/repo \
             --redact \
             --log-opts="${BASE_SHA}..${HEAD_SHA}" \

@@ -35,7 +35,13 @@ def _core(already: str | None) -> tuple[Any, list[str]]:
     async def typing(*_args: Any) -> None:
         return None
 
-    client = SimpleNamespace(sent_under=sent_under, send_message=send_message)
+    def admit_message(_authored: str | None) -> None:
+        # The send limits (length and rate): a resend never reaches them.
+        seen.append("admit")
+
+    client = SimpleNamespace(
+        sent_under=sent_under, send_message=send_message, admit_message=admit_message
+    )
     core = SimpleNamespace(
         require_room_poster=room_poster,
         client_lifecycle=SimpleNamespace(get_by_agent_id=lambda _agent: client),
@@ -66,7 +72,7 @@ async def test_a_first_keyed_post_goes_through_trust_and_is_sent_under_its_key()
         core, "agent-1", "room-1", "the reply", client_txn_id="reply:k"
     )
     assert sent.event_id == "$new"
-    assert seen == ["lookup !room reply:k", "trust", "send reply:k"]
+    assert seen == ["lookup !room reply:k", "admit", "trust", "send reply:k"]
 
 
 @pytest.mark.asyncio
@@ -74,4 +80,4 @@ async def test_an_unkeyed_post_is_unchanged() -> None:
     core, seen = _core(already="$first")
     sent = await AgentCore.send_message(core, "agent-1", "room-1", "hi")
     assert sent.event_id == "$new"
-    assert seen == ["trust", "send None"]
+    assert seen == ["admit", "trust", "send None"]

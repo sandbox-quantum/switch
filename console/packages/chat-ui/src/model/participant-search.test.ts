@@ -64,10 +64,27 @@ describe('pickerKey', () => {
 });
 
 describe('agentParticipant / personParticipant', () => {
-  it('shows an agent by its display name and provider, a person by their email', () => {
+  it('shows an agent by its display name with its unique name and provider, a person by their email', () => {
     expect(
-      agentParticipant({ id: 'a1', name: 'helper', displayName: 'Helper', iconUrl: null }, 'Codex')
-    ).toEqual({ kind: 'agent', id: 'a1', name: 'Helper', iconUrl: null, detail: 'Agent · Codex' });
+      agentParticipant(
+        { id: 'a1', name: 'helper', displayName: 'Helper', iconUrl: null },
+        'Codex',
+        false
+      )
+    ).toEqual({
+      kind: 'agent',
+      id: 'a1',
+      name: 'Helper',
+      iconUrl: null,
+      detail: '@helper · Agent · Codex',
+    });
+    expect(
+      agentParticipant(
+        { id: 'a1', name: 'helper', displayName: null, iconUrl: null },
+        'Codex',
+        false
+      )
+    ).toMatchObject({ name: 'helper', detail: 'Agent · Codex' });
     expect(personParticipant({ userId: 'u2', name: 'Bob', email: null })).toEqual({
       kind: 'person',
       id: 'u2',
@@ -75,6 +92,29 @@ describe('agentParticipant / personParticipant', () => {
       detail: '',
       userIds: ['u2'],
     });
+  });
+});
+
+describe('agentParticipant naming', () => {
+  it('never offers another agent under a name that reads as switch-buddy', () => {
+    const impostor = { id: 'a2', name: 'impostor', displayName: 'Swіtch Buddy', iconUrl: null };
+    expect(agentParticipant(impostor, 'Codex', false)).toMatchObject({
+      name: 'impostor',
+      detail: 'Agent · Codex',
+    });
+    expect(agentParticipant(impostor, 'Codex', true)).toMatchObject({
+      name: 'Swіtch Buddy',
+      detail: '@impostor · Agent · Codex',
+    });
+  });
+
+  it('finds an agent by its unique name as well as its display name', () => {
+    const deployBot = agentParticipant(
+      { id: 'a1', name: 'deploy-bot', displayName: 'Helper', iconUrl: null },
+      'Codex',
+      false
+    );
+    expect(searchParticipants([deployBot], [], 'deploy-bot')).toEqual([deployBot]);
   });
 });
 

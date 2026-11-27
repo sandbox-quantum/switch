@@ -11,6 +11,8 @@ import type { BridgeIcons } from "@switch-console/chat-ui/components/messaging-a
 import type { ParticipantMarks } from "@switch-console/chat-ui/components/participant-picker";
 import { pickAccent } from "@switch-console/chat-ui/model/agent-accent";
 import { resolveAgentAvatarSrc } from "@switch-console/chat-ui/model/agent-avatar";
+import { attachmentFilename } from "@switch-console/chat-ui/model/attachment-filename";
+import { findBuddy } from "@switch-console/chat-ui/model/buddy";
 import { configureFailures } from "@switch-console/chat-ui/model/failures";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { type ReactNode, createContext, useContext, useEffect, useMemo, useState } from "react";
@@ -18,6 +20,7 @@ import { useLocation, useNavigate } from "react-router";
 import AgentPicture from "../../components/AgentPicture";
 import { useAuth } from "../../data/AuthContext";
 import { fetchAvatarSettings } from "../../data/api";
+import { agentsClient } from "../../data/useManagedAgent";
 import { platformLabel } from "../../theme/format";
 import { useAppLogos } from "../messaging-apps/appLogos";
 import { webLinkTarget } from "./consoleLinkOnWeb";
@@ -68,6 +71,23 @@ export function useWebBridgeIcons(): BridgeIcons {
     }),
     [logos],
   );
+}
+
+/**
+ * Saves a room attachment as a download, under its name as the chat shows it
+ * (`attachmentFilename`): anyone in a room can name a file.
+ */
+async function saveAttachmentOf(roomId: string, uri: string, filename: string): Promise<void> {
+  const { mimeType, bytes } = await webChatsClient.fetchChatMedia(roomId, uri);
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mimeType }));
+  try {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = attachmentFilename(filename);
+    link.click();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
 }
 
 async function mediaOf(roomId: string, uri: string): Promise<{ mimeType: string; data: string }> {
@@ -193,6 +213,23 @@ export default function WebChatHost({ children }: { children: ReactNode }) {
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [renameRequest, setRenameRequest] = useState<RenameRequest | null>(null);
   const bridgeIcons = useWebBridgeIcons();
+  // The person's own switch-buddy in this workspace: only it goes by switch-buddy's name and picture.
+  const [ownBuddyId, setOwnBuddyId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!tenantId) return;
+    let current = true;
+    agentsClient
+      .listManagedAgents()
+      .then((agents) => {
+        if (current) setOwnBuddyId(findBuddy(agents)?.agent_id ?? null);
+      })
+      .catch((error: unknown) => {
+        console.warn("Could not read your managed agents to find your switch-buddy", error);
+      });
+    return () => {
+      current = false;
+    };
+  }, [tenantId]);
 
   const web = useMemo(
     () => (userId && tenantId ? createWebChats({ userId, tenantId }) : null),
@@ -209,6 +246,9 @@ export default function WebChatHost({ children }: { children: ReactNode }) {
         draftOwner: () => ({ userId, workspaceId: tenantId }),
         commands: (_serverId, roomId) => webChatsClient.listChatCommands(roomId),
         media: (_serverId, roomId, uri) => mediaOf(roomId, uri),
+        saveAttachment: (_serverId, roomId, attachment) =>
+          saveAttachmentOf(roomId, attachment.uri, attachment.filename),
+        isOwnBuddy: (_serverId, agentId) => ownBuddyId !== null && agentId === ownBuddyId,
         openLink: (href) => {
           // A link to a Console page opens the page that does its job here, where there is one.
           const target = webLinkTarget(href);
@@ -266,7 +306,7 @@ export default function WebChatHost({ children }: { children: ReactNode }) {
           }
         },
       },
-    [web, userId, tenantId, groupChats, navigate, location, setConfirmRequest, setRenameRequest, bridgeIcons],
+    [web, userId, tenantId, groupChats, navigate, location, setConfirmRequest, setRenameRequest, bridgeIcons, ownBuddyId],
   );
 
   if (!host || !web) return <>{children}</>;

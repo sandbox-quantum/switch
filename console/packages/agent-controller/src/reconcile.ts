@@ -1,11 +1,19 @@
+import { isAbsolute } from 'node:path';
 import {
   providerLoginEnvironment,
   providerUnsupportedReason,
+  runtimeModeFor,
 } from '@switch-console/agent-providers';
 import type { AgentRemovalDeps, LeftoverWatch } from './box/agent-removal';
+import {
+  type DefinitionContext,
+  effectiveDefinition,
+  howToAllow,
+  unallowedDirectory,
+} from './device-policy';
 import { ReasonedError } from './errors';
 import { errorCode, errorMessage, type Logger } from './log';
-import { isSafeSegment } from './paths';
+import { expandHome, insideDataDir, isSafeSegment } from './paths';
 import { type AgentObservation, type AgentRuntime, emptyObservation } from './runtime';
 import {
   type AgentAssignment,
@@ -17,7 +25,11 @@ import {
 import type { GivenLogin } from './sealed-logins';
 import { isCredentialFailure, LAUNCH_GRACE_MS, noSessionMidTurn } from './status';
 import type { AgentRow, ControllerStore } from './store';
-import { advancedConfigDefinitionProblem, buildWatcherTemplate } from './template';
+import {
+  advancedConfigDefinitionProblem,
+  buildWatcherTemplate,
+  launchPermissionMode,
+} from './template';
 
 export type StartAction = {
   kind: 'start';
@@ -84,16 +96,21 @@ export class CredentialRestarts {
 
 /**
  * Why an assigned agent cannot be applied on this machine as defined, or null
- * when it can. `offered` is the providers this controller offers
- * (`providersFor`): every registered one, unless it runs in box mode.
+ * when it can. No agent may work in the controller's data directory (a link
+ * to it is found only when the agent starts), and one may work outside the
+ * workspaces folder only where the device allows it. In box mode only the
+ * providers the box offers (`context.offered`) are run.
  */
 export function definitionProblem(
   entry: AgentAssignment,
-  offered: readonly string[]
+  context: DefinitionContext
 ): string | null {
   if (!isSafeSegment(entry.agent_id))
     return `The agent id '${entry.agent_id}' cannot be used as a directory name.`;
-  if (!isProvider(entry.definition.provider) || !offered.includes(entry.definition.provider))
+  if (
+    !isProvider(entry.definition.provider) ||
+    (context.offered !== undefined && !context.offered.includes(entry.definition.provider))
+  )
     return `This controller does not run the provider '${entry.definition.provider}'.`;
   const advancedProblem = advancedConfigDefinitionProblem(
     entry.definition.provider,
@@ -104,7 +121,35 @@ export function definitionProblem(
     return 'This controller does not know the isolation this agent asks for.';
   if (entry.definition.directory === null && !isSafeSegment(entry.definition.name))
     return `The agent name '${entry.definition.name}' cannot be used as a workspace directory name; set a directory.`;
+  if (entry.definition.directory !== null) {
+    const directory = expandHome(entry.definition.directory);
+    if (isAbsolute(directory) && insideDataDir(context.dataDir, directory))
+      return `The working directory ${directory} is inside this controller's data directory ${context.dataDir}, which holds its credentials. Choose another directory.`;
+  }
+  const unallowed = unallowedDirectory(entry, context);
+  if (unallowed !== null)
+    return `Switch asks for this agent to work in ${unallowed}, outside ${context.workspaces}, and this device has not allowed that. ${howToAllow(entry.agent_id, { directory: unallowed }, context.dataDir)}`;
   return null;
+}
+
+/**
+ * Whether an agent host was last configured as this device allows `entry`
+ * now: the runtime mode it was given (unknown in a configuration written
+ * without one) and the permission mode its agent definition names.
+ */
+function devicePolicyApplied(
+  configured: NonNullable<AgentObservation['configured']>,
+  entry: AgentAssignment,
+  context: DefinitionContext
+): boolean {
+  const definition = effectiveDefinition(entry, context);
+  const runtimeMode = runtimeModeFor({
+    autoApprove: definition.auto_approve,
+    autoMode: definition.auto_mode,
+  });
+  if (configured.runtimeMode !== null && configured.runtimeMode !== runtimeMode) return false;
+  if (!isProvider(definition.provider)) return true;
+  return configured.permissionMode === launchPermissionMode(definition.provider, definition);
 }
 
 /**
@@ -128,13 +173,13 @@ export function definitionProblem(
  */
 export function planReconcile(input: {
   assignment: Assignment;
+  /** What definitions are checked against here (`definitionProblem`). */
+  context: DefinitionContext;
   rows: AgentRow[];
   observations: Map<string, AgentObservation>;
   /** Agents whose relay credentials file was rewritten in this pass. */
   credentialsChanged: Set<string>;
   nowMs: number;
-  /** The providers this controller offers (`providersFor`). */
-  offered: readonly string[];
   /** Box mode (`ControllerDeps.box`). */
   box?: boolean;
   /**
@@ -161,7 +206,7 @@ export function planReconcile(input: {
     const observation = input.observations.get(agentId);
     if (!observation) throw new Error(`No observation of agent ${agentId} to reconcile against.`);
     const applied = row?.appliedRevision ?? null;
-    const problem = definitionProblem(entry, input.offered);
+    const problem = definitionProblem(entry, input.context);
     if (problem) {
       if (row?.failure?.revision !== entry.revision || observation.alive)
         actions.push({
@@ -264,7 +309,17 @@ export function planReconcile(input: {
                 ? 'its relay endpoint or token changed; a session was still mid-turn after the wait'
                 : 'its relay endpoint or token changed',
           });
-      }
+      } else if (
+        observation.configured !== null &&
+        !devicePolicyApplied(observation.configured, entry, input.context)
+      )
+        actions.push({
+          ...base,
+          restart: false,
+          replaceIdentity: false,
+          clearTakenOver: false,
+          why: 'what this device allows it changed',
+        });
       continue;
     }
     if (observation.takenOver) continue;
@@ -298,8 +353,8 @@ export function planReconcile(input: {
 export type ReconcileDeps = {
   store: ControllerStore;
   runtime: AgentRuntime;
-  /** The providers this controller offers (`providersFor`): an agent naming another isn't run. */
-  offered: readonly string[];
+  /** What definitions are checked against here, as it stands now (`definitionProblem`). */
+  context: () => DefinitionContext;
   /**
    * Box mode (`ControllerDeps.box`): a given login's copies go as soon as it
    * is withdrawn or replaced, a removed agent's host is waited for, and a
@@ -356,7 +411,7 @@ export async function startAgent(
   deps: ReconcileDeps
 ): Promise<StartFailure | null> {
   const { agentId, entry } = action;
-  const definition = entry.definition;
+  const definition = effectiveDefinition(entry, deps.context());
   const nowMs = deps.now();
   const now = new Date(nowMs).toISOString();
   try {
@@ -564,13 +619,17 @@ export async function reconcile(
   const observations = new Map<string, AgentObservation>();
   const credentialsChanged = new Set<string>();
   const loginOnly = new Set<string>();
+  const context = deps.context();
   for (const entry of assignment.agents) {
-    if (definitionProblem(entry, deps.offered)) {
+    // An id that cannot name a directory has nothing on disk to observe.
+    if (!isSafeSegment(entry.agent_id)) {
       observations.set(entry.agent_id, emptyObservation());
       continue;
     }
+    // Observed even when it cannot be applied: one running under what is no
+    // longer allowed here is stopped.
     observations.set(entry.agent_id, await deps.runtime.observe(entry.agent_id));
-    if (entry.desired_state !== 'running') continue;
+    if (entry.desired_state !== 'running' || definitionProblem(entry, context)) continue;
     try {
       const change = await deps.ensureCredentials(entry.agent_id, entry.definition.provider);
       if (change) credentialsChanged.add(entry.agent_id);
@@ -608,11 +667,11 @@ export async function reconcile(
   }
   const actions = planReconcile({
     assignment,
+    context,
     rows: deps.store.agents(),
     observations,
     credentialsChanged,
     nowMs: deps.now(),
-    offered: deps.offered,
     ...(deps.box ? { box: true } : {}),
     ...(owedRestarts ? { credentialsOwedSince: owedRestarts.owed() } : {}),
     ...(deps.rest

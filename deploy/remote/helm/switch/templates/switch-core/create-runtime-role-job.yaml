@@ -52,6 +52,9 @@ spec:
       {{- include "switch.imagePullSecrets" . | nindent 6 }}
       {{- end }}
       restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.postgresql.podSecurityContext | nindent 8 }}
       initContainers:
         {{- include "switch.waitFor" (dict "name" "postgres" "host" (include "switch.postgresHost" .) "port" (include "switch.postgresPort" .)) | nindent 8 }}
       containers:
@@ -90,4 +93,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "switch.runtimeSecretName" $ctx }}
                   key: {{ include "switch.runtimeSecretKey" $ctx }}
+          securityContext:
+            {{- toYaml .Values.postgresql.securityContext | nindent 12 }}
+          volumeMounts:
+            # The root filesystem is read-only; /tmp is the one writable place.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
 {{- end }}

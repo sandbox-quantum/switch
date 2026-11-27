@@ -24,8 +24,16 @@ import { defineEvent } from '@shared/lib/ipc/events';
  * - `suspended` — authentication failed. Retrying a rejected key never
  *   self-heals, so no automatic probing happens; the user must fix auth and
  *   retry explicitly.
+ * - `untrusted` — the host's SSH key was refused: it is not on record, or it
+ *   differs from the key that is. No automatic probing either; the user
+ *   decides about the key (`HostKeyProblem`), then retries.
  */
-export type HostReachabilityStatus = 'unknown' | 'reachable' | 'unreachable' | 'suspended';
+export type HostReachabilityStatus =
+  | 'unknown'
+  | 'reachable'
+  | 'unreachable'
+  | 'suspended'
+  | 'untrusted';
 
 /** The full reachability record for one host alias. */
 export type HostReachability = {
@@ -52,7 +60,11 @@ export type HostReachability = {
  * being gated behind a probe that would duplicate it.
  */
 export function isHostBlocked(reachability: HostReachability): boolean {
-  return reachability.status === 'unreachable' || reachability.status === 'suspended';
+  return (
+    reachability.status === 'unreachable' ||
+    reachability.status === 'suspended' ||
+    reachability.status === 'untrusted'
+  );
 }
 
 /** Human-readable one-liner for the blocked state, used in errors and the UI. */
@@ -62,6 +74,11 @@ export function hostBlockedReason(reachability: HostReachability): string {
     return `SSH authentication to ${reachability.sshHost} failed${since}: ${
       reachability.lastError ?? 'unknown error'
     }. Fix the host's SSH credentials, then retry.`;
+  }
+  if (reachability.status === 'untrusted') {
+    return `Switch Console refused the SSH host key of ${reachability.sshHost}${since}: ${
+      reachability.lastError ?? 'unknown error'
+    }`;
   }
   return `Host ${reachability.sshHost} is unreachable${since}: ${
     reachability.lastError ?? 'unknown error'

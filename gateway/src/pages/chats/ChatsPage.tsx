@@ -616,6 +616,7 @@ const AgentPage = observer(function AgentPage({ agent }: { agent: AgentListEntry
     <div className="flex min-w-0 flex-1">
       <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
         <AgentProfileHeader
+          agentId={agent.id}
           name={agentLabel(agent)}
           iconUrl={agent.icon_url ?? null}
           serverId={serverId}

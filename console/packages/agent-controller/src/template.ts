@@ -60,6 +60,15 @@ export function advancedConfigDefinitionProblem(
   return `The advanced configuration has settings a session cannot start with (${problems}).`;
 }
 
+/** The permission mode the agent definition a session of this agent runs as names; null for none. */
+export function launchPermissionMode(
+  provider: Provider,
+  definition: Pick<AgentDefinition, 'name' | 'model' | 'advanced_config' | 'instructions'>
+): string | null {
+  const mode = launchFor(provider, definition, '').agent?.definition.permissionMode;
+  return typeof mode === 'string' ? mode : null;
+}
+
 function launchFor(
   provider: Provider,
   definition: Pick<AgentDefinition, 'name' | 'model' | 'advanced_config' | 'instructions'>,

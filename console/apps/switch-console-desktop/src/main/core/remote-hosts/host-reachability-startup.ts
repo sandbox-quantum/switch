@@ -34,11 +34,9 @@ export async function initializeHostReachability(): Promise<void> {
       return;
     }
     if (event.type === 'error') {
-      hostReachabilityService.handleSshConnectionEvent(sshHost, {
-        type: 'error',
-        connectionId: event.connectionId,
-        errorMessage: event.error.message,
-      });
+      // The error itself, not just its message: a refused host key must reach
+      // the model as one, or it would be retried as an unreachable host.
+      hostReachabilityService.reportFailure(sshHost, event.error);
     }
   });
 }

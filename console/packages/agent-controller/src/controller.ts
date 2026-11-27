@@ -1,4 +1,8 @@
-import type { OpenAgentStream, ProviderReadiness } from '@switch-console/agent-providers';
+import type {
+  DeviceConsentNeed,
+  OpenAgentStream,
+  ProviderReadiness,
+} from '@switch-console/agent-providers';
 import type { RestartNotice } from '@switch-console/agent-providers/box';
 import { AgentHub } from './agent-hub';
 import {
@@ -12,6 +16,7 @@ import {
   type OpenWebSocket,
 } from './api';
 import type { BoxController, BoxControllerDeps } from './box/controller-box';
+import { consentNeeds, type DefinitionContext, type DevicePolicySource } from './device-policy';
 import { ConfigurationError } from './errors';
 import { HubSocket } from './hub-socket';
 import { errorMessage, type Logger } from './log';
@@ -151,6 +156,16 @@ export type ControllerDeps = {
   dataDir: string;
   /** Where agents' working directories go when their definition names none, for a server. */
   workspacesFor: (server: string) => string;
+  /**
+   * What the person using this device allows its agents (`device-policy.ts`);
+   * null where agents run as users of their own and it does not apply.
+   */
+  devicePolicy: DevicePolicySource | null;
+  /**
+   * Tells Switch Console, which runs this controller, which agents ask for
+   * something the device has not allowed; absent where nothing listens.
+   */
+  tellConsentNeeds?: (needs: DeviceConsentNeed[]) => void;
   version: string;
   /** Which machine, OS account and data folder this is (`readDeviceId`), or null when unknown. */
   deviceId: string | null;
@@ -445,7 +460,7 @@ export async function runController(
   let revocation: Promise<void> | null = null;
   let reporter: StatusReporter | null = null;
 
-  const hub = new AgentHub({
+  const hub: AgentHub = new AgentHub({
     log,
     bufferLimit: timing.eventBufferLimit,
     onCursor: (agentId, cursor) =>
@@ -454,6 +469,12 @@ export async function runController(
     ...boxed?.hubDeps(client, () => hub),
   });
   const workspaces = deps.workspacesFor(identity.server);
+  const definitionContext = (): DefinitionContext => ({
+    dataDir: deps.dataDir,
+    workspaces,
+    policy: deps.devicePolicy?.current() ?? null,
+    offered,
+  });
   const runtime = boxed
     ? deps.runtime(boxed.openStream(hub), workspaces, boxed.restartNotice(client))
     : deps.runtime((agentId) => (streamDeps) => hub.open(agentId, streamDeps), workspaces);
@@ -599,6 +620,7 @@ export async function runController(
     box: deps.box,
     dataDir: deps.dataDir,
     workspacesDir: workspaces,
+    context: definitionContext,
     deviceId: deps.deviceId,
     version: deps.version,
     updatedBy: deps.updatedBy,
@@ -608,7 +630,7 @@ export async function runController(
   const reconcileDeps: ReconcileDeps = {
     store,
     runtime,
-    offered,
+    context: definitionContext,
     ensureCredentials: async (agentId, provider) =>
       ensureRelayCredentials(
         agentId,
@@ -717,7 +739,7 @@ export async function runController(
           client,
           assignment: () => assignment,
           restartAgent: async (entry) => {
-            const problem = definitionProblem(entry, offered);
+            const problem = definitionProblem(entry, definitionContext());
             if (problem) return { reason: 'definition_invalid', detail: problem };
             // Asked for by its owner: started now, not on its next message.
             boxed?.restartAsked(entry.agent_id);
@@ -859,7 +881,8 @@ export async function runController(
       if (!assignment || stop.signal.aborted) return;
       try {
         for (const entry of assignment.agents) {
-          if (entry.desired_state !== 'running' || definitionProblem(entry, offered)) continue;
+          if (entry.desired_state !== 'running' || definitionProblem(entry, definitionContext()))
+            continue;
           const agentId = entry.agent_id;
           const observation = await runtime.observe(agentId);
           if (!observation.alive || !observation.outdated) continue;
@@ -959,6 +982,23 @@ export async function runController(
     }
   };
 
+  let announcedNeeds: string | null = null;
+  /** Tells Console what the device has not allowed, when that changed since it was last told. */
+  const announceConsentNeeds = () => {
+    if (!deps.tellConsentNeeds) return;
+    const needs = consentNeeds(assignment?.agents ?? [], definitionContext());
+    const text = JSON.stringify(needs);
+    if (text === announcedNeeds) return;
+    announcedNeeds = text;
+    deps.tellConsentNeeds(needs);
+  };
+  const stopFollowingPolicy = deps.devicePolicy?.onChange(() => {
+    log.info('What this device allows its agents changed; applying it');
+    void reconcileLocally();
+    reporter?.request();
+    announceConsentNeeds();
+  });
+
   if (boxed) {
     await boxed.startLauncherLink();
     // After `placeAgents` gave the hub its cursors, before anything is started.
@@ -967,6 +1007,7 @@ export async function runController(
   await reconcileLocally();
   relay.setReady();
   boxed?.ready();
+  announceConsentNeeds();
 
   if (boxed)
     void providers
@@ -993,6 +1034,10 @@ export async function runController(
     if (deps.selfUpdate?.status()?.state === 'waiting_idle') offerRelease();
     void restartOutdated();
     boxed?.poll();
+    void deps.devicePolicy
+      ?.refresh()
+      .catch((error: unknown) => failed('Reading what this device allows its agents', error));
+    announceConsentNeeds();
   }, timing.statusPollMs);
 
   let ending: ControllerExit = 'stopped';
@@ -1055,6 +1100,7 @@ export async function runController(
     boxed?.stopping();
     clearInterval(resync);
     clearInterval(poll);
+    stopFollowingPolicy?.();
     signal.removeEventListener('abort', forward);
     stop.abort();
     try {

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
+from collections import deque
 from collections.abc import AsyncGenerator
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, cast
 
@@ -93,6 +96,7 @@ from switch_core.config import SwitchConfig
 from switch_core.content_disposition import untrusted_file_headers
 from switch_core.db.models import Agent
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.delivery.send_limits import MessageTooLong, SendRateLimited
 from switch_core.feature_flags import V2_ONLY_FLAGS
 from switch_core.gateway.known_agents import known_agent
 from switch_core.hosted_v2 import hosted_v2_on
@@ -488,9 +492,9 @@ async def send_message(
     )
     try:
         sent = await protocol.send_message(agent.id, req.room_id, req.content)
-    except BudgetExceeded as e:
+    except (BudgetExceeded, SendRateLimited) as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
-    except GuardrailBlockedError as e:
+    except (GuardrailBlockedError, MessageTooLong) as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -580,9 +584,9 @@ async def upload_media(
             caption=caption,
             thread_id=thread_id,
         )
-    except BudgetExceeded as e:
+    except (BudgetExceeded, SendRateLimited) as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
-    except GuardrailBlockedError as e:
+    except (GuardrailBlockedError, MessageTooLong) as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -687,7 +691,9 @@ async def update_status(
     if req.detail:
         try:
             feedback = await protocol.update_status(agent.id, req.room_id, req.detail)
-        except GuardrailBlockedError as e:
+        except SendRateLimited as e:
+            raise HTTPException(status_code=429, detail=str(e)) from e
+        except (GuardrailBlockedError, MessageTooLong) as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
@@ -1148,19 +1154,28 @@ async def connection_socket(
     )
     loop = asyncio.get_running_loop()
     next_ping = loop.time() + HEARTBEAT_INTERVAL_SECONDS
+    close_code, close_reason = 1000, None
     try:
         # One writer: a WebSocket must not be sent to from two tasks at once,
         # so frames and pings both go out from this loop.
         while not pump.done() or not outbox.empty():
             if pongs.done():
-                refusal = pongs.result()
-                if refusal is not None:
+                ended = pongs.result()
+                if isinstance(ended, Misbehaved):
+                    logger.warning(
+                        "[STREAM] agent=%s connection=%s closing its socket: %s",
+                        agent.id,
+                        conn.id,
+                        ended.reason,
+                    )
+                    close_code, close_reason = ended.code, ended.reason
+                elif ended is not None:
                     await websocket.send_json(
                         {
                             "event": "evicted",
                             "data": {
-                                "code": getattr(refusal, "code", "closed"),
-                                "reason": str(refusal),
+                                "code": getattr(ended, "code", "closed"),
+                                "reason": str(ended),
                                 "room_id": None,
                             },
                         }
@@ -1202,7 +1217,10 @@ async def connection_socket(
                 exc_info=failure,
             )
         try:
-            await websocket.close(code=1011 if failure is not None else 1000)
+            if failure is not None:
+                await websocket.close(code=1011)
+            else:
+                await websocket.close(code=close_code, reason=close_reason)
         except RuntimeError:
             pass  # the client closed it first
 
@@ -1223,27 +1241,104 @@ async def _pump_frames(
         await frames.aclose()
 
 
+# The largest frame a client may send on its connection socket. A client sends
+# only pongs, and a pong carries its position: a number for each room it reads,
+# so it grows with the agent's rooms. This allows for thousands of them.
+# Uvicorn's own limit (16 MiB) is left alone: it covers every socket, the
+# controller's included, whose calls carry whole documents.
+MAX_INBOUND_FRAME_BYTES = 1024 * 1024
+# A client answers each ping with one pong and sends nothing else. Many more
+# frames than that in a minute, or more than a few that are not pongs, is a
+# client that is broken or abusing the socket, and it is closed.
+INBOUND_WINDOW_SECONDS = 60.0
+MAX_INBOUND_FRAMES_PER_WINDOW = 120
+MAX_STRAY_FRAMES_PER_WINDOW = 10
+
+# Close codes for a client closed for what it sent (RFC 6455, 7.4.1).
+_CLOSE_UNSUPPORTED_DATA = 1003
+_CLOSE_POLICY_VIOLATION = 1008
+_CLOSE_MESSAGE_TOO_BIG = 1009
+
+
+@dataclass(frozen=True)
+class Misbehaved:
+    """A client closed for what it sent on its socket: the close code, and why."""
+
+    code: int
+    reason: str
+
+
+def _frame_bytes(frame: str | bytes) -> int:
+    """The frame's size in bytes, or a lower bound once that is over the limit
+    (a character is at least one byte), so an oversized frame is never encoded
+    just to be measured."""
+    if isinstance(frame, bytes) or len(frame) > MAX_INBOUND_FRAME_BYTES:
+        return len(frame)
+    return len(frame.encode())
+
+
+def _one_too_many(times: deque[float], now: float, limit: int) -> bool:
+    """Count a frame at `now` and say whether the window now holds more than
+    `limit`."""
+    times.append(now)
+    while times and times[0] <= now - INBOUND_WINDOW_SECONDS:
+        times.popleft()
+    return len(times) > limit
+
+
 async def _receive_pongs(
     websocket: WebSocket,
     protocol: AgentCore,
     agent_id: str,
     connection_id: str,
     generation: int,
-) -> ConnectionError_ | None:
-    """Turn each pong into a beat, until the client goes or a beat is refused.
+) -> ConnectionError_ | Misbehaved | None:
+    """Turn each pong into a beat, until the client goes, a beat is refused,
+    or the client sends what no client should.
 
     Returns the refusal, so the socket can say which one before it closes:
     `taken_over` is final for this client, the rest are recovered by
-    reconnecting. Returns None when the client simply went away.
+    reconnecting. Returns `Misbehaved` for a frame over the size limit, one
+    that is not JSON, or more frames (or stray frames) than the window allows.
+    Returns None when the client simply went away.
     """
+    loop = asyncio.get_running_loop()
+    frames: deque[float] = deque()
+    strays: deque[float] = deque()
     while True:
         try:
-            message = await websocket.receive_json()
-        except (WebSocketDisconnect, ValueError, RuntimeError):
-            # Gone, or sent something that is not JSON: either way no more
-            # beats are coming on this socket.
+            message = await websocket.receive()
+        except RuntimeError:
             return None
-        if not isinstance(message, dict) or message.get("type") != "pong":
+        if message["type"] == "websocket.disconnect":
+            return None
+        text = message.get("text")
+        frame = text if text is not None else message.get("bytes") or b""
+        if _frame_bytes(frame) > MAX_INBOUND_FRAME_BYTES:
+            return Misbehaved(
+                _CLOSE_MESSAGE_TOO_BIG,
+                f"sent a frame over {MAX_INBOUND_FRAME_BYTES} bytes",
+            )
+        if text is None:
+            return Misbehaved(_CLOSE_UNSUPPORTED_DATA, "sent a binary frame")
+        now = loop.time()
+        if _one_too_many(frames, now, MAX_INBOUND_FRAMES_PER_WINDOW):
+            return Misbehaved(
+                _CLOSE_POLICY_VIOLATION,
+                f"sent more than {MAX_INBOUND_FRAMES_PER_WINDOW} frames in "
+                f"{INBOUND_WINDOW_SECONDS:.0f} seconds",
+            )
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            return Misbehaved(_CLOSE_UNSUPPORTED_DATA, "sent a frame that is not JSON")
+        if not isinstance(parsed, dict) or parsed.get("type") != "pong":
+            if _one_too_many(strays, now, MAX_STRAY_FRAMES_PER_WINDOW):
+                return Misbehaved(
+                    _CLOSE_POLICY_VIOLATION,
+                    f"sent more than {MAX_STRAY_FRAMES_PER_WINDOW} frames that "
+                    f"are not pongs in {INBOUND_WINDOW_SECONDS:.0f} seconds",
+                )
             continue
         try:
             _record_beat(protocol, agent_id, connection_id, generation)

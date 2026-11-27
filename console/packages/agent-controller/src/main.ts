@@ -4,15 +4,26 @@ import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
+  allowInPolicy,
+  changeDevicePolicy,
   cliToolsBase,
   BoxModeMismatch,
+  DEVICE_CONSENT_NEEDED_KIND,
+  type DeviceConsentNeededMessage,
+  type DevicePolicy,
+  disallowInPolicy,
+  EVERY_AGENT,
   generateSealingKeyPair,
   insideBox,
+  isDevicePolicyChangedMessage,
+  readDevicePolicy,
   isProviderRecheckRequest,
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
   resolveControllerBoxMode,
+  SDK_SESSIONS_DIR_ENV,
+  sealingKeyFingerprint,
   windowsRegistryPath,
   withWindowsPathEntries,
 } from '@switch-console/agent-providers';
@@ -36,6 +47,7 @@ import {
 import { type ControllerExit, DEFAULT_TIMING, runController } from './controller';
 import { DetachedRuntime } from './detached-runtime';
 import { readDeviceId, SYSTEM_SOURCES } from './device-id';
+import { type DefinitionContext, DevicePolicySource } from './device-policy';
 import { formatChecks, runDoctor } from './doctor';
 import { readEnvFile } from './env-file';
 import { ConfigurationError, UsageError } from './errors';
@@ -59,7 +71,16 @@ import {
 } from './handover';
 import { createLogger, errorMessage, type Logger } from './log';
 import { loginShellPath, withUserBinDirs } from './login-path';
-import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
+import {
+  controllerSessionsDir,
+  DATA_DIR_ENV,
+  dataLayout,
+  ensureDataDir,
+  expandHome,
+  isSafeSegment,
+  resolveDataDir,
+  serverWorkspacesDir,
+} from './paths';
 import { ProviderRechecks } from './provider-rechecks';
 import { readProviderSeed, writeProviderSeed } from './provider-seed';
 import { providersFor } from './providers';
@@ -76,6 +97,7 @@ import {
 } from './runtime';
 import { AgentRuntimes } from './runtimes';
 import { type ControllerInfoChange, PROTOCOL_VERSION, PROVIDERS, type UpdatedBy } from './schemas';
+import { savedSealingPublicKey } from './sealed-logins';
 import {
   CONTROLLER_CREDENTIAL,
   defaultSecretStoreKind,
@@ -84,6 +106,7 @@ import {
   runCommand as runSecretCommand,
   SEALING_KEY,
   SECRET_STORE_KINDS,
+  type SecretStore,
   secretStoreFor,
 } from './secrets';
 import {
@@ -179,6 +202,26 @@ Commands:
       clears the description. The same limits as at enrollment.
   status [--data-dir <dir>] [--shared-host-bundle <path>]
       Show this controller's identity and its agents, from local state only.
+  allow <agent-id> | --every-agent [--bypass] [--directory <dir>] [--data-dir <dir>]
+      Let an agent Switch assigns this machine run without asking for
+      approval (--bypass), or work in <dir> or anything inside it, outside
+      the workspaces folder. Neither is applied, whatever the agent's
+      definition asks, until it is allowed here: an agent asking for bypass
+      runs and asks, and one asking for another directory is refused. Kept in
+      the data directory, never sent to Switch; a running controller applies
+      it within seconds. Agents run as users of their own are contained by
+      their units instead, and need neither.
+  disallow <agent-id> | --every-agent [--bypass] [--directory <dir>] [--data-dir <dir>]
+      Take back what allow gave; with neither flag, everything it gave the agent.
+      A session in the middle of a turn finishes that turn as it started;
+      its next turn runs under what is allowed now.
+  policy [--data-dir <dir>]
+      Show what this machine allows its agents.
+  sealing-key [--data-dir <dir>]
+      Print the public key provider logins given to this machine are sealed
+      to, and its fingerprint, as one line of JSON (both null without one).
+      Switch Console shows the same fingerprint when it gives the machine a
+      login.
   install-service [--data-dir <dir>] [--env-file <path>] [--shared-host-bundle <path>]
       Run this controller as a service of this user: a systemd user unit on
       Linux, a launchd agent on macOS. It starts now and again at each login
@@ -327,7 +370,7 @@ async function enrollCommand(args: string[], box: boolean): Promise<number> {
       enrolledAt: new Date().toISOString(),
     });
     process.stdout.write(
-      `${enrolled.adopted ? `Enrolled as controller ${enrolled.controller_id} on ${server}, which this machine was before; its agents stay on it.` : `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.`}\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
+      `${enrolled.adopted ? `Enrolled as controller ${enrolled.controller_id} on ${server}, which this machine was before; its agents stay on it.` : `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.`}\nLogin key: ${sealingKeyFingerprint(keys.publicKey)}\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
     );
     const warning = secrets.startupWarning();
     if (warning) process.stderr.write(`Warning: ${warning}\n`);
@@ -356,6 +399,75 @@ export function infoChange(values: { name?: string; description?: string }): Con
     change.description = description || null;
   }
   return change;
+}
+
+/**
+ * `allow` and `disallow`: what this device lets an agent Switch assigns it do,
+ * whatever its definition asks (`device-policy.ts`). Written to the data
+ * directory, where a running controller picks it up within seconds.
+ */
+async function devicePolicyCommand(change: 'allow' | 'disallow', args: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args,
+    options: {
+      bypass: { type: 'boolean' },
+      directory: { type: 'string' },
+      'every-agent': { type: 'boolean' },
+      'data-dir': { type: 'string' },
+    },
+    allowPositionals: true,
+    strict: true,
+  });
+  const everyAgent = values['every-agent'] === true;
+  if (positionals.length !== (everyAgent ? 0 : 1))
+    throw new UsageError(`${change} takes one agent id, or --every-agent.`);
+  const agentId = everyAgent ? EVERY_AGENT : positionals[0]!;
+  if (!everyAgent && !isSafeSegment(agentId))
+    throw new UsageError(`'${agentId}' is not an agent id.`);
+  const directory = values.directory === undefined ? null : resolve(expandHome(values.directory));
+  const bypass = values.bypass === true;
+  if (change === 'allow' && !bypass && directory === null)
+    throw new UsageError('allow needs --bypass, --directory <dir>, or both.');
+  const dataDir = resolveDataDir(values['data-dir']);
+  await ensureDataDir(dataDir);
+  const after = await changeDevicePolicy(dataDir, (before) =>
+    change === 'allow'
+      ? allowInPolicy(before, agentId, { bypass, directory })
+      : disallowInPolicy(
+          before,
+          agentId,
+          !bypass && directory === null ? 'all' : { bypass, directory }
+        )
+  );
+  process.stdout.write(describeDevicePolicy(after));
+  return EXIT_OK;
+}
+
+/** The device policy as `policy` and the policy commands print it. */
+function describeDevicePolicy(policy: DevicePolicy): string {
+  const lines = Object.entries(policy.agents).map(([agentId, grant]) => {
+    const who = agentId === EVERY_AGENT ? 'every agent' : agentId;
+    const what = [
+      ...(grant.bypass ? ['runs without asking for approval'] : []),
+      ...(grant.directories ?? []).map((directory) => `works in ${directory}`),
+    ];
+    return `  ${who}: ${what.join('; ')}`;
+  });
+  return lines.length
+    ? `This device allows:\n${lines.join('\n')}\n`
+    : 'This device allows no agent to run without approvals or outside its workspaces folder.\n';
+}
+
+async function showDevicePolicyCommand(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: { 'data-dir': { type: 'string' } },
+    strict: true,
+  });
+  process.stdout.write(
+    describeDevicePolicy(await readDevicePolicy(resolveDataDir(values['data-dir'])))
+  );
+  return EXIT_OK;
 }
 
 async function setInfoCommand(args: string[]): Promise<number> {
@@ -603,8 +715,19 @@ async function runCommand(args: string[], box = false): Promise<number> {
   // Windows has no signal a parent can send that is caught here, so Console
   // asks over the IPC channel it starts this controller with.
   const rechecks = new ProviderRechecks();
+  // Agents running as users of their own are contained by their units, and a
+  // box's agents by the box; the device policy is for agents that run as this
+  // controller's user on a person's own machine.
+  const devicePolicy = separateUsers || box ? null : new DevicePolicySource(dataDir, log);
+  await devicePolicy?.refresh();
   const onMessage = (message: unknown) => {
     if (isStopMessage(message)) onSignal('a stop request');
+    if (isDevicePolicyChangedMessage(message))
+      void devicePolicy?.refresh().catch((error: unknown) =>
+        log.error('Could not read what this device allows its agents', {
+          error: errorMessage(error),
+        })
+      );
     if (isProviderRecheckRequest(message)) {
       const reply = (error: string | null) => {
         const answer: ProviderRecheckReply = {
@@ -638,6 +761,21 @@ async function runCommand(args: string[], box = false): Promise<number> {
     credential !== null || values['updated-by-console'] === true ? 'console' : 'self';
   if (updatedBy === 'self') void announceUpdate(log);
   try {
+    // Before any agent host starts: each reads it, and passes it to the
+    // session hosts it starts.
+    if (!process.env[SDK_SESSIONS_DIR_ENV]) {
+      const sessionsDir = await controllerSessionsDir({
+        dataDir,
+        named: values['data-dir'] !== undefined || Boolean(process.env[DATA_DIR_ENV]),
+        runByConsole: updatedBy === 'console',
+      });
+      if (sessionsDir !== null) {
+        process.env[SDK_SESSIONS_DIR_ENV] = sessionsDir;
+        log.info("Keeping agent sessions in this controller's data directory", {
+          dir: sessionsDir,
+        });
+      }
+    }
     const selfUpdate =
       updatedBy === 'self'
         ? new SelfUpdater({
@@ -765,6 +903,16 @@ async function runCommand(args: string[], box = false): Promise<number> {
         workspacesFor: separateUsers
           ? () => unitAgentRoot(separateUsers)
           : (boxParts?.workspacesFor ?? serverWorkspacesDir),
+        devicePolicy,
+        tellConsentNeeds: process.send
+          ? (needs) => {
+              const message: DeviceConsentNeededMessage = {
+                kind: DEVICE_CONSENT_NEEDED_KIND,
+                needs,
+              };
+              process.send?.(message);
+            }
+          : undefined,
         version: VERSION,
         // A box never sends a device id. Upstream's id lets Switch hand a
         // re-enrolling controller the device it was before, with its agents; a
@@ -787,6 +935,39 @@ async function runCommand(args: string[], box = false): Promise<number> {
   } finally {
     for (const signal of SIGNALS) process.off(signal, onSignal);
     process.off('message', onMessage);
+    store.close();
+  }
+}
+
+/** The sealing key's fingerprint for `status`, or why there is none to show. */
+async function loginKeyLine(secrets: SecretStore): Promise<string> {
+  try {
+    const publicKey = await savedSealingPublicKey(secrets);
+    return publicKey === null
+      ? 'none here (made when the controller next runs, if its credential is kept here)'
+      : sealingKeyFingerprint(publicKey);
+  } catch (error) {
+    return `could not be read: ${errorMessage(error)}`;
+  }
+}
+
+async function sealingKeyCommand(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: { 'data-dir': { type: 'string' } },
+    strict: true,
+  });
+  const { store, secrets } = await openState(values['data-dir']);
+  try {
+    const publicKey = await savedSealingPublicKey(secrets);
+    process.stdout.write(
+      `${JSON.stringify({
+        publicKey,
+        fingerprint: publicKey === null ? null : sealingKeyFingerprint(publicKey),
+      })}\n`
+    );
+    return EXIT_OK;
+  } finally {
     store.close();
   }
 }
@@ -838,7 +1019,8 @@ async function statusCommand(args: string[], box: boolean): Promise<number> {
       `Controller:     ${identity.controllerId} ("${identity.name}")`,
       `Server:         ${identity.server}`,
       `Enrolled at:    ${identity.enrolledAt}`,
-      `Secret store:   ${secrets.description}`
+      `Secret store:   ${secrets.description}`,
+      `Login key:      ${await loginKeyLine(secrets)}`
     );
     const relayPort = store.relayPort();
     out.push(
@@ -864,11 +1046,18 @@ async function statusCommand(args: string[], box: boolean): Promise<number> {
     out.push(
       `Assignment:     revision ${cached.assignment.revision}, ${cached.assignment.agents.length} agent(s)`
     );
+    const context: DefinitionContext = {
+      dataDir,
+      workspaces: separateUsers
+        ? unitAgentRoot(separateUsers)
+        : serverWorkspacesDir(identity.server),
+      policy: separateUsers || box ? null : await readDevicePolicy(dataDir),
+    };
     for (const entry of cached.assignment.agents) {
       const row = store.agent(entry.agent_id);
       let observation = emptyObservation();
       let unreadable: string | null = null;
-      if (!definitionProblem(entry, providersFor(box))) {
+      if (!definitionProblem(entry, { ...context, offered: providersFor(box) })) {
         if (separateRuntime)
           observation = await separateRuntime.observe(entry.agent_id).catch((error: unknown) => {
             unreadable = errorMessage(error);
@@ -1341,8 +1530,15 @@ export async function main(argv: string[], inBox: boolean = insideBox()): Promis
       }
       case 'set-info':
         return await setInfoCommand(rest);
+      case 'allow':
+      case 'disallow':
+        return await devicePolicyCommand(command, rest);
+      case 'policy':
+        return await showDevicePolicyCommand(rest);
       case 'status':
         return await statusCommand(rest, box);
+      case 'sealing-key':
+        return await sealingKeyCommand(rest);
       case 'install-service':
         return await installServiceCommand(rest);
       case 'uninstall-service':

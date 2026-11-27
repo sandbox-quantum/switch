@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { chmod, mkdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { ConfigurationError } from './errors';
 
@@ -56,6 +56,40 @@ export async function ensureDataDir(dir: string): Promise<void> {
   }
   const mode = (await stat(dir)).mode & 0o777;
   if (mode !== 0o700) await chmod(dir, 0o700);
+}
+
+/**
+ * Where the agent hosts this controller runs keep their sessions' state, or
+ * null for the user's own folder (`~/.local/state/switch/sdk-sessions`).
+ *
+ * A controller named a data directory of its own (`--data-dir`, or
+ * `SWITCH_CONTROLLER_DATA_DIR`) keeps them in it, so a controller run apart,
+ * a second one on the machine or one under test, does not share the user's.
+ * Two exceptions keep the user's folder: a controller Switch Console runs,
+ * whose sessions Console reads there, and a data directory that ran agents
+ * before this folder existed, whose sessions are there and would otherwise
+ * not be found again.
+ */
+export async function controllerSessionsDir(input: {
+  dataDir: string;
+  named: boolean;
+  runByConsole: boolean;
+}): Promise<string | null> {
+  if (!input.named || input.runByConsole) return null;
+  const dir = join(input.dataDir, 'sdk-sessions');
+  if (await isDirectory(dir)) return dir;
+  if (await isDirectory(join(input.dataDir, 'watchers'))) return null;
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 /** The well-known SID of the operating system's own account. */
@@ -123,6 +157,35 @@ export function serverWorkspacesDir(server: string): string {
 /** An agent's working directory under `workspaces`, when its definition names none. */
 export function agentWorkspace(workspaces: string, name: string): string {
   return join(workspaces, safeSegment(name, 'agent name'));
+}
+
+/** A directory from an agent's definition with a leading `~` read as this user's home. */
+export function expandHome(directory: string): string {
+  return directory === '~' ||
+    directory.startsWith('~/') ||
+    (process.platform === 'win32' && directory.startsWith('~\\'))
+    ? join(homedir(), directory.slice(1))
+    : directory;
+}
+
+/**
+ * Whether an agent working in `path` would be working in the controller's
+ * data directory `root`, which holds its credential, its sealing key, every
+ * agent's relay token and every agent host's state. Its `workspaces` folder
+ * is not: agents defined before their default folder moved to the home
+ * directory were given directories there by the server, and it holds nothing
+ * of the controller's. Both paths are compared as given; the caller resolves
+ * links. Case is ignored on macOS and Windows, whose file systems ignore it.
+ */
+export function insideDataDir(root: string, path: string): boolean {
+  const fold = (value: string) =>
+    process.platform === 'darwin' || process.platform === 'win32' ? value.toLowerCase() : value;
+  const target = fold(resolve(path));
+  const within = (dir: string) => {
+    const rest = relative(fold(resolve(dir)), target);
+    return rest === '' || (rest !== '..' && !rest.startsWith(`..${sep}`) && !isAbsolute(rest));
+  };
+  return within(root) && !within(join(root, 'workspaces'));
 }
 
 export function dataLayout(root: string): DataLayout {

@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,7 +54,12 @@ from switch_core.bridges.agent.protocol.controller_presence import (
 )
 from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_LAPSED, TAKEN_OVER
 from switch_core.config import ControllerRelease
-from switch_core.db.audit import AuditAction, record_audit_event, request_actor
+from switch_core.db.audit import (
+    AuditAction,
+    escalation_details,
+    record_audit_event,
+    request_actor,
+)
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
     CONTROLLER_KEY_TYPE,
@@ -1538,7 +1544,7 @@ class ManagementService:
         agent_name: str,
         change: str,
     ) -> None:
-        _, acting_agent_id = request_actor()
+        actor_user_id, acting_agent_id = request_actor()
         await record_audit_event(
             session,
             tenant_id=tenant_id,
@@ -1549,7 +1555,11 @@ class ManagementService:
             details={
                 "agent_name": agent_name,
                 "change": change,
-                "acting_agent_id": acting_agent_id,
+                **escalation_details(
+                    owner_id=owner_id,
+                    actor_user_id=actor_user_id,
+                    acting_agent_id=acting_agent_id,
+                ),
             },
         )
 
@@ -2197,6 +2207,44 @@ class ManagementService:
             expected_revision=None,
         )
 
+    async def check_managed_agent_patch(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        agent_id: str,
+        *,
+        definition: DefinitionV1 | None,
+        desired_state: str | None,
+        controller_id: str | None,
+        controller_id_given: bool,
+    ) -> None:
+        """The checks `patch_managed_agent` makes before it writes anything,
+        raising as it would, with nothing changed."""
+        existing, _agent = await self._owned_definition(
+            session, tenant_id, owner_id, agent_id
+        )
+        target_controller_id = (
+            controller_id if controller_id_given else existing.controller_id
+        )
+        target_state = desired_state or existing.desired_state
+        provider = (
+            definition.provider
+            if definition is not None
+            else str(existing.definition.get("provider"))
+        )
+        if existing.definition.get("provider") != provider:
+            self._require_offered(provider)
+        await self._check_target(
+            session,
+            tenant_id,
+            owner_id,
+            target_controller_id,
+            provider,
+            check_placement=existing.controller_id != target_controller_id
+            or (target_state == "running" and existing.desired_state != "running"),
+        )
+
     async def patch_managed_agent(
         self,
         session: AsyncSession,
@@ -2250,7 +2298,20 @@ class ManagementService:
         """Write `target` over `existing`. With `expected_revision`, only
         while the definition is still at that revision (`DefinitionChanged`
         otherwise), for a change worked out from what it was."""
-        definition = DefinitionV1.model_validate(target.definition)
+        try:
+            definition = DefinitionV1.model_validate(target.definition)
+        except ValidationError as exc:
+            # A definition stored before a rule it now breaks (a directory
+            # with a `..` in it, say) is the person's to correct.
+            raise ManagementError(
+                422,
+                reason_codes.VALIDATION_ERROR,
+                "The agent's definition is not valid: "
+                + "; ".join(
+                    f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
+                    for e in exc.errors()
+                ),
+            ) from exc
         # Read now: updating the definition writes over `existing` in place.
         was_auto_approve = existing is not None and bool(
             existing.definition.get("auto_approve")

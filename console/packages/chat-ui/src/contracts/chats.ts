@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { readsAsSwitchBuddy } from '../model/switch-buddy';
 
 /**
  * A chat is a Switch room the signed-in person is a member of and that has at
@@ -229,6 +230,35 @@ export type ChatUploadInput = {
 /** The display name the room and the platforms show for an agent. */
 export function chatAgentLabel(agent: Pick<ChatAgent, 'name' | 'displayName'>): string {
   return agent.displayName ?? agent.name;
+}
+
+/**
+ * How a chat names an agent where it speaks or acts, so that no agent passes
+ * for another: `label` is the display name its owner chose, and `uniqueName`
+ * the name the server keeps unique, shown beside it whenever the two differ.
+ * A display name that reads as switch-buddy's is shown for the person's own
+ * buddy only (`ownBuddy`); any other agent is named by its unique name alone.
+ */
+export function chatAgentNaming(
+  agent: Pick<ChatAgent, 'name' | 'displayName'>,
+  ownBuddy: boolean
+): { label: string; uniqueName: string | null } {
+  const shown = agent.displayName?.trim() || agent.name;
+  if (shown === agent.name || (!ownBuddy && readsAsSwitchBuddy(shown)))
+    return { label: agent.name, uniqueName: null };
+  return { label: shown, uniqueName: agent.name };
+}
+
+/**
+ * `chatAgentNaming` in running text, such as a placeholder or a notice: the
+ * label, then the unique name in brackets when it differs.
+ */
+export function chatAgentNameText(
+  agent: Pick<ChatAgent, 'name' | 'displayName'>,
+  ownBuddy: boolean
+): string {
+  const { label, uniqueName } = chatAgentNaming(agent, ownBuddy);
+  return uniqueName === null ? label : `${label} (@${uniqueName})`;
 }
 
 /** The `clientTxn` a Console send's parts carry: `{requestId}:{index}`. */

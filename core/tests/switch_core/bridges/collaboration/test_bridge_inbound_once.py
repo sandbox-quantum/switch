@@ -109,6 +109,10 @@ class _HumanActor:
 
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
+        self.admitted: list[str | None] = []
+
+    def admit_message(self, authored: str | None) -> None:
+        self.admitted.append(authored)
 
     async def send_message(self, room_id: str, content: str, **_kw: object) -> str:
         self.sent.append((room_id, content))

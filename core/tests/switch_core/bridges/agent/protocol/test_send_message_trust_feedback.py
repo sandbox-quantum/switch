@@ -23,6 +23,7 @@ from switch_core.bridges.agent.protocol.types import (
 from switch_core.clients.actor import SystemActor
 from switch_core.db.audit import AuditAction
 from switch_core.db.models import AuditEvent
+from switch_core.delivery.send_limits import SendLimits, SendRateLimited
 from switch_core.tenant_context import tenant_scope
 from switch_core.trust.client import (
     GuardrailBlockedError,
@@ -68,6 +69,11 @@ class _FakeClient:
         self.sent: list[str] = []
         self.extra: list[Any] = []
         self.agent = SimpleNamespace(name="helper")
+        self.limits: SendLimits | None = None
+
+    def admit_message(self, authored: str | None) -> None:
+        if self.limits is not None:
+            self.limits.admit("helper-client", authored, actor="agent")
 
     async def send_message(self, room_id: str, content: str, **kw: Any) -> str:
         self.sent.append(content)
@@ -105,6 +111,50 @@ def _build(
     svc._post_trust_alert_notice = _alert_notice  # type: ignore[method-assign]
     svc._set_typing = _set_typing  # type: ignore[method-assign]
     return svc, client, notices
+
+
+class _CountingTrustClient(_ContentTrustClient):
+    def __init__(self) -> None:
+        self.checked: list[str] = []
+
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
+        self.checked.append(content)
+        return await super().check(
+            tenant_id=tenant_id, role=role, content=content, room_id=room_id
+        )
+
+
+async def test_a_blocked_loop_past_the_agents_allowance_costs_no_check_or_notice(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A message or status update past the agent's allowance is refused
+    before Switch Trust is asked, so a loop of blocked sends costs one check
+    and one notice, not one of each per send."""
+    svc, client, _ = _build(session_factory)
+    client.limits = SendLimits(
+        max_message_chars=100, burst=1, per_second=0.001, clock=lambda: 0.0
+    )
+    trust = _CountingTrustClient()
+    svc.trust_client = trust  # type: ignore[assignment]
+    blocked: list[str] = []
+
+    async def _blocked_notice(room, _thread_root_id, _client) -> None:  # noqa: ANN001
+        blocked.append(room.id)
+
+    svc._post_trust_blocked_notice = _blocked_notice  # type: ignore[method-assign]
+
+    with pytest.raises(GuardrailBlockedError):
+        await svc.send_message("agent-1", "room-1", "forbidden")
+    with pytest.raises(SendRateLimited):
+        await svc.send_message("agent-1", "room-1", "forbidden")
+    with pytest.raises(SendRateLimited):
+        await svc.update_status("agent-1", "room-1", "forbidden")
+
+    assert trust.checked == ["forbidden"]
+    assert blocked == ["room-1"]
+    assert client.sent == []
 
 
 async def test_a_redacted_message_reports_what_the_room_received(

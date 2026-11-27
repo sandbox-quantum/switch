@@ -88,6 +88,7 @@ switch-agent-controller enroll \
 switch-agent-controller install-service [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller run [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller status [--data-dir <dir>]
+switch-agent-controller sealing-key [--data-dir <dir>]
 switch-agent-controller set-info [--name <name>] [--description <text>] [--data-dir <dir>]
 switch-agent-controller doctor [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller update [--check]
@@ -206,6 +207,37 @@ model overrides, and the Vertex AI, Bedrock and Google Cloud settings), plus the
 basics a CLI needs. The file is read once at start; restart the service after
 changing it.
 
+### What this machine allows its agents
+
+An agent's definition comes from the Switch server, so whoever can edit it there
+(or the server itself) decides what it asks for. Two things are applied only once
+this machine's own user has allowed them for that agent, whatever the definition
+says:
+
+- **Running without approvals** (bypass: the definition's `auto_approve`, or a
+  Claude Code `permissionMode` of `bypassPermissions` or `dontAsk` in its advanced
+  configuration). Until it is allowed, the agent runs and asks for approval, with
+  that permission mode left out, and its status tells Switch why.
+- **A directory outside the workspaces folder.** Until it is allowed, the agent is
+  refused as `definition_invalid`, with the command that would allow it. A
+  directory in the data directory is refused whatever is allowed.
+
+```bash
+switch-agent-controller allow <agent-id> --bypass
+switch-agent-controller allow <agent-id> --directory ~/src/app   # and everything inside it
+switch-agent-controller allow --every-agent --directory /srv/repos
+switch-agent-controller disallow <agent-id>                     # everything it was given
+switch-agent-controller policy                                  # what is allowed now
+```
+
+What is allowed is kept in `device-policy.json` in the data directory (mode 0600)
+and never sent to Switch. A running controller applies a change within seconds:
+taking bypass away restarts the agent's sessions with approvals once their turn
+ends, and taking a directory away stops the agent. Switch Console keeps this file
+for the controller it runs, and asks its user the first time an agent asks for
+either. Agents run as Linux users of their own (below) are contained by their
+units instead, and need neither.
+
 ### Each agent as a Linux user of its own
 
 By default every agent runs as the user the controller runs as, so an agent can
@@ -234,8 +266,10 @@ user's default one):
 - the controller as a system service of that user,
   `switch-agent-controller-<uid>.service`, run with
   `--agent-runtime separate-user` and the agents' group as a supplementary group,
-  so it can read what its agents write. It replaces the user service, which must
-  be uninstalled first;
+  so it can read what its agents write. Like its agents, it cannot reach the
+  cloud instance metadata address, gain privileges or change the kernel's
+  settings or the clock. It replaces the user service, which must be
+  uninstalled first;
 - a releases directory, `/var/lib/switch-agent-controller-<uid>/releases`
   (`--releases-dir`), owned by the controller's user and readable by everyone,
   where the controller installs the releases Switch names (see
@@ -308,6 +342,22 @@ before this registers its key once, when it next runs. Console seals the login
 to that key before sending it, so Switch stores and relays only ciphertext it
 cannot open.
 
+Console does not take the key on Switch's word alone, since a server that
+swapped in its own key could open the login:
+
+- For an SSH host it runs the controller on, Console reads the key on the host
+  (`switch-agent-controller sealing-key`, which prints the public half and its
+  fingerprint as JSON and never makes a key) and refuses another from Switch.
+- For any other machine, Console pins the key the first time it seals a login
+  to it, and refuses to seal to a different one until its owner trusts the new
+  key. Switch keeps one key per controller, and enrolling again makes a new
+  controller, so a pinned machine whose key changes is suspect.
+- This computer's own controller is handed its credential and keeps no key, so
+  it takes no given logins.
+
+Console shows the key's fingerprint where the login is given. `enroll` prints
+it (`Login key:`), and `status` shows it, so it can be checked on the machine.
+
 Switch then queues a `provider.login` operation. The controller fetches the
 login, opens it, checks the provider signs in with it, and reports the result.
 Console shows that result: the operation fails with `provider_login_expired`
@@ -369,8 +419,8 @@ When Switch names a release for this controller, `run` follows it; otherwise
 `update` does it by hand.
 
 **The release Switch names.** A status response can carry
-`controller_release: {"version", "url", "sha256"}`. When it names a version other
-than the one running (newer or older: Switch can roll back), the controller:
+`controller_release: {"version", "url", "sha256"}`. When it names a version newer
+than the one running, the controller:
 
 1. waits until no session on the machine is in the middle of a turn, checking at
    each status report and every few seconds while it waits, and reports
@@ -396,6 +446,12 @@ than the one running (newer or older: Switch can roll back), the controller:
    says `--version` is that version, checks again that no turn started
    meanwhile, and switches to it;
 4. exits with code `7`, and its service starts it again on the new release.
+
+An older version is refused, reported as `update: {"target", "state": "failed",
+"problem"}` and logged: old releases stay validly signed, so following Switch
+back to one would let a server return every controller to a release with a
+fixed vulnerability. Rolling back is done on the machine, by installing the
+older release there.
 
 A failed attempt is reported (`update: {"target", "state": "failed", "problem"}`)
 and logged, and the same release is not tried again for an hour; the last
@@ -682,6 +738,7 @@ It holds:
 
 | Path | What |
 |---|---|
+| `device-policy.json` | What this machine allows its agents beyond their definitions (see above). Never sent to Switch. |
 | `controller.db` | SQLite: identity, cached assignment, per-agent applied revision and local failures, restart times, each agent's stream cursor, the relay's port, status seq. Everything except the identity can be rebuilt from the server. |
 | `secrets/controller-credential` | The controller credential, with the `file` secret store (see below). Absent with a keychain store, or when the credential is handed over with `--credential-stdin`. |
 | `agents/<id>/credentials.json` | Each agent's relay endpoint, relay token and hub, in the layout the shared host reads. No Switch credential. |
@@ -693,10 +750,20 @@ An agent whose definition names no directory works in
 `~/.switch/agents/<server>/<name>/`, where `<server>` is the server's address
 (`localhost-8000`, `switch.example.com`). The server fills this path in once the
 controller reports `machine.workspaces_dir`. A missing directory under that folder
-is made; any other must already exist.
+is made; any other must already exist. A directory in the data directory is
+refused (`definition_invalid`), whether named directly or reached through a link,
+because an agent working there could read the controller's credential and keys.
+The one exception is its `workspaces` folder, where agents defined before the
+default moved to `~/.switch/agents` were given their directories.
 
 Sessions an agent host starts keep their state where the shared host puts it
-(`~/.local/state/switch/sdk-sessions/`), as they do under Console.
+(`~/.local/state/switch/sdk-sessions/`), as they do under Console, except under a
+data directory named with `--data-dir` or `SWITCH_CONTROLLER_DATA_DIR`: there they
+are kept in its `sdk-sessions/`, so a controller run apart shares no session state
+with the user's. A controller Switch Console runs keeps the user's folder, where
+Console reads its sessions, and so does a named data directory that ran agents
+before this version, so its sessions are found again. `SWITCH_SDK_SESSIONS_DIR`
+names the folder outright.
 
 ## The file secret store
 

@@ -105,7 +105,6 @@
     "PUT /gateway/auth/me/team-survey": "The dashboard's team questions and license acceptance, asked only with gateway_onboarding on, which the fast lane does not turn on. Covered by core's test_team_survey_and_license.py against real Postgres and by the role matrix."
   },
   "unauthenticated": {
-    "GET /gateway/agents/known-types": "The catalogue of agent types this server can register and their option schemas; no tenant data. Public since the initial import, and nothing records whether that is deliberate.",
     "GET /gateway/auth/config": "Read by the login page before any session exists, to choose which sign-in methods to offer.",
     "GET /gateway/auth/oidc/callback": "The OIDC sign-in round trip, before any session exists.",
     "GET /gateway/auth/oidc/login": "The OIDC sign-in round trip, before any session exists.",

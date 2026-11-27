@@ -3,7 +3,7 @@ import {
   type RosterPerson,
   RoomRoster,
 } from '@switch-console/chat-ui/components/room-roster';
-import { chatAgentLabel } from '@switch-console/chat-ui/contracts/chats';
+import { chatAgentNaming } from '@switch-console/chat-ui/contracts/chats';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   Dialog,
@@ -21,6 +21,7 @@ import { chatMembersQueryKey } from '@renderer/features/chats/chat-people';
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
+import { isOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -132,7 +133,12 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
   // A room that could not be read is not an empty one: say so, rather than "no agents yet".
   const unreadable = !consoleChat && detail.isError;
   const agentIds = chat ? chat.agents.map((agent) => agent.id) : (room?.agentIds ?? []);
-  const chatNames = new Map((chat?.agents ?? []).map((agent) => [agent.id, chatAgentLabel(agent)]));
+  const chatNames = new Map(
+    (chat?.agents ?? []).map((agent) => [
+      agent.id,
+      chatAgentNaming(agent, isOwnBuddy(serverId, agent.id)),
+    ])
+  );
   const people = consoleChat
     ? (members.data ?? []).map((member) => ({
         key: member.userId,
@@ -262,9 +268,11 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
   const agentRows: RosterAgent[] = agentIds.map((agentId) => {
     const own = (managed.data ?? []).find((agent) => agent.agentId === agentId) ?? null;
     const joinEvents = controls.joinEvents?.canSet(agentId) ? controls.joinEvents : null;
+    const naming = chatNames.get(agentId);
     return {
       id: agentId,
-      label: chatNames.get(agentId) ?? agentNameFor(agentId, workspaceId, remoteById),
+      label: naming?.label ?? agentNameFor(agentId, workspaceId, remoteById),
+      uniqueName: naming?.uniqueName ?? null,
       mark: <AgentMark agentId={agentId} workspaceId={workspaceId} remoteById={remoteById} />,
       status: room?.agentStatuses[agentId],
       roles: rolesHeldBy(room?.roles ?? [], remoteById.get(agentId)?.name ?? null),

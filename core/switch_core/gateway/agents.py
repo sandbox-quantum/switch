@@ -47,7 +47,7 @@ from switch_core.bridges.agent.protocol.types import (
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.chats.service import ChatService
 from switch_core.config import SwitchConfig
-from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.audit import AuditAction, escalation_details, record_audit_event
 from switch_core.db.models import User, require_tenant_id
 from switch_core.db.stores.agent_definition_store import (
     AgentDefinitionStore,
@@ -398,6 +398,7 @@ async def delete_agent(
 
 @router.get("/known-types")
 async def list_known_agent_types(
+    _user: Annotated[User, Depends(get_current_user)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> list[KnownAgentType]:
     return [
@@ -1114,7 +1115,14 @@ async def update_can_manage_agents(
             ),
             target_type="agent",
             target_id=agent_id,
-            details={"agent_name": agent.name},
+            details={
+                "agent_name": agent.name,
+                **escalation_details(
+                    owner_id=agent.owner_id,
+                    actor_user_id=user.id,
+                    acting_agent_id=None,
+                ),
+            },
         )
     await session.commit()
     await session.refresh(agent)

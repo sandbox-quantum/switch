@@ -5,7 +5,14 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AgentBridgeEvent } from '@sandboxaq/switch-agent-runtime';
 import { callOperation, SESSION_SELECTOR_HEADERS } from '@sandboxaq/switch-agent-runtime/hosted';
-import { openHubStream, sealProviderLogin } from '@switch-console/agent-providers';
+import {
+  allowInPolicy,
+  type DeviceConsentNeed,
+  emptyDevicePolicy,
+  openHubStream,
+  sealProviderLogin,
+  writeDevicePolicy,
+} from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   type ControllerDeps,
@@ -13,6 +20,7 @@ import {
   ensureRelayCredentials,
   runController,
 } from './controller';
+import { DevicePolicySource } from './device-policy';
 import { ConfigurationError } from './errors';
 import { adoptIdentity } from './handover';
 import { silentLogger } from './log';
@@ -87,6 +95,7 @@ function deps(server = core.url): ControllerDeps {
     log: silentLogger,
     dataDir: dir,
     workspacesFor: () => join(dir, 'workspaces'),
+    devicePolicy: new DevicePolicySource(dir, silentLogger),
     version: '0.1.0',
     deviceId: 'd'.repeat(64),
     updatedBy: 'self',
@@ -464,6 +473,41 @@ describe('runController', () => {
 
   it('refuses a recheck while the controller is not running', async () => {
     await expect(new ProviderRechecks().run()).rejects.toThrow(/not connected/);
+  });
+
+  it('applies what the device allows its agents as it changes, and tells Console what waits on it', async () => {
+    const told: DeviceConsentNeed[][] = [];
+    const bypassing = agent(1, { definition: { ...agent(1).definition, auto_approve: true } });
+    core.setAssignment({ revision: 1, agents: [bypassing] });
+    running = runController(
+      { ...deps(), tellConsentNeeds: (needs) => void told.push(needs) },
+      stop.signal
+    );
+    const modes = () =>
+      runtime.launches('agent-1').map((launch) => launch.template.start.input.runtimeMode);
+
+    await waitFor(() => modes().length === 1, 'the agent started');
+    expect(modes()).toEqual(['approval-required']);
+    await waitFor(() => told.at(-1)?.length === 1, 'Console told what waits');
+    expect(told.at(-1)).toEqual([
+      { agentId: 'agent-1', name: 'scout', displayName: null, bypass: true, directory: null },
+    ]);
+    await waitFor(
+      () => reportsFor('agent-1').some((entry) => entry.detail?.includes('has not allowed')),
+      'Switch told the agent asks'
+    );
+
+    await writeDevicePolicy(
+      dir,
+      allowInPolicy(emptyDevicePolicy(), 'agent-1', { bypass: true, directory: null })
+    );
+    await waitFor(() => modes().length === 2, 'the agent given bypass');
+    expect(modes()[1]).toBe('full-access');
+    await waitFor(() => told.at(-1)?.length === 0, 'Console told nothing waits');
+
+    await writeDevicePolicy(dir, emptyDevicePolicy());
+    await waitFor(() => modes().length === 3, 'bypass taken back');
+    expect(modes()[2]).toBe('approval-required');
   });
 
   it('runs pending operations when nudged', async () => {

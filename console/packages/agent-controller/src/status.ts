@@ -13,6 +13,7 @@ import { pluginRegistry } from '@switch-console/plugins/agents';
 import type { LoginCheck, LoginVerdict } from './box/login-check';
 import type { MeminfoReading } from './box/meminfo';
 import type { RestState } from './box/rest';
+import { bypassWithheldDetail, type DefinitionContext } from './device-policy';
 import { errorMessage, type Logger } from './log';
 import type { AgentObservation, AgentRuntime } from './runtime';
 import {
@@ -913,6 +914,8 @@ export class StatusCollector {
       disk?: () => Promise<{ free: number; total: number } | null>;
       /** Where agents with no directory of their own work, reported so the server can name it. */
       workspacesDir: string;
+      /** What definitions are checked against here, as it stands now: what the device allows. */
+      context: () => DefinitionContext;
       /** Which machine, OS account and data folder this is (`readDeviceId`), or null when unknown. */
       deviceId: string | null;
       version: string;
@@ -967,6 +970,7 @@ export class StatusCollector {
     const agents: AgentStatus[] = [];
     let awake = 0;
     const seen = new Set<string>();
+    const context = this.deps.context();
     for (const entry of assignment?.agents ?? []) {
       seen.add(entry.agent_id);
       const row = this.deps.store.agent(entry.agent_id);
@@ -1023,6 +1027,8 @@ export class StatusCollector {
             oldest_since: waiting.oldestSince,
           };
       } else awake += ids.length;
+      const withheld = mapped.process !== 'failed' ? bypassWithheldDetail(entry, context) : null;
+      const detail = [mapped.detail, withheld].filter(Boolean).join(' ');
       agents.push({
         agent_id: entry.agent_id,
         applied_revision: row?.appliedRevision ?? null,
@@ -1036,7 +1042,7 @@ export class StatusCollector {
         directory: observation.configured?.cwd ?? null,
         since,
         ...(mapped.reason ? { reason: mapped.reason } : {}),
-        ...(mapped.detail ? { detail: mapped.detail } : {}),
+        ...(detail ? { detail: truncate(detail) } : {}),
       });
     }
     for (const agentId of this.previous.keys())

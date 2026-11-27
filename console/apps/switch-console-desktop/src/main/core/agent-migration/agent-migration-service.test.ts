@@ -59,9 +59,6 @@ type World = {
   roomsMidTurn: string[];
   untellable: string[];
   lookup: TargetLookup;
-  /** What the machine looks like once `enable` has turned it on; null leaves it as it was. */
-  lookupAfterEnable: TargetLookup | null;
-  enableFails: boolean;
   eligibility: { management: boolean; owner: string | null; ownedByMe: boolean; gone?: true };
   stoppedByHand: boolean;
   controllerRunning: boolean[];
@@ -97,11 +94,6 @@ function deps(): AgentMigrationDeps {
     },
     targets: {
       resolve: async (agent) => (world.lookupFor ? world.lookupFor(agent) : world.lookup),
-      enable: async (agent) => {
-        world.calls.push(`enable ${agent.sshHost ?? 'this computer'}`);
-        if (world.enableFails) throw new Error('ssh: connect to host gpu-1: Connection refused');
-        world.lookup = world.lookupAfterEnable ?? world.lookup;
-      },
       heal: async (agent) => {
         if (world.heal) return world.heal(agent);
         return world.lookup.canEnable && !world.lookup.target
@@ -248,8 +240,6 @@ beforeEach(() => {
       canEnable: false,
       controller: { controllerId: CONTROLLER, state: 'running' },
     },
-    lookupAfterEnable: null,
-    enableFails: false,
     eligibility: { management: true, owner: 'Ada', ownedByMe: true },
     stoppedByHand: false,
     controllerRunning: [false],
@@ -758,45 +748,33 @@ describe('moving every agent automatically', () => {
     expect(migration.migrationProblems()).toEqual([]);
   });
 
-  it('sets up each machine once per server, then moves its agents', async () => {
+  it('never sets a machine up itself: its agents wait, unreported, until the person turns it on', async () => {
     const ready = world.lookup;
     world.lookup = { ...ready, target: null, blocker: 'Not a machine yet.', canEnable: true };
-    world.lookupAfterEnable = ready;
-    await service().migrateEverything();
-    expect(world.calls.filter((call) => call.startsWith('enable'))).toEqual([
-      'enable this computer',
-    ]);
-    expect(adopted()).toHaveLength(3);
-  });
-
-  it('reports the agents of a machine that cannot be set up, and clears them once they move', async () => {
-    world.lookup = {
-      ...world.lookup,
-      target: null,
-      blocker: 'Not a machine yet.',
-      canEnable: true,
-    };
-    const ready = { ...world.lookup, target: TARGET, blocker: null, canEnable: false };
-    world.enableFails = true;
     const migration = service();
     await migration.migrateEverything();
-    expect(migration.migrationProblems()).toEqual([
-      {
-        agentId: PARENT.id,
-        name: 'builder',
-        machine: 'this computer',
-        message: expect.stringMatching(
-          /^this computer could not be set up to run managed agents: ssh/
-        ),
-      },
-      expect.objectContaining({ name: 'trainer', machine: 'gpu-1' }),
-      expect.objectContaining({ name: 'other', machine: 'gpu-1' }),
-    ]);
-    world.enableFails = false;
-    world.lookupAfterEnable = ready;
-    world.clock += 1_000;
-    await migration.migrateEverything();
+    expect(adopted()).toEqual([]);
     expect(migration.migrationProblems()).toEqual([]);
+    const overview = await migration.overview();
+    expect(overview.machines.map((machine) => [machine.machine, machine.controller])).toEqual([
+      ['this computer', { kind: 'needs-consent', workspaceId: PARENT.workspaceId }],
+      ['gpu-1', { kind: 'needs-consent', workspaceId: PARENT.workspaceId }],
+      ['gpu-1', { kind: 'needs-consent', workspaceId: 'workspace-2' }],
+    ]);
+    // The next pass, a minute on, asks again: still nothing is set up.
+    world.clock += 60_000;
+    await migration.migrateEverything();
+    expect(adopted()).toEqual([]);
+    // The person makes the machines machines, through TurnOnMachine; the next pass moves the agents.
+    world.lookup = ready;
+    world.clock += 60_000;
+    await migration.migrateEverything();
+    expect(adopted()).toEqual(['switch-1', 'switch-2', 'switch-3']);
+    expect((await migration.overview()).machines.map((machine) => machine.controller)).toEqual([
+      { kind: 'ready' },
+      { kind: 'ready' },
+      { kind: 'ready' },
+    ]);
   });
 
   it('reports a move that fails, and keeps moving the rest', async () => {

@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.delivery.send_limits import MessageTooLong, SendLimits, SendRateLimited
 from switch_core.tenant_context import tenant_scope
 from switch_core.trust.client import (
     GuardrailBlockedError,
@@ -66,6 +67,11 @@ class _FakeClient:
         self.uploads: list[str] = []
         self.sends: list[dict[str, Any]] = []
         self.agent = SimpleNamespace(name="helper")
+        self.limits: SendLimits | None = None
+
+    def admit_message(self, authored: str | None) -> None:
+        if self.limits is not None:
+            self.limits.admit("helper-client", authored, actor="agent")
 
     async def upload_media(self, data: bytes, content_type: str, filename: str) -> str:
         if filename == "unsendable.txt":
@@ -130,6 +136,30 @@ async def test_blocked_caption_sends_nothing_and_raises(
     assert client.uploads == []
     assert notices == [("blocked", None)]
     assert ("assistant", "FORBIDDEN") in trust.checked
+
+
+async def test_a_post_past_the_agents_allowance_is_neither_checked_nor_stored(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Refused before Switch Trust reads it and before a file is stored, so
+    a loop of refused posts costs no check, no notice and no orphan file."""
+    trust = _ContentTrustClient()
+    svc, client, notices = _build(session_factory, trust)
+    client.limits = SendLimits(
+        max_message_chars=10, burst=1, per_second=0.001, clock=lambda: 0.0
+    )
+    files = [(b"hello", "notes.txt", "text/plain")]
+
+    with pytest.raises(MessageTooLong):
+        await svc.send_media("agent-1", "room-1", files, caption="x" * 11)
+    with pytest.raises(GuardrailBlockedError):
+        await svc.send_media("agent-1", "room-1", files, caption="FORBIDDEN")
+    with pytest.raises(SendRateLimited):
+        await svc.send_media("agent-1", "room-1", files, caption="FORBIDDEN")
+
+    assert [content for _, content in trust.checked].count("FORBIDDEN") == 1
+    assert notices == [("blocked", None)]
+    assert client.uploads == []
 
 
 async def test_redacted_caption_is_sent_redacted(

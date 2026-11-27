@@ -103,6 +103,10 @@ describe("a group chat's participant column", () => {
     expect(html).not.toContain('aria-label="Alice in this room"');
   });
 
+  it('names each agent by its unique name beside a display name that differs', () => {
+    expect(render(true)).toContain('Helper<span class="text-foreground-passive"> @helper</span>');
+  });
+
   it('offers no adding to a manager while the server does not offer group chats', () => {
     flags.group_chats = false;
     try {

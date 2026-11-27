@@ -92,6 +92,7 @@ function deps(server = core.url): ControllerDeps {
   return {
     store,
     secrets,
+    devicePolicy: null,
     runtime: runtime.build,
     locator: new FakeLocator(),
     rechecks: new ProviderRechecks(),

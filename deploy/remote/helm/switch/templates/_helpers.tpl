@@ -1205,13 +1205,27 @@ to Microsoft (a federated credential, so no secret) is mounted.
 {{- end }}
 
 {{/*
+The wait-for init containers' own security context. They run as the user
+their pod runs as (its securityContext), so they need no image user of their
+own: busybox's nc and wget work as anyone.
+*/}}
+{{- define "switch.waitSecurityContext" -}}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+{{- end }}
+
+{{/*
 Wait-for init container template.
 Usage: {{ include "switch.waitFor" (dict "name" "postgres" "host" (include "switch.postgresHost" .) "port" "5432") }}
 */}}
 {{- define "switch.waitFor" -}}
 - name: wait-for-{{ .name }}
-  image: busybox:1.36
+  image: busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
   command: ["sh", "-c", "until nc -z {{ .host }} {{ .port }}; do echo 'waiting for {{ .name }}...'; sleep 2; done"]
+  {{- include "switch.waitSecurityContext" . | nindent 2 }}
 {{- end }}
 
 {{/*
@@ -1220,8 +1234,9 @@ Usage: {{ include "switch.waitForHttp" (dict "name" "gateway" "url" "http://host
 */}}
 {{- define "switch.waitForHttp" -}}
 - name: wait-for-{{ .name }}
-  image: busybox:1.36
+  image: busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
   command: ["sh", "-c", "until wget -q --spider {{ .url }}; do echo 'waiting for {{ .name }}...'; sleep 2; done"]
+  {{- include "switch.waitSecurityContext" . | nindent 2 }}
 {{- end }}
 
 {{/*

@@ -15,10 +15,10 @@ import type { PluggableList } from 'unified';
 import { useChatHost } from '../host';
 import { cn } from '../model/cn';
 import { CONSOLE_LINK_PREFIX, CONSOLE_LINK_SCHEME } from '../model/console-links';
+import { contentLinkHandlers } from '../model/content-link';
 import { PLATFORM_LOGO_PREFIX, platformOfLogoUrl } from '../model/platform-logo';
+import { AskBeforeLoading, loadsFromElsewhere } from './ask-before-loading';
 import { CodeBlock } from './code-block';
-
-const HTTP_URL_PATTERN = /^https?:\/\//i;
 
 /**
  * Streamdown's defaults minus `rehype-raw`: chat text is written by agents and
@@ -67,20 +67,18 @@ type WithChildren = { children?: React.ReactNode } & ExtraProps;
 
 function ChatLink({ href, children }: React.ComponentProps<'a'> & ExtraProps) {
   const { openLink } = useChatHost();
-  const isHttp = typeof href === 'string' && HTTP_URL_PATTERN.test(href);
   return (
     <a
       href={href}
       className="text-foreground underline decoration-foreground-passive underline-offset-2 hover:decoration-foreground"
       target="_blank"
       rel="noopener noreferrer"
-      onClick={(event) => {
-        // Never let a link navigate the window: the host follows a link to a
-        // Console page, and decides how an http(s) link leaves the app.
-        event.preventDefault();
-        if (typeof href === 'string' && (href.startsWith(CONSOLE_LINK_PREFIX) || isHttp))
-          openLink(href);
-      }}
+      // Never let a link navigate the window, a middle-click included: the
+      // host follows every link, whatever its scheme, and refuses those it
+      // does not open.
+      {...contentLinkHandlers(() => {
+        if (typeof href === 'string') openLink(href);
+      })}
     >
       {children}
     </a>
@@ -104,14 +102,20 @@ function ChatCode({
 
 /**
  * A messaging app where the message names one with its logo: the logo and the
- * app's name (the image's alt text) in bold, inline and on one line; any other
- * image as usual.
+ * app's name (the image's alt text) in bold, inline and on one line; an image
+ * from another computer once the reader asks for it; any other image as usual.
  */
 function ChatImage(props: React.ComponentProps<'img'> & ExtraProps) {
   const { hasBridgeIcon, BridgeIcon } = useChatHost();
   const platform = platformOfLogoUrl(props.src);
   if (platform === null) {
     const DefaultImage = defaultComponents.img;
+    if (typeof props.src === 'string' && loadsFromElsewhere(props.src))
+      return (
+        <AskBeforeLoading src={props.src} alt={props.alt ?? ''}>
+          <DefaultImage {...props} referrerPolicy="no-referrer" />
+        </AskBeforeLoading>
+      );
     return <DefaultImage {...props} />;
   }
   return (

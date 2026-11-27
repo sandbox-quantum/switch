@@ -103,7 +103,7 @@ from switch_core.chats.signals import ChatSignals
 from switch_core.chats.stream_reads import chat_stream_slots_for
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
 from switch_core.clients.admin_messages import AdminMessageType
-from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
+from switch_core.clients.agent_admin import AgentAdministration, AgentRequests
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.client_signals import ClientSignals
@@ -203,6 +203,7 @@ from switch_core.delivery.router import (
     MessageRouter,
     sweep_pending_decisions,
 )
+from switch_core.delivery.send_limits import SendLimits
 from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
@@ -692,7 +693,10 @@ async def _prepare_database(config: SwitchConfig) -> None:
     if owner_url is None:
         return
     owner_engine = create_async_engine(
-        owner_url, poolclass=NullPool, connect_args=config.db_connect_args
+        owner_url,
+        poolclass=NullPool,
+        connect_args=config.db_connect_args,
+        hide_parameters=True,
     )
     try:
         async with owner_engine.begin() as connection:
@@ -1037,6 +1041,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         ),
         decisions=decision_client if config.decision_routing_enabled else None,
         decision_max_age_seconds=config.decision_pending_max_age_seconds,
+        send_limits=SendLimits.from_config(config, clock=time.monotonic),
     )
 
     MembershipSignals(invites=invites, bus=signal_bus, router=router)
@@ -1186,7 +1191,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # The rename and delete commands reach AgentCore through this, bound once
     # AgentCore exists below.
     agent_admin = AgentAdministration()
-    deletion_requests = AgentDeletionRequests()
+    agent_requests = AgentRequests()
 
     # Registered after RoomService is built: the command consumer owns the
     # `!invite-agent` command, which reuses RoomService to add agents to the
@@ -1206,7 +1211,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         room_service=room_service,
         user_store=user_store,
         agent_admin=agent_admin,
-        deletion_requests=deletion_requests,
+        agent_requests=agent_requests,
         connections=connections,
         frontend_base_url=config.dashboard_base_url,
         follow_the_conversation_enabled=config.follow_the_conversation_enabled,
@@ -1274,7 +1279,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         ),
     )
     agent_admin.bind(protocol)
-    protocol.deletion_requests = deletion_requests
+    protocol.agent_requests = agent_requests
     # Every close reports, whichever of the five paths did it — and only for a
     # connection the handler saw start.
     connections.set_close_listener(protocol.sessions.on_close)
@@ -2722,6 +2727,7 @@ async def _schema_ahead(config: SwitchConfig, alembic_cfg: AlembicConfig) -> boo
         config.owner_database_url or config.database_url,
         poolclass=NullPool,
         connect_args=config.db_connect_args,
+        hide_parameters=True,
     )
     try:
         return await schema_ahead_through_expand_only(engine, alembic_cfg)
@@ -2737,7 +2743,10 @@ async def _check_schema_at_head(config: SwitchConfig) -> None:
             "which never uses it. Remove it from this process's environment."
         )
     engine = create_async_engine(
-        config.database_url, poolclass=NullPool, connect_args=config.db_connect_args
+        config.database_url,
+        poolclass=NullPool,
+        connect_args=config.db_connect_args,
+        hide_parameters=True,
     )
     try:
         await require_schema_at_head(engine, _alembic_config())

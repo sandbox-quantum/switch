@@ -13,6 +13,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
 )
 from switch_core.clients.admin_messages import SENDER_IS_APP_MARKER
+from switch_core.delivery.send_limits import MessageRefused, SendRateLimited
 from switch_core.trust.client import NullTrustClient
 
 
@@ -29,6 +30,12 @@ class _FakeHumanActor:
         self.uploads: list[dict[str, Any]] = []
         self.media: list[dict[str, Any]] = []
         self.messages: list[dict[str, Any]] = []
+
+    refusal: MessageRefused | None = None
+
+    def admit_message(self, authored: str | None) -> None:
+        if self.refusal is not None:
+            raise self.refusal
 
     async def upload_media(self, data: bytes, mimetype: str, filename: str) -> str:
         self.uploads.append({"data": data, "mimetype": mimetype, "filename": filename})
@@ -48,6 +55,7 @@ class _FakeHumanActor:
         thread_root_id=None,
         group=None,
         extra_content=None,
+        authored=None,
     ):  # noqa: ANN001, ANN201
         self.media.append(
             {
@@ -61,6 +69,7 @@ class _FakeHumanActor:
                 "thread_root_id": thread_root_id,
                 "group": group,
                 "extra_content": extra_content,
+                "authored": authored,
             }
         )
         return f"$evt-{len(self.media) - 1}"
@@ -74,12 +83,14 @@ class _FakeHumanActor:
         format=None,
         thread_root_id=None,
         extra_content=None,
+        authored=None,
     ):  # noqa: ANN001, ANN201, A002
         self.messages.append(
             {
                 "content": content,
                 "thread_root_id": thread_root_id,
                 "extra_content": extra_content,
+                "authored": authored,
             }
         )
         return "$evt-text"
@@ -196,6 +207,22 @@ async def test_three_attachments_are_stamped_as_one_group(
     assert bridge.human_actor.messages == []
 
 
+async def test_a_post_over_its_senders_allowance_stores_none_of_its_files(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    bridge = _fake_bridge(session_factory)
+    refused = SendRateLimited(retry_after=1.0, burst=30, per_second=2.0, first=True)
+    bridge.human_actor.refusal = refused
+    bridge._tell_message_refused = AsyncMock()
+    msg = _msg(attachments=[_attachment("cat.png", "image/png")])
+
+    assert await CollaborationCore._handle_inbound_message(bridge, msg) is None
+
+    assert bridge.human_actor.uploads == []
+    assert bridge.human_actor.media == []
+    bridge._tell_message_refused.assert_awaited_once_with(msg, refused, "!room:s")
+
+
 async def test_a_post_delivered_again_writes_into_the_same_group(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -255,6 +282,8 @@ async def test_attachment_failures_are_disclosed_alongside_text(
     assert "huge.zip" in body
     assert "too large" in body
     assert "attachment not relayed" in body
+    # The note is Switch's, so the sender's length limit is held to their words.
+    assert bridge.human_actor.messages[0]["authored"] == "see attached"
 
 
 async def test_attachment_failures_are_disclosed_when_text_is_empty(
@@ -302,6 +331,7 @@ async def test_attachment_failures_ride_on_the_caption_of_relayed_media(
     caption = bridge.human_actor.media[0]["caption"]
     assert "two files, one failed" in caption
     assert "huge.zip" in caption
+    assert bridge.human_actor.media[0]["authored"] == "two files, one failed"
 
 
 async def test_a_post_from_an_app_is_marked_as_one(

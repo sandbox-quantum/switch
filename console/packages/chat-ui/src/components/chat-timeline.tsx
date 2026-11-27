@@ -5,12 +5,12 @@ import { Fragment, type ReactNode, useState } from 'react';
 import type { ChatApproval } from '../contracts/activity';
 import type { ChatAgent, ChatKickoff, ChatMessage } from '../contracts/chats';
 import {
-  chatAgentLabel,
+  chatAgentNaming,
   isSessionStartingNotice,
   liveSessionStartingNotices,
   turnEndNotice,
 } from '../contracts/chats';
-import { AgentAvatar, BridgePlatformLabel } from '../host';
+import { AgentAvatar, BridgePlatformLabel, useChatHost } from '../host';
 import {
   foldTurnEndNotices,
   placeRequests,
@@ -29,8 +29,10 @@ import {
   personTargets,
   tokensFromSpans,
 } from '../model/mentions';
+import { messageText } from '../model/message-text';
 import { personColour } from '../model/person-colour';
 import { hiddenStopRows } from '../model/stop-rows';
+import { readsAsSwitchBuddy } from '../model/switch-buddy';
 import { Button } from '../primitives/button';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatTimeline, PendingSend } from '../stores/chat-timeline-store';
@@ -40,12 +42,37 @@ import {
   AgentRow,
   ChatActivityBlock,
   ChatRequests,
+  type RowAgent,
   turnEndLabel,
   turnShown,
 } from './chat-activity-block';
+import { requestAsker } from './chat-approval-card';
 import { ChatAttachments } from './chat-attachments';
 import { type ChatEntrance, Entrance } from './chat-entrance';
 import { MentionMark } from './mention-mark';
+
+/**
+ * An agent as a row names it (`chatAgentNaming`). One the chat does not list
+ * goes by `fallback`, the name it sent under or its id; but a name that reads
+ * as switch-buddy's, on an agent that is not the person's own buddy, cannot
+ * be checked against a unique name, so it goes by its id. `isOwnBuddy` is the
+ * host's (`ChatHost.isOwnBuddy`).
+ */
+function rowAgent(
+  agent: ChatAgent | null,
+  agentId: string | null,
+  fallback: string,
+  serverId: string,
+  isOwnBuddy: (serverId: string, agentId: string) => boolean
+): RowAgent {
+  if (agent) {
+    const { label, uniqueName } = chatAgentNaming(agent, isOwnBuddy(serverId, agent.id));
+    return { id: agent.id, name: label, uniqueName, iconUrl: agent.iconUrl };
+  }
+  const unchecked =
+    agentId !== null && readsAsSwitchBuddy(fallback) && !isOwnBuddy(serverId, agentId);
+  return { id: null, name: unchecked ? agentId : fallback, uniqueName: null, iconUrl: null };
+}
 
 /** Messages more than this far apart start a new dated group. */
 const GROUP_GAP_MS = 30 * 60 * 1000;
@@ -84,7 +111,7 @@ function MentionText({
   people: MentionPerson[];
   serverId: string;
 }) {
-  const body = message.body;
+  const body = messageText(message);
   // The server's stretches say whom each mention names; older messages are read from the text,
   // the people the message names first, so one sharing an agent's name reads as the person.
   const tokens = message.mentions.length
@@ -187,6 +214,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
   onReply,
   entrance,
 }: Props) {
+  const { isOwnBuddy } = useChatHost();
   // Your first message is chosen as the chat is first drawn: the one waiting
   // to be sent then, or already sent. It does not slide in again when the
   // server takes a waiting one and it is drawn as sent.
@@ -317,15 +345,16 @@ export const ChatTimelineView = observer(function ChatTimelineView({
     return (
       <AgentRow
         key={key}
-        agent={{
-          name: agent ? chatAgentLabel(agent) : activity.agentId,
-          iconUrl: agent?.iconUrl ?? null,
-        }}
+        agent={rowAgent(agent, activity.agentId, activity.agentId, serverId, isOwnBuddy)}
         serverId={serverId}
         head={head}
         className={spacing(head)}
       >
-        <ChatRequests activity={activity} requests={requests} />
+        <ChatRequests
+          activity={activity}
+          requests={requests}
+          asker={requestAsker(agent, activity.agentId)}
+        />
       </AgentRow>
     );
   };
@@ -364,10 +393,13 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         const chip = threadChip(message, find);
         const turns = turnsByMessage.get(message.messageId) ?? [];
         const agent = agentOf(message.sender.agentId);
-        const agentLabel = {
-          name: agent ? chatAgentLabel(agent) : message.sender.name,
-          iconUrl: agent?.iconUrl ?? null,
-        };
+        const agentLabel = rowAgent(
+          agent,
+          message.sender.agentId,
+          message.sender.name,
+          serverId,
+          isOwnBuddy
+        );
         const agentRow = notice || ended !== null || message.sender.kind === 'agent';
         const head = startsBlock(agentRow ? message.sender.agentId : null);
         const kickoff = message.sender.kind === 'system' ? message.kickoff : null;
@@ -387,7 +419,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                   icon={<Loader2 aria-hidden className="size-3.5 animate-spin" />}
                   label={
                     agents.length > 1
-                      ? `${message.sender.name} is starting a session…`
+                      ? `${agentLabel.name} is starting a session…`
                       : 'Starting a session…'
                   }
                   active
@@ -477,7 +509,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                   <div className="flex flex-col gap-1">
                     {chip && <ThreadChipButton chip={chip} />}
                     <div className="text-sm leading-relaxed">
-                      <ChatMarkdown>{message.body}</ChatMarkdown>
+                      <ChatMarkdown>{messageText(message)}</ChatMarkdown>
                     </div>
                     <ChatAttachments
                       serverId={serverId}
@@ -517,10 +549,14 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                     withReasoning={withReasoning}
                     endReason={endReasons.get(`${activity.agentId}:${turn.turnId}`) ?? null}
                     head={head}
-                    agent={{
-                      name: turnAgent ? chatAgentLabel(turnAgent) : activity.agentId,
-                      iconUrl: turnAgent?.iconUrl ?? null,
-                    }}
+                    agent={rowAgent(
+                      turnAgent,
+                      activity.agentId,
+                      activity.agentId,
+                      serverId,
+                      isOwnBuddy
+                    )}
+                    asker={requestAsker(turnAgent, activity.agentId)}
                     className={spacing(head)}
                   />
                 );
@@ -651,20 +687,32 @@ function KickoffRow({
   id: string;
   className: string;
 }) {
-  const sender = kickoff.displayName ?? (agent ? chatAgentLabel(agent) : kickoff.name);
+  const { isOwnBuddy } = useChatHost();
+  // An agent's kickoff names it as its rows do; `name` is then its unique name.
+  const sender =
+    kickoff.agentId !== null
+      ? chatAgentNaming(
+          { name: kickoff.name, displayName: kickoff.displayName ?? agent?.displayName ?? null },
+          isOwnBuddy(serverId, kickoff.agentId)
+        )
+      : { label: kickoff.displayName ?? kickoff.name, uniqueName: null };
   return (
     <div {...props} className={cn('rounded-xl border bg-background-1 px-4 py-3', props.className)}>
       <div className="mb-1.5 flex items-center gap-2 text-xs text-foreground-muted">
         {kickoff.agentId !== null && (
           <AgentAvatar
-            name={sender}
+            agentId={kickoff.agentId}
+            name={sender.label}
             iconUrl={kickoff.iconUrl ?? agent?.iconUrl ?? null}
             serverId={serverId}
             size={16}
           />
         )}
         <span>
-          Kickoff from <span className="font-medium text-foreground">{sender}</span>
+          Kickoff from <span className="font-medium text-foreground">{sender.label}</span>
+          {sender.uniqueName !== null && (
+            <span className="text-foreground-passive"> @{sender.uniqueName}</span>
+          )}
         </span>
       </div>
       <div className="text-sm leading-relaxed">

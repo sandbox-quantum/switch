@@ -2,15 +2,17 @@ import { Download, FileIcon, Loader2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { ChatAttachment } from '../contracts/chats';
 import { type ChatHost, useChatHost } from '../host';
+import { attachmentFilename } from '../model/attachment-filename';
 import { failureText } from '../model/failures';
 import { Button } from '../primitives/button';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '../primitives/dialog';
 
 /**
- * A room attachment's bytes, fetched through the chat's media route (which
- * checks membership and that the file belongs to the room) and kept for the
- * session as object URLs — dropped when the person loses the room or the
- * server's chats are reset.
+ * A room image's bytes, fetched through the chat's media route (which checks
+ * membership and that the file belongs to the room) and kept for the session
+ * as object URLs — dropped when the person loses the room or the server's
+ * chats are reset. Only images are drawn from them; saving a file is the
+ * host's (`ChatHost.saveAttachment`), which never renders it.
  */
 const media = new Map<string, Promise<string>>();
 const mediaKey = (serverId: string, roomId: string, uri: string) =>
@@ -46,11 +48,7 @@ async function saveAttachment(
   attachment: ChatAttachment
 ): Promise<void> {
   try {
-    const url = await mediaUrl(host, serverId, roomId, attachment.uri);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = attachment.filename;
-    link.click();
+    await host.saveAttachment(serverId, roomId, attachment);
   } catch (caught) {
     host.toast({
       title: failureText(caught, 'Could not download the file.'),
@@ -113,22 +111,23 @@ function ChatImage({
       </span>
     );
   const save = () => void saveAttachment(host, serverId, roomId, attachment);
+  const name = attachmentFilename(attachment.filename);
   return (
     <span className="group/image relative inline-block max-w-full">
       <button
         type="button"
-        aria-label={`Open ${attachment.filename}`}
+        aria-label={`Open ${name}`}
         onClick={() => setOpen(true)}
         className="block max-w-full cursor-zoom-in rounded-lg"
       >
         <img
           src={url}
-          alt={attachment.filename}
+          alt={name}
           className="max-h-72 max-w-full rounded-lg border border-border object-contain"
         />
       </button>
       <span className="absolute top-1 right-1 opacity-0 shadow-sm transition-opacity group-focus-within/image:opacity-100 group-hover/image:opacity-100">
-        <DownloadButton filename={attachment.filename} onClick={save} />
+        <DownloadButton filename={name} onClick={save} />
       </span>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
@@ -140,9 +139,9 @@ function ChatImage({
         >
           <div className="flex shrink-0 items-center gap-2">
             <DialogTitle className="min-w-0 flex-1 truncate text-sm font-medium text-white">
-              {attachment.filename}
+              {name}
             </DialogTitle>
-            <DownloadButton filename={attachment.filename} onClick={save} />
+            <DownloadButton filename={name} onClick={save} />
             <DialogClose
               render={
                 <Button type="button" variant="secondary" size="icon-xs" aria-label="Close" />
@@ -152,11 +151,7 @@ function ChatImage({
             </DialogClose>
           </div>
           <div className="flex min-h-0 flex-1 items-center justify-center">
-            <img
-              src={url}
-              alt={attachment.filename}
-              className="max-h-full max-w-full object-contain"
-            />
+            <img src={url} alt={name} className="max-h-full max-w-full object-contain" />
           </div>
         </DialogContent>
       </Dialog>
@@ -180,19 +175,20 @@ function ChatFileChip({
     await saveAttachment(host, serverId, roomId, attachment);
     setBusy(false);
   };
+  const name = attachmentFilename(attachment.filename);
   return (
     <button
       type="button"
       onClick={() => void download()}
       className="flex max-w-xs items-center gap-2 rounded-lg border border-border bg-background-1 px-3 py-2 text-left text-xs hover:bg-background-2"
-      title={`Download ${attachment.filename}`}
+      title={`Download ${name}`}
     >
       {busy ? (
         <Loader2 className="size-4 shrink-0 animate-spin" />
       ) : (
         <FileIcon className="size-4 shrink-0 text-foreground-muted" />
       )}
-      <span className="min-w-0 truncate">{attachment.filename}</span>
+      <span className="min-w-0 truncate">{name}</span>
       <span className="shrink-0 text-foreground-muted">{formatSize(attachment.size)}</span>
     </button>
   );

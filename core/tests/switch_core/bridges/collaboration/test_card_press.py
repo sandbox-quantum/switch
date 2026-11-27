@@ -89,6 +89,9 @@ class _Human:
         self.sources: list[str] = []
         self.event_id: str | None = "$press"
 
+    def admit_message(self, authored: str | None) -> None:
+        return None
+
     async def send_message(
         self,
         room_id: str,

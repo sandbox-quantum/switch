@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { resolveDefaultDatabasePath } from './database-file';
+import { makeDatabaseFilesOwnerOnly, resolveDefaultDatabasePath } from './database-file';
 import { CURRENT_DB_FILENAME, LEGACY_DB_FILENAMES } from './default-path';
 
 function seedDatabase(path: string, marker: string): void {
@@ -97,5 +97,69 @@ describe('resolveDefaultDatabasePath (emdash -> switchdash migration)', () => {
     } finally {
       copied.close();
     }
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('the database files are its owner’s alone', () => {
+  let dir: string;
+  const mode = (path: string) => fs.statSync(path).mode & 0o777;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'switch-console-db-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('creates a new database 0600, and SQLite gives its WAL files the same mode', () => {
+    const path = join(dir, CURRENT_DB_FILENAME);
+
+    makeDatabaseFilesOwnerOnly(path);
+    const db = new Database(path);
+    try {
+      db.pragma('journal_mode = WAL');
+      db.exec('CREATE TABLE t (marker TEXT)');
+      expect(mode(path)).toBe(0o600);
+      expect(mode(`${path}-wal`)).toBe(0o600);
+      expect(mode(`${path}-shm`)).toBe(0o600);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('narrows an existing database and the WAL files beside it', () => {
+    const path = join(dir, CURRENT_DB_FILENAME);
+    seedDatabase(path, 'kept');
+    for (const file of [path, `${path}-wal`, `${path}-shm`]) {
+      fs.writeFileSync(file, '', { flag: 'a' });
+      fs.chmodSync(file, 0o644);
+    }
+
+    makeDatabaseFilesOwnerOnly(path);
+
+    expect(mode(path)).toBe(0o600);
+    expect(mode(`${path}-wal`)).toBe(0o600);
+    expect(mode(`${path}-shm`)).toBe(0o600);
+    expect(readMarker(path)).toBe('kept');
+  });
+
+  it('leaves no current database behind when the legacy copy fails', () => {
+    fs.writeFileSync(join(dir, 'emdash4.db'), 'not a database');
+
+    expect(() => resolveDefaultDatabasePath(dir)).toThrow();
+
+    expect(fs.existsSync(join(dir, CURRENT_DB_FILENAME))).toBe(false);
+  });
+
+  it('copies a legacy database forward as 0600', () => {
+    const legacy = join(dir, 'emdash4.db');
+    seedDatabase(legacy, 'v4');
+    fs.chmodSync(legacy, 0o644);
+
+    const resolved = resolveDefaultDatabasePath(dir);
+
+    expect(readMarker(resolved)).toBe('v4');
+    expect(mode(resolved)).toBe(0o600);
   });
 });

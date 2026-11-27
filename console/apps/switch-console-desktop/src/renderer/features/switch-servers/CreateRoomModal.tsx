@@ -11,6 +11,7 @@ import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { openRoomView } from '@renderer/features/sidebar/sidebar-room-grouping';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { isOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import { addableAgents, addablePeople } from '@renderer/features/switch-rooms/room-labels';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
@@ -131,7 +132,11 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     const failed = agentsQuery.isError || (!bridged && allowedQuery.isError);
     return {
       offered: offered.map((agent) =>
-        agentParticipant(agent, providerLabel(agent.id, agent.knownAgentType))
+        agentParticipant(
+          agent,
+          providerLabel(agent.id, agent.knownAgentType),
+          isOwnBuddy(serverId, agent.id)
+        )
       ),
       all: agentsQuery.data ?? [],
       loading: agentsQuery.isLoading || (!bridged && allowedQuery.isLoading),

@@ -3,6 +3,8 @@ import { updateMyName } from '@main/core/switch-servers/gateway-client';
 import {
   assertManagedServerUrlFree,
   ensureManagedServer,
+  getManagedServer,
+  getRemoteManagedServer,
   setActiveServerId,
 } from '@main/core/switch-servers/servers-store';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
@@ -31,6 +33,7 @@ import {
 } from './constants';
 import { classifyVersionDrift, readDeployedVersion } from './deployed-version';
 import { buildEnvFile, keysDisagreeing, telemetryRequested } from './env-file';
+import { followManagedServerAddress } from './follow-server-address';
 import { apiUrlFor, managedServerAddresses, type LocalServerPorts } from './free-port';
 import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
@@ -479,7 +482,10 @@ export async function registerManagedServer(
   activate: boolean,
   onMessage: (message: string) => void
 ): Promise<string> {
+  const previous =
+    ref.kind === 'remote' ? await getRemoteManagedServer(ref.sshHost) : await getManagedServer();
   const server = await ensureManagedServer({ name: serverName, ...addresses }, ref);
+  await followManagedServerAddress(previous?.url ?? null, server);
   if (activate) await setActiveServerId(server.id);
 
   onMessage('Signing in…');

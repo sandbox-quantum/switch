@@ -155,6 +155,7 @@ export function DeviceLoginForm({
         })
       }
       failureText={failureText}
+      sealing={null}
       onClose={onClose}
     />
   );

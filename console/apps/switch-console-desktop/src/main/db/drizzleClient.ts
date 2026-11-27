@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { makeDatabaseFilesOwnerOnly } from './database-file';
 import { resolveDatabasePath } from './path';
 import * as schema from './schema';
 
@@ -22,6 +23,7 @@ export interface CreateDrizzleClientOptions {
 const DEFAULT_BUSY_TIMEOUT_MS = 5000;
 
 function openDatabase(filePath: string, busyTimeoutMs: number): Database.Database {
+  if (filePath !== ':memory:') makeDatabaseFilesOwnerOnly(filePath);
   const db = new Database(filePath);
   db.pragma('journal_mode = WAL');
   db.pragma(`busy_timeout = ${busyTimeoutMs}`);

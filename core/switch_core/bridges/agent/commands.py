@@ -23,6 +23,12 @@ from switch_core.aliases import (
     validate_alias_format,
 )
 from switch_core.authz import Principal
+from switch_core.bridges.agent.agent_change_requests import (
+    CONFIRM_COMMAND,
+    confirm_with,
+    record_confirmed,
+    suspension_refusal,
+)
 from switch_core.bridges.agent.protocol.agent_core import (
     AgentExistsError,
     AgentRenameRefused,
@@ -2269,7 +2275,7 @@ async def _cmd_delete_agent(
 
     meta = await host._resolve_room_meta(room.room_id)
     agent_request = (
-        host._deletion_requests.take(meta.room_id, agent_id)
+        host._agent_requests.take(meta.room_id, agent_id)
         if confirming and meta is not None
         else None
     )
@@ -2342,6 +2348,147 @@ async def _cmd_delete_agent(
         event.user_id,
     )
     await _reply(host, room, event, "\n".join(lines))
+
+
+AGENT_CHANGE_USAGE = (
+    f"Usage: `!{CONFIRM_COMMAND} @agent` to see the change an agent asked to "
+    f"make to it, then `!{CONFIRM_COMMAND} @agent confirm` to make it or "
+    f"`!{CONFIRM_COMMAND} @agent drop` to drop it."
+)
+
+
+async def _owner_refusal(
+    host: CommandConsumer, session: AsyncSession, event: CommandEvent, owner_id: str
+) -> str | None:
+    """Why this command's sender may not confirm a change to an agent of
+    `owner_id`'s, or None when they are that owner, in person: from a chat
+    account they linked, or in Switch Console. Never an agent, whoever owns
+    it, and never a workspace admin acting for the owner."""
+    sender = await _command_resolver(host).resolve_sender(session, event.user_id)
+    if sender is not None and sender.kind == "user" and owner_id in sender.user_ids:
+        return None
+    if sender is not None and sender.kind == "user" and not sender.user_ids:
+        return (
+            "Only the agent's owner can confirm a change an agent asked for. "
+            + _LINK_YOUR_ACCOUNT
+        )
+    return (
+        "Only the agent's owner can confirm a change an agent asked for, "
+        "and only in person."
+    )
+
+
+async def _cmd_agent_change(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    """See, confirm or drop a change an agent asked to make to one of its
+    owner's agents (`agent_change_requests`). Anyone in the room may see it;
+    only the owner may confirm or drop it. Confirming drops it instead while
+    the owner, the agent that asked or the agent it changes is suspended."""
+    host = cast("CommandConsumer", client)
+    parts = (event.args or "").split()
+    if not parts:
+        await _reply(host, room, event, AGENT_CHANGE_USAGE)
+        return
+    name = _bare_name(parts[0]).replace("`", "'")
+    action = _bare_name(parts[1]).lower() if len(parts) > 1 else ""
+    meta = await host._resolve_room_meta(room.room_id)
+    waiting = (
+        host._agent_requests.waiting_change(meta.room_id, name)
+        if meta is not None
+        else None
+    )
+    if waiting is None:
+        await _reply(
+            host,
+            room,
+            event,
+            f"No change to `{name}` is waiting to be confirmed in this room. A "
+            "change an agent asks for lapses after 2 minutes.",
+        )
+        return
+    lines = "".join(f"\n- {line}" for line in waiting.summary)
+    if action not in ("confirm", "drop"):
+        await _reply(
+            host,
+            room,
+            event,
+            f"{waiting.requested_by} asked for this, for `{waiting.agent_name}`:"
+            f"{lines}\nIts owner can make it so with `{confirm_with(waiting.agent_name)}`"
+            f", or drop it with `!{CONFIRM_COMMAND} {waiting.agent_name} drop`.",
+        )
+        return
+    async with host.session_factory() as session:
+        refusal = await _owner_refusal(host, session, event, waiting.owner_id)
+        suspended = (
+            await suspension_refusal(session, waiting)
+            if refusal is None and action == "confirm"
+            else None
+        )
+    if refusal is not None:
+        await _reply(host, room, event, f"⚠️ {refusal} Nothing was changed.")
+        return
+    assert meta is not None
+    request = host._agent_requests.take_change(meta.room_id, name)
+    if request is not waiting:
+        await _reply(
+            host, room, event, f"The change to `{name}` was already dealt with."
+        )
+        return
+    if suspended is not None:
+        logger.warning(
+            "Dropped the change %s asked for to %s at its confirmation: %s",
+            request.requested_by,
+            request.agent_name,
+            suspended,
+        )
+        await _reply(
+            host,
+            room,
+            event,
+            f"⚠️ {suspended}, so the change {request.requested_by} asked for "
+            "was dropped. Nothing was changed.",
+        )
+        return
+    if action == "drop":
+        logger.info(
+            "Owner dropped the change %s asked for to %s",
+            request.requested_by,
+            request.agent_name,
+        )
+        await _reply(
+            host,
+            room,
+            event,
+            f"Dropped the change {request.requested_by} asked for. Nothing was "
+            "changed.",
+        )
+        return
+    try:
+        await request.apply()
+    except ValueError as exc:
+        # Management's refusals already say that nothing was changed.
+        await _reply(host, room, event, f"⚠️ {exc}")
+        return
+    await record_confirmed(
+        host.session_factory, owner_id=request.owner_id, request=request
+    )
+    logger.info(
+        "Owner confirmed the change %s asked for to %s",
+        request.requested_by,
+        request.agent_name,
+    )
+    done = (
+        f"Created `{request.agent_name}`"
+        if request.agent_id is None
+        else f"Changed `{request.agent_name}`"
+    )
+    await _reply(
+        host,
+        room,
+        event,
+        f"{done}, as {request.requested_by} asked:{lines}",
+    )
 
 
 # Emoji + label shown per status by the !status command.
@@ -2993,6 +3140,20 @@ COMMANDS: list[Command] = [
         args_spec=(
             CommandArg("agent", "The agent to delete", required=True),
             CommandArg("confirm", "Type confirm to go ahead", required=False),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        CONFIRM_COMMAND,
+        "Confirm or drop a change an agent asked to make to one of your agents. "
+        f"Owner only. Usage: `!{CONFIRM_COMMAND} @agent` to see it, then "
+        f"`!{CONFIRM_COMMAND} @agent confirm` or `!{CONFIRM_COMMAND} @agent drop`.",
+        _cmd_agent_change,
+        args_spec=(
+            CommandArg("agent", "The agent the change is for", required=True),
+            CommandArg(
+                "action", "confirm, or drop (leave empty to see it)", required=False
+            ),
         ),
         admin_owned=True,
     ),

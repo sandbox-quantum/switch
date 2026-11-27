@@ -534,7 +534,7 @@ export class BoxController {
         if (
           !entry ||
           entry.desired_state !== 'running' ||
-          definitionProblem(entry, reconcileDeps.offered)
+          definitionProblem(entry, reconcileDeps.context())
         )
           return null;
         return startAgent(

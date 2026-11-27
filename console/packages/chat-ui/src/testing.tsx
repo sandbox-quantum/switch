@@ -18,7 +18,9 @@ export function stubChatHost(overrides: Partial<ChatHost> = {}): ChatHost {
     media: async () => {
       throw new Error('No media in this test.');
     },
+    saveAttachment: async () => {},
     openLink: () => {},
+    isOwnBuddy: () => false,
     isModalOpen: () => false,
     toast: () => {},
     bridgePlatformLabel: (bridgeType) => bridgeType ?? 'messaging app',

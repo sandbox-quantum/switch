@@ -36,6 +36,9 @@ class _HumanActor:
         self._transport = process.transport(client)
         self._name = client.display_name
 
+    def admit_message(self, authored: str | None) -> None:
+        self._transport.admit_message(authored)
+
     async def send_message(self, room_id: str, content: str, **kw: object) -> str:
         result = await self._transport.send_message(
             room_id,

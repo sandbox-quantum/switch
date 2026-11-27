@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import {
+  DEVICE_POLICY_CHANGED_KIND,
+  type DeviceConsentNeed,
+  type DevicePolicyChangedMessage,
+  isDeviceConsentNeededMessage,
   isProviderRecheckReply,
   PROVIDER_RECHECK_KIND,
   type ProviderRecheckRequest,
@@ -81,6 +85,11 @@ export type SupervisorDeps = {
   onFinal: (exit: ControllerFinalExit) => void;
   /** One line the controller wrote, at the level it wrote it at. */
   onLine: (level: ControllerLogLevel, line: string) => void;
+  /**
+   * Every assigned agent that asks for something this device has not
+   * allowed, as the controller lists them whenever that changes.
+   */
+  onConsentNeeded: (needs: DeviceConsentNeed[]) => void;
   now: () => number;
   backoff: ControllerBackoff;
 };
@@ -184,6 +193,18 @@ export class ControllerSupervisor {
   }
 
   /**
+   * Tells the running controller the device policy changed, so it applies it
+   * now rather than when it next notices the file. A controller that is not
+   * running reads the policy when it starts.
+   */
+  policyChanged(): void {
+    const child = this.child;
+    if (!child?.connected) return;
+    const message: DevicePolicyChangedMessage = { kind: DEVICE_POLICY_CHANGED_KIND };
+    child.send(message);
+  }
+
+  /**
    * Stops supervising without signalling, and waits up to `timeoutMs` for the
    * process to end by itself (as it does once told it was revoked). Resolves
    * whether it did.
@@ -227,6 +248,10 @@ export class ControllerSupervisor {
     };
     child.once('error', (error) => finish(null, null, error));
     child.once('exit', (code, signal) => finish(code, signal, null));
+    child.on('message', (message) => {
+      if (this.child === child && isDeviceConsentNeededMessage(message))
+        this.deps.onConsentNeeded(message.needs);
+    });
     this.read(child.stdout, 'stdout');
     this.read(child.stderr, 'stderr');
     // A child that died before reading closes the pipe under us; its exit says why.

@@ -276,6 +276,8 @@ class SwitchConfig(BaseSettings):
         "decision_endpoint_url",
         "decision_api_key",
         "gateway_signup_refused_header",
+        "gateway_public_url",
+        "messaging_public_url",
         mode="before",
     )
     @classmethod
@@ -958,6 +960,23 @@ class SwitchConfig(BaseSettings):
     # a collaboration bridge will relay out). Uploads over this raise instead
     # of being truncated or silently dropped.
     agent_media_max_bytes: int = 20 * 1024 * 1024
+
+    # The longest message, in characters, a sender may write to a room. Every
+    # room row is copied to each agent in the room, so one message costs this
+    # many times the agents there. A longer message is refused with a reason
+    # its sender can act on, never cut short. What Switch writes into a
+    # message (a Switch Trust note, a line for a file it could not relay) is
+    # not counted against its sender (`delivery/send_limits.py`).
+    max_message_chars: int = Field(default=64 * 1024, ge=1)
+
+    # How fast one sender's messages are accepted: `message_rate_burst` at
+    # once, then `message_rate_per_second`. One allowance per sender, shared
+    # by every room they write in, by design: an agent busy in several rooms
+    # draws on the one allowance. Counted in each process, so with several
+    # replicas a sender whose messages are spread across them gets that many
+    # times the rate.
+    message_rate_burst: int = Field(default=30, ge=1)
+    message_rate_per_second: float = Field(default=2.0, gt=0)
 
     # Development only. No agent host speaks the session interaction contract
     # yet, so there is no session whose requests could reach a channel. With

@@ -179,7 +179,7 @@ export flattens them to `switch.agent_id`, and Datadog queries both as
 | One actor is moving many files | `security.attachment.uploaded` / `.downloaded` | `switch.agent_id`, `switch.actor_user_id` | 50 in 10 min | P3 |
 | An agent is asking for many service tokens | `security.service_token.issued` | `switch.agent_id` | 30 in 10 min | P3 |
 | Switch Trust blocked or redacted a message | actions `trust.message_blocked` / `trust.message_redacted` (an `alerted` or `errored` verdict is the log-only `security.trust.verdict`, not alerted on) | `switch.agent_id`, `switch.actor_user_id` | any | P3 |
-| An agent was given more power | actions `agent.auto_approve_enabled`, `agent.can_manage_agents_granted` | `switch.agent_id` | any | P3 |
+| An agent was given more power, not by its owner directly | actions `agent.auto_approve_enabled`, `agent.can_manage_agents_granted` with `security_details.by_owner` false (an agent acting for the owner, or no request) | `switch.agent_id` | any | P3 |
 | A platform operator acted in a workspace | action `platform.access` | `switch.actor_user_id` | any | P4 |
 | An API key was revealed | action `api_key.revealed` | `switch.actor_user_id` | any | P4 |
 | Sign-ins failing from one address | `security.auth.sign_in_failed` | `security_details.client_ip` | 20 in 10 min | P3 |

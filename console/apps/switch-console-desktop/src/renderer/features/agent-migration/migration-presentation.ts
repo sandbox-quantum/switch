@@ -13,6 +13,12 @@ export function migrationMachineState(machine: MigrationMachine): {
     return { tone: 'neutral', label: 'Server too old', note: controller.reason };
   if (controller?.kind === 'failed')
     return { tone: 'error', label: 'Needs attention', note: controller.reason };
+  if (controller?.kind === 'needs-consent')
+    return {
+      tone: 'warn',
+      label: 'Waiting for you',
+      note: `${machine.sshHost ?? 'This computer'} is not a machine of this server yet. Its agents move once you make it one; until then Console runs them.`,
+    };
   if (machine.moved === machine.total) return { tone: 'ok', label: 'Done', note: null };
   if (machine.problems.length > 0)
     return {

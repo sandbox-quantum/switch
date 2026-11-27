@@ -2,6 +2,9 @@ import { homedir } from 'node:os';
 import { machineProvider } from '@main/core/managed-agents/owned-machines';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import type {
+  DeviceAgentGrant,
+  DeviceConsentChoice,
+  DeviceConsentEvent,
   EmbeddedControllerOverview,
   MachineDetailsChange,
 } from '@shared/core/embedded-controller/embedded-controller';
@@ -48,6 +51,37 @@ export const embeddedControllerController = createRPCController({
     embeddedControllerService.updateDetails(params.serverId, params.changes),
 
   dismissRemoved: (serverId: string): Promise<void> => embeddedControllerService.dismiss(serverId),
+
+  /** What every server's agents ask of this computer that the person has not answered. */
+  consentAsks: (): Promise<DeviceConsentEvent[]> => embeddedControllerService.consentAsks(),
+
+  /** What this computer allows each agent of a server, whatever its definition says. */
+  deviceGrants: (serverId: string): Promise<DeviceAgentGrant[]> =>
+    embeddedControllerService.deviceGrants(serverId),
+
+  /** Allows an agent what it asked of this computer; only the person here can. */
+  allowForAgent: (params: {
+    serverId: string;
+    agentId: string;
+    choice: DeviceConsentChoice;
+  }): Promise<void> =>
+    embeddedControllerService.allowForAgent(params.serverId, params.agentId, params.choice),
+
+  /** Says no to what an agent asked of this computer, so it is not asked again. */
+  denyForAgent: (params: {
+    serverId: string;
+    agentId: string;
+    choice: DeviceConsentChoice;
+  }): Promise<void> =>
+    embeddedControllerService.denyForAgent(params.serverId, params.agentId, params.choice),
+
+  /** Takes back what this computer allowed an agent; `'all'` takes back everything. */
+  revokeForAgent: (params: {
+    serverId: string;
+    agentId: string;
+    choice: DeviceConsentChoice | 'all';
+  }): Promise<void> =>
+    embeddedControllerService.revokeForAgent(params.serverId, params.agentId, params.choice),
 
   /** Enrolls this computer again when the server no longer knows the machine it was. */
   enrollAgain: (serverId: string): Promise<void> => embeddedControllerService.enrollAgain(serverId),

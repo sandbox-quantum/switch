@@ -1220,6 +1220,7 @@ describe('StatusCollector', () => {
     });
     const collectorWith = (disk?: () => Promise<{ free: number; total: number } | null>) =>
       new StatusCollector({
+        context: () => ({ dataDir: dir, workspaces: join(dir, 'workspaces'), policy: null }),
         box: true,
         store,
         runtime,
@@ -1277,6 +1278,7 @@ describe('StatusCollector', () => {
     });
     const collectorWith = (meminfo: () => Promise<{ anon: number; cached: number } | null>) =>
       new StatusCollector({
+        context: () => ({ dataDir: dir, workspaces: join(dir, 'workspaces'), policy: null }),
         box: true,
         store,
         runtime,
@@ -1337,6 +1339,7 @@ describe('StatusCollector', () => {
       attached: () => true,
       dataDir: dir,
       workspacesDir: join(dir, 'workspaces'),
+      context: () => ({ dataDir: dir, workspaces: join(dir, 'workspaces'), policy: null }),
       deviceId: 'd'.repeat(64),
       version: '0.1.0',
       updatedBy: 'self',
@@ -1390,7 +1393,12 @@ describe('StatusCollector', () => {
       observed({
         alive: true,
         health: health('connecting'),
-        configured: { provider: 'claude', cwd: '/work/scout' },
+        configured: {
+          provider: 'claude',
+          cwd: '/work/scout',
+          runtimeMode: 'approval-required',
+          permissionMode: null,
+        },
       })
     );
     const resolved = await collector.collect(assignment);
@@ -1424,6 +1432,7 @@ describe('StatusCollector', () => {
     const awakeSeen: [string, number][] = [];
     const agentsSeen: string[][] = [];
     const collector = new StatusCollector({
+      context: () => ({ dataDir: dir, workspaces: join(dir, 'workspaces'), policy: null }),
       box: true,
       store,
       runtime,
@@ -1512,7 +1521,12 @@ describe('StatusCollector', () => {
       observed({
         alive: true,
         health: health('connecting'),
-        configured: { provider: 'claude', cwd: '/work/scout' },
+        configured: {
+          provider: 'claude',
+          cwd: '/work/scout',
+          runtimeMode: null,
+          permissionMode: null,
+        },
       })
     );
     const resolved = await collector.collect(assignment);
@@ -1583,6 +1597,7 @@ describe('StatusCollector', () => {
     });
     const called: string[] = [];
     const collector = new StatusCollector({
+      context: () => ({ dataDir: dir, workspaces: join(dir, 'workspaces'), policy: null }),
       box: false,
       store,
       runtime,
@@ -1917,6 +1932,7 @@ describe('a resting agent', () => {
         onChange: () => {},
       });
       const collector = new StatusCollector({
+        context: () => ({ dataDir: dir, workspaces: join(dir, 'workspaces'), policy: null }),
         box: true,
         store,
         runtime,

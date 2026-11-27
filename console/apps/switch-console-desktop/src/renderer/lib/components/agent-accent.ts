@@ -1,7 +1,7 @@
 import { pickAccent } from '@switch-console/chat-ui/model/agent-accent';
 import { useEffect, useState } from 'react';
 import { useThirdPartyAvatarsEnabled } from '@renderer/lib/stores/use-avatar-settings';
-import { agentAvatarSrc } from './agent-avatar';
+import { agentAvatarSrc, wearsBuddyPicture } from './agent-avatar';
 
 const SAMPLE_PX = 24;
 
@@ -41,11 +41,13 @@ function sampleAccent(src: string): Promise<string | null> {
 
 /** The main colour of an agent's avatar, from the same source the avatar shows; null for none or not yet known. */
 export function useAgentAccent(
-  agent: { name: string; iconUrl: string | null } | null,
+  agent: { id: string; name: string; iconUrl: string | null } | null,
   serverId: string | null
 ): string | null {
   const thirdParty = useThirdPartyAvatarsEnabled(serverId);
-  const src = agent ? agentAvatarSrc(agent.iconUrl, agent.name, thirdParty) : null;
+  const src = agent
+    ? agentAvatarSrc(agent.iconUrl, agent.name, thirdParty, wearsBuddyPicture(serverId, agent.id))
+    : null;
   const [loaded, setLoaded] = useState<{ src: string; accent: string | null } | null>(null);
   useEffect(() => {
     if (!src || settled.has(src)) return;

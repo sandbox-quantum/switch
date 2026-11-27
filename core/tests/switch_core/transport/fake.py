@@ -40,6 +40,7 @@ class FakeTransport:
         self._download = download or DownloadResult(body=b"", content_type="text/plain")
         self._fail_send = fail_send
 
+        self.admitted: list[str | None] = []
         self.sent_messages: list[dict[str, Any]] = []
         self.sent_events: list[tuple[str, str, dict[str, object]]] = []
         self.sent_media: list[dict[str, Any]] = []
@@ -90,6 +91,9 @@ class FakeTransport:
 
     # ── Outbound ──────────────────────────────────────────────────────────────
 
+    def admit_message(self, authored: str | None) -> None:
+        self.admitted.append(authored)
+
     def _next_id(self) -> str:
         self.next_event_id += 1
         return f"$fake{self.next_event_id}"
@@ -105,6 +109,7 @@ class FakeTransport:
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
         client_txn_id: str | None = None,
     ) -> SendResult:
         if self._fail_send:
@@ -121,6 +126,7 @@ class FakeTransport:
                 "mentions": mentions,
                 "thread_root_id": thread_root_id,
                 "extra_content": extra_content,
+                "authored": authored,
                 "client_txn_id": client_txn_id,
             }
         )
@@ -174,6 +180,7 @@ class FakeTransport:
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
     ) -> SendResult:
         if self._fail_send:
             raise TransportError(self._fail_send)
@@ -191,6 +198,7 @@ class FakeTransport:
                 "thread_root_id": thread_root_id,
                 "group": group,
                 "extra_content": extra_content,
+                "authored": authored,
             }
         )
         content: dict[str, object] = {

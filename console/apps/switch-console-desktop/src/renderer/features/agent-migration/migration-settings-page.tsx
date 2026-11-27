@@ -4,8 +4,10 @@ import { RelativeTime } from '@switch-console/chat-ui/primitives/relative-time';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { CircleCheck, Monitor, RefreshCw, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { TurnOnMachine } from '@renderer/features/machines/turn-on-machine';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { failureText } from '@renderer/lib/errors/describe-failure';
+import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
+import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { StatusBadge, type StatusTone } from '@renderer/lib/ui/status-badge';
 import { cn } from '@renderer/utils/utils';
@@ -33,7 +35,10 @@ const OVERVIEW_KEY = ['agent-migration-overview'];
 /**
  * Where the automatic move of this Console's agents onto managed machines
  * stands: one row per machine and server, with a counter, and what keeps any
- * agent from moving. Nothing here moves agents: Console does that by itself.
+ * agent from moving. Nothing here moves agents: Console does that by itself,
+ * onto computers that are already machines. A computer that is not yet one is
+ * offered here, with the same confirmation as everywhere else; only the
+ * person makes it one.
  */
 export const MigrationSettingsPage = observer(function MigrationSettingsPage() {
   const overview = useQuery({
@@ -90,6 +95,7 @@ export const MigrationSettingsPage = observer(function MigrationSettingsPage() {
               key={`${machine.sshHost ?? ''}:${machine.serverId}`}
               machine={machine}
               serverName={serverName(machine.serverId)}
+              onTurnedOn={() => runNow.mutate()}
             />
           ))}
         </ul>
@@ -115,11 +121,38 @@ export const MigrationSettingsPage = observer(function MigrationSettingsPage() {
   );
 });
 
-function MachineRow({ machine, serverName }: { machine: MigrationMachine; serverName: string }) {
+function MachineRow({
+  machine,
+  serverName,
+  onTurnedOn,
+}: {
+  machine: MigrationMachine;
+  serverName: string;
+  /** After the person made the computer a machine: its agents can move now. */
+  onTurnedOn: () => void;
+}) {
   const state = migrationMachineState(machine);
   const Icon = machine.sshHost === null ? Monitor : Server;
   const share = machine.total ? (machine.moved / machine.total) * 100 : 0;
   const name = machine.sshHost ?? 'This computer';
+  const controller = machine.controller;
+  const turnOn = useMutation({
+    mutationFn: async (workspaceId: string) => {
+      const { serverId, sshHost } = machine;
+      if (sshHost) await rpc.hostControllers.enable({ sshHost, serverId, workspaceId });
+      else await rpc.embeddedController.enable({ serverId, workspaceId });
+    },
+    onSuccess: onTurnedOn,
+    onError: (error) => {
+      const { headline, detail } = describeFailure(
+        error,
+        machine.sshHost
+          ? `Could not make ${machine.sshHost} a machine.`
+          : 'Could not turn on managed agents here.'
+      );
+      toast({ title: headline, description: detail ?? undefined, variant: 'destructive' });
+    },
+  });
   return (
     <li className="space-y-1.5 px-3 py-2.5">
       <div className="flex items-center gap-2.5">
@@ -158,6 +191,22 @@ function MachineRow({ machine, serverName }: { machine: MigrationMachine; server
       </div>
       {state.note && (
         <p className="pl-6.5 text-xs break-words text-foreground-muted">{state.note}</p>
+      )}
+      {controller?.kind === 'needs-consent' && (
+        <div className="pl-6.5">
+          <TurnOnMachine
+            serverId={machine.serverId}
+            label={name}
+            sshHost={machine.sshHost}
+            buttonLabel={
+              machine.sshHost
+                ? `Make ${machine.sshHost} a machine`
+                : 'Run managed agents on this computer'
+            }
+            busy={turnOn.isPending}
+            onConfirm={() => turnOn.mutate(controller.workspaceId)}
+          />
+        </div>
       )}
       {!state.note && machine.problems.length > 1 && (
         <ul className="space-y-0.5 pl-6.5 text-xs text-foreground-muted">

@@ -39,6 +39,9 @@ export type HostProbe = (sshHost: string) => Promise<void>;
 /** Distinguishes a rejected credential (no point retrying) from a dead network. */
 export type AuthErrorPredicate = (error: unknown) => boolean;
 
+/** Distinguishes a refused host key (the user has to decide) from a dead network. */
+export type HostKeyErrorPredicate = (error: unknown) => boolean;
+
 export type HostReachabilityLog = {
   info: (message: string, metadata?: Record<string, unknown>) => void;
   warn: (message: string, metadata?: Record<string, unknown>) => void;
@@ -47,6 +50,7 @@ export type HostReachabilityLog = {
 export type HostReachabilityServiceDeps = {
   probe: HostProbe;
   isAuthError: AuthErrorPredicate;
+  isHostKeyError: HostKeyErrorPredicate;
   publish: (reachability: HostReachability) => void;
   log: HostReachabilityLog;
   /** Injected so tests can drive the backoff without real timers. */
@@ -117,7 +121,7 @@ export class HostReachabilityService extends EventEmitter {
       }
       const reachability = hydrate(record);
       this.hosts.set(record.sshHost, { reachability });
-      if (isHostBlocked(reachability) && reachability.status !== 'suspended') {
+      if (reachability.status === 'unreachable') {
         this.scheduleProbe(record.sshHost);
       }
     }
@@ -166,17 +170,23 @@ export class HostReachabilityService extends EventEmitter {
     });
   }
 
+  /** The blocked state a failure puts a host in. */
+  private failureStatus(error: unknown): HostReachabilityStatus {
+    if (this.deps.isAuthError(error)) return 'suspended';
+    if (this.deps.isHostKeyError(error)) return 'untrusted';
+    return 'unreachable';
+  }
+
   /**
    * Record that host-dependent work failed at the transport level. Moves the
-   * host into `unreachable` (or `suspended` for auth) and starts the shared
-   * backoff probe, so the failing caller does not have to retry on its own.
+   * host into `unreachable` (or `suspended` for auth, `untrusted` for a refused
+   * host key) and, when unreachable, starts the shared backoff probe, so the
+   * failing caller does not have to retry on its own.
    */
   reportFailure(sshHost: string, error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
     const entry = this.entry(sshHost);
-    const status: HostReachabilityStatus = this.deps.isAuthError(error)
-      ? 'suspended'
-      : 'unreachable';
+    const status = this.failureStatus(error);
     void this.transition(entry, sshHost, {
       status,
       lastError: message,
@@ -212,9 +222,7 @@ export class HostReachabilityService extends EventEmitter {
       } catch (error) {
         if (this.hosts.get(sshHost) !== entry) return entry.reachability;
         const message = error instanceof Error ? error.message : String(error);
-        const status: HostReachabilityStatus = this.deps.isAuthError(error)
-          ? 'suspended'
-          : 'unreachable';
+        const status = this.failureStatus(error);
         const next = await this.transition(entry, sshHost, {
           status,
           lastError: message,
@@ -258,10 +266,15 @@ export class HostReachabilityService extends EventEmitter {
     }
   }
 
-  /** After a system resume every host is suspect — re-probe the blocked ones. */
+  /**
+   * After a system resume every host is suspect — re-probe the blocked ones.
+   * Not a host whose key was refused: sleeping changes nothing about the key.
+   */
   handleSystemResume(): void {
     for (const [sshHost, entry] of this.hosts) {
-      if (isHostBlocked(entry.reachability)) void this.checkNow(sshHost);
+      if (isHostBlocked(entry.reachability) && entry.reachability.status !== 'untrusted') {
+        void this.checkNow(sshHost);
+      }
     }
   }
 
@@ -377,7 +390,7 @@ export class HostReachabilityService extends EventEmitter {
   private scheduleProbe(sshHost: string): void {
     const entry = this.entry(sshHost);
     this.cancelProbe(entry);
-    if (entry.reachability.status === 'suspended') return;
+    if (entry.reachability.status !== 'unreachable') return;
 
     const delayMs = probeDelayFor(entry.reachability.consecutiveFailures);
     entry.reachability = {

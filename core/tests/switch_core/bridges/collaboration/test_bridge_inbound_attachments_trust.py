@@ -59,6 +59,9 @@ class _FakeHumanActor:
         self.uploads: list[str] = []
         self.media: list[dict[str, Any]] = []
 
+    def admit_message(self, authored: str | None) -> None:
+        return None
+
     async def upload_media(self, data: bytes, mimetype: str, filename: str) -> str:
         self.uploads.append(filename)
         return f"mxc://s/{filename}"

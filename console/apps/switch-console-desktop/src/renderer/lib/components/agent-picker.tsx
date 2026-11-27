@@ -38,7 +38,13 @@ export function AgentPickerRow({
 }) {
   return (
     <>
-      <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} serverId={serverId} size={22} />
+      <AgentAvatar
+        agentId={agent.id}
+        name={agent.name}
+        iconUrl={agent.iconUrl}
+        serverId={serverId}
+        size={22}
+      />
       <span className="min-w-0 flex-1 truncate">{agent.name}</span>
       <span className="shrink-0 text-xs text-foreground-muted">{subtitle}</span>
     </>
@@ -62,7 +68,15 @@ export function ChosenAgentTile({
 }) {
   return (
     <ChosenTile
-      mark={<AgentAvatar name={agent.name} iconUrl={agent.iconUrl} serverId={serverId} size={26} />}
+      mark={
+        <AgentAvatar
+          agentId={agent.id}
+          name={agent.name}
+          iconUrl={agent.iconUrl}
+          serverId={serverId}
+          size={26}
+        />
+      }
       title={agent.name}
       subtitle={subtitle}
       subtitleTone={subtitleTone}
