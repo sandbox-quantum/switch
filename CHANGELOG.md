@@ -52,6 +52,16 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **A hosted agents v2 box serves one workspace, for now.** A box runs one
+  agent controller, so a second workspace's claim used to wait for a
+  reconnect that never came. It's now refused at once with a 409, code
+  `box_one_workspace`, and the first workspace's name (`workspace_name`) for
+  its own member. A box whose owner has left every workspace it served is
+  retired rather than handed to another workspace, and a deleted box is
+  brought back only in the workspace it served; otherwise the owner gets a new
+  box. v1 machines are unchanged.
+
 #### Fixed
 - **`switch.hosted.provider_login_problems` counts only providers an agent on
   the machine runs.** Cloud machines have every provider installed, so a login

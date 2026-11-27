@@ -19,6 +19,7 @@ from switch_core.db.models import (
     HostedPoolBox,
     MachineWorkspace,
     ServerAuditEvent,
+    Tenant,
     TenantMember,
     User,
     require_tenant_id,
@@ -70,6 +71,17 @@ MACHINE_WORKSPACES_FULL = (
     f"Your cloud machine already serves {MAX_MACHINE_WORKSPACES} workspaces, the most "
     "it can. Contact your server administrator."
 )
+#: Hosted agents v2: a box runs one agent controller, so it serves one
+#: workspace, for now. Fixed text, never anything from the request.
+BOX_ONE_WORKSPACE = (
+    "Your cloud box already serves another workspace. Each person's box can "
+    "serve one workspace for now."
+)
+BOX_ONE_WORKSPACE_CODE = "box_one_workspace"
+#: A box that serves only workspaces its owner has left is never handed to
+#: another workspace: its disk still holds theirs. It is retired instead, and
+#: the owner's next claim gets a new box.
+BOX_RETIRING = "Your previous cloud box is being retired. Try again in a few minutes."
 
 
 # What a claim changed, the first of these that applies when it does two at
@@ -123,6 +135,26 @@ PoolPick = Callable[[AsyncSession, str, datetime], Awaitable[str | None]]
 
 class CloudMachineConflict(Exception):
     """A machine cannot take the requested change; the message is the 409 detail."""
+
+
+class BoxServesAnotherWorkspace(CloudMachineConflict):
+    """The owner's box serves another workspace they're a member of, and a box
+    serves one (`BOX_ONE_WORKSPACE`). `workspace_name` is that workspace's
+    name, for its own member; None when it couldn't be read."""
+
+    code = BOX_ONE_WORKSPACE_CODE
+
+    def __init__(self, workspace_name: str | None) -> None:
+        super().__init__(BOX_ONE_WORKSPACE)
+        self.workspace_name = workspace_name
+
+
+class BoxRetired(CloudMachineConflict):
+    """The claim retired the owner's box (`BOX_RETIRING`): the caller commits
+    what the claim changed before it refuses, so the retirement stands."""
+
+    def __init__(self) -> None:
+        super().__init__(BOX_RETIRING)
 
 
 async def _advisory_lock(session: AsyncSession, key: str) -> None:
@@ -603,6 +635,23 @@ class CloudMachineStore:
             workspace = await workspace_on(session, machine.id)
             joined = workspace is None
             change: ClaimChange | None = "joined_workspace" if joined else None
+            if joined and machine.backend == "box":
+                # A box serves one workspace: never joined by a second, and
+                # never handed on with another's disk.
+                await self._refuse_second_workspace(
+                    session, factory, machine, owner_id, revoke, now
+                )
+            elif machine.backend == "box":
+                # One from before the rule keeps serving every workspace it
+                # had. Said each time it's claimed, so the logs show whether
+                # any such box exists.
+                serving = await tenants_of_cloud_machine(factory, machine.id)
+                if len(serving) > 1:
+                    logger.warning(
+                        "Cloud machine %s: a box serving %d workspaces, from before a box served one.",
+                        machine.id,
+                        len(serving),
+                    )
             if joined:
                 serving = await tenants_of_cloud_machine(factory, machine.id)
                 if len(serving) >= MAX_MACHINE_WORKSPACES:
@@ -687,6 +736,52 @@ class CloudMachineStore:
             from_pool=picked is not None,
         )
 
+    async def _refuse_second_workspace(
+        self,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        machine: CloudMachine,
+        owner_id: str,
+        revoke: RevokeController | None,
+        now: datetime,
+    ) -> None:
+        """Refuses the bound workspace's claim on a box serving others. While
+        the owner is still a member of one of them, that's the box's workspace:
+        refused with its name (`BoxServesAnotherWorkspace`). When they've left
+        every one, the box is retired (wanted deleted, its controllers revoked)
+        rather than handed on, since its disk still holds what those
+        workspaces' agents left, and the claim is refused with `BoxRetired`.
+        The caller commits the retirement."""
+        others = [
+            tenant_id
+            for tenant_id in await tenants_of_cloud_machine(factory, machine.id)
+            if tenant_id != require_tenant_id()
+        ]
+        names: list[str] = []
+        for tenant_id in others:
+            async with tenant_session(factory, tenant_id) as scoped:
+                if await scoped.get(TenantMember, (tenant_id, owner_id)) is None:
+                    continue
+                tenant = await scoped.get(Tenant, tenant_id)
+                names.append(tenant.name if tenant is not None else "")
+        if names:
+            named = sorted(name for name in names if name)
+            raise BoxServesAnotherWorkspace(named[0] if named else None)
+        # Serving none of them now, it was still someone's once it ran.
+        if others or machine.first_ready_at is not None:
+            machine.desired_state = "deleted"
+            bump_revision(machine, now)
+            if revoke is not None:
+                await revoke_box_controllers(
+                    factory, machine, await workspaces_on(factory, machine.id), revoke
+                )
+            await session.flush()
+            logger.info(
+                "Cloud machine %s: retired, its owner having left every workspace it served.",
+                machine.id,
+            )
+            raise BoxRetired()
+
     async def _revivable(self, session: AsyncSession, owner_id: str) -> bool:
         """Whether the owner has a cleaned-up row `_revive` would bring back."""
         found = await session.scalar(
@@ -751,6 +846,14 @@ class CloudMachineStore:
         from switch_core.visibility.box_removal import removal_claimed
 
         if process_hosted_v2() and await removal_claimed(session, machine.id):
+            return None
+        if machine.backend == "box" and set(
+            await tenants_of_cloud_machine(factory, machine.id)
+        ) != {require_tenant_id()}:
+            # A box's disk comes back with it, so it's brought back only for
+            # the one workspace it served: never another's, nor one
+            # alongside it. Otherwise the owner gets a new box, and this one's
+            # removal goes ahead.
             return None
         if machine.backend == "box":
             # Its disk is in use again: withdraw `box_deleted`'s entry, in
