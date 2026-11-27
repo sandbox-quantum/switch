@@ -1,6 +1,6 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { describe, expect, it, vi } from 'vitest';
 import { rememberBuddyChat, rememberedBuddy } from '@renderer/features/switch-buddy/buddy-chat';
-import type { ChatSummary } from '@shared/core/chats/chats';
 import { addAgentToRoom, mayAddToRoom } from './add-agent-to-room';
 
 const group = {

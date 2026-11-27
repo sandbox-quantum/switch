@@ -1,11 +1,8 @@
 {
-  "as": "contract-admin",
+  "as": "system:serviceaccount:switch-hosted:switch-hosted-provisioner",
   "expect": "refuse",
   "from_good": "good/provisioner-a-base-box-box-keyed-post-namespace-box-namespace.json",
   "group": "",
-  "groups": [
-    "system:masters"
-  ],
   "message": "",
   "name": "agents-box-k1-0000000000000021",
   "namespace": "",

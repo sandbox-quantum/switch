@@ -1922,6 +1922,14 @@ class PlatformAdapter(ABC):
         server + team + channel name."""
         return None
 
+    async def channel_web_url(self, external_channel_id: str) -> str | None:
+        """Web-safe ``https://`` link to this channel, suitable for chat
+        messages (unlike a desktop scheme such as ``slack://`` or
+        ``mattermost://``). Defaults to :meth:`channel_deeplink` when that is
+        already an ``https://`` URL, and None otherwise."""
+        url = await self.channel_deeplink(external_channel_id)
+        return url if url is not None and url.startswith("https://") else None
+
     async def home_deeplink(self) -> str | None:
         """Link that opens this bridge's *workspace* — the Slack workspace, the
         Discord guild, the Mattermost team — rather than one channel within it.

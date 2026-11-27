@@ -181,7 +181,16 @@ function listedSessions(listed: z.infer<typeof listedSchema>): Session[] {
   });
 }
 
-/** This agent's sessions under this machine's shared-session base. */
-export function listSessions(agentId: string): Session[] {
-  return hostSessions(readHostSessions(fs, path, agentId, sharedSessionsBase(), isProcessAlive));
+/** `isProcessAlive` as a box lists sessions: EPERM is a live host run as another user. */
+export const anyUserProcessAlive: typeof isProcessAlive = (pid) => isProcessAlive(pid, 'any-user');
+
+/**
+ * This agent's sessions under this machine's shared-session base. In a box
+ * (`box`), an agent host can run as another user than the one listing it:
+ * signal 0 then answers EPERM for a live process, so only ESRCH (or no owner
+ * record) means gone.
+ */
+export function listSessions(agentId: string, box?: boolean): Session[] {
+  const processAlive = box ? anyUserProcessAlive : isProcessAlive;
+  return hostSessions(readHostSessions(fs, path, agentId, sharedSessionsBase(), processAlive));
 }

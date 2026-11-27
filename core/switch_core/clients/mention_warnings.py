@@ -20,7 +20,7 @@ from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.clients.mentions import (
     mention_regex,
-    strip_emphasis,
+    mentionable_text,
     unique_mention_tokens,
 )
 from switch_core.db.session_scope import tenant_session
@@ -98,7 +98,7 @@ class MentionWarnings:
         async with tenant_session(self.session_factory, self.tenant_id) as session:
             roles = await self._room_role_store.list_roles(session, room_id)
             for role in roles:
-                if mention_regex(role.name).search(strip_emphasis(body)) is None:
+                if mention_regex(role.name).search(mentionable_text(body)) is None:
                     continue
                 if not await self._room_role_store.has_live_holder(
                     session, role.id, self._connections.live_connection_ids()

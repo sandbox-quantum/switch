@@ -1,5 +1,5 @@
+import { agentAvatarUrlForName } from '@switch-console/chat-ui/model/agent-avatar';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { agentAvatarUrlForName } from '@shared/core/agents/agent-avatar';
 import type { RemoteAgentSummary, SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
 const fetchAgents = vi.fn();

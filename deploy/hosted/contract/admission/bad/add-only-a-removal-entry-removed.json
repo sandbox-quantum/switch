@@ -9,7 +9,7 @@
   "object": {
     "apiVersion": "v1",
     "data": {
-      "agents-box-k1-cccccccccccccccc": "MDAwMDAwMGMtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBj"
+      "agents-box-k1-0000000000000022": "MDAwMDAwMDItMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAy"
     },
     "kind": "Secret",
     "metadata": {
@@ -30,7 +30,7 @@
     "body": {
       "apiVersion": "v1",
       "data": {
-        "agents-box-k1-cccccccccccccccc": "MDAwMDAwMGMtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBj"
+        "agents-box-k1-0000000000000022": "MDAwMDAwMDItMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAy"
       },
       "kind": "Secret",
       "metadata": {

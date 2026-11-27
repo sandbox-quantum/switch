@@ -1,5 +1,5 @@
+import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
 import { MessagingAppsCard } from '@renderer/features/switch-servers/MessagingAppsCard';
-import { PageHeader } from '@renderer/lib/components/page-header';
 import { OnSignedInServer } from './settings-server';
 
 /**

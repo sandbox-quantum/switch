@@ -1,4 +1,4 @@
-import { ToggleGroup, ToggleGroupItem } from '@renderer/lib/ui/toggle-group';
+import { ToggleGroup, ToggleGroupItem } from '@switch-console/chat-ui/primitives/toggle-group';
 import { cn } from '@renderer/utils/utils';
 
 interface PanelTab<T extends string> {

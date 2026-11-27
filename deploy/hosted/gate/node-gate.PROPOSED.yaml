@@ -115,7 +115,7 @@ spec:
     - name: is-the-gate
       expression: "request.userInfo.username == 'system:serviceaccount:switch-node-gate:switch-node-gate'"
   validations:
-    - expression: "request.subResource == ''"
+    - expression: "request.?subResource.orValue('') == ''"
       message: "the node gate may not change a node's status"
     - expression: "has(oldObject.spec.taints) && oldObject.spec.taints.exists(t, t.key == 'switch.dev/gate1')"
       message: "the node gate may only change a node that carries the switch.dev/gate1 taint"
@@ -167,7 +167,7 @@ spec:
   validations:
     - expression: "request.operation != 'UPDATE'"
       message: "the node gate may not change a namespace"
-    - expression: "request.name.matches('^agents-check-[a-z0-9]([a-z0-9-]*[a-z0-9])?-(g1|px|rs)$') && request.name.size() <= 63"
+    - expression: "request.?name.orValue('').matches('^agents-check-[a-z0-9]([a-z0-9-]*[a-z0-9])?-(g1|px|rs)$') && request.?name.orValue('').size() <= 63"
       message: "the node gate may only create or delete agents-check-<machine>-<hash>-{g1,px,rs} namespaces"
     - expression: >-
         (request.operation == 'DELETE' ? oldObject : object).metadata.?labels[?'app.kubernetes.io/managed-by'].orValue('') == 'switch-node-gate'
@@ -254,7 +254,7 @@ spec:
     - name: in-a-check-namespace
       expression: "request.namespace.matches('^agents-check-[a-z0-9]([a-z0-9-]*[a-z0-9])?-(g1|px|rs)$')"
   validations:
-    - expression: "request.subResource == ''"
+    - expression: "request.?subResource.orValue('') == ''"
       message: "a check pod may not be given an ephemeral container"
     # The Job controller and the kubelet UPDATE a pod's metadata (the job-tracking finalizer, conditions); refusing
     # that would leave Jobs uncounted and namespaces stuck Terminating. The spec may not change.

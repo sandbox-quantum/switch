@@ -1,7 +1,7 @@
+import { RelativeTime } from '@switch-console/chat-ui/primitives/relative-time';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { RelativeTime } from './relative-time';
 
 const NOW = new Date('2026-10-28T12:00:00Z');
 

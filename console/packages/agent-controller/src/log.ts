@@ -44,6 +44,13 @@ export const silentLogger: Logger = {
   error: () => {},
 };
 
+/** An error's code (`ENOENT`), or its name when it has none: safe to log where the message may not be. */
+export function errorCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === 'string') return code;
+  return error instanceof Error ? error.name : 'unknown error';
+}
+
 /** An error's message, with its cause's when it has one (`fetch failed` says nothing alone). */
 export function errorMessage(error: unknown): string {
   if (!(error instanceof Error)) return String(error);

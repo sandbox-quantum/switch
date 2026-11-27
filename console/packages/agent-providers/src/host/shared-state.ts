@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { sessionSchema, snapshotSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { Journal } from './journal';
-import { releaseOwner, replaceOwner, withOwnershipLock } from './ownership-lock';
+import { releaseOwner, replaceOwner, type TicketJudge, withOwnershipLock } from './ownership-lock';
 import { fenceDeadOwner, ownProcessGroup, ownStartTime } from './process-fence';
 import type { SharedHostOptions } from './shared-host';
 
@@ -78,7 +78,8 @@ export class SharedState {
     readonly journal: Journal<Record>,
     private readonly lock: string,
     private readonly root: string,
-    private readonly owner: { pid: number; group: number | null; token: string; started?: number }
+    private readonly owner: { pid: number; group: number | null; token: string; started?: number },
+    private readonly ticketJudge: TicketJudge | undefined
   ) {}
 
   static async open(options: SharedHostOptions): Promise<SharedState> {
@@ -91,22 +92,28 @@ export class SharedState {
       token: randomUUID(),
       ...(started === null ? {} : { started }),
     };
-    await withOwnershipLock(options.root, async () => {
-      try {
-        const owner = z
-          .strictObject({
-            token: z.string().optional(),
-            pid: z.number().int().positive(),
-            group: z.number().int().positive().nullable(),
-            started: z.number().int().positive().optional(),
-          })
-          .parse(JSON.parse(await readFile(lock, 'utf8')));
-        await fenceDeadOwner(owner.pid, owner.group, owner.started ?? null);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      }
-      await replaceOwner(lock, owner);
-    });
+    await withOwnershipLock(
+      options.root,
+      async () => {
+        try {
+          const owner = z
+            .strictObject({
+              token: z.string().optional(),
+              pid: z.number().int().positive(),
+              group: z.number().int().positive().nullable(),
+              started: z.number().int().positive().optional(),
+            })
+            .parse(JSON.parse(await readFile(lock, 'utf8')));
+          if (options.box)
+            await options.box.fenceDeadOwner(owner.pid, owner.group, owner.started ?? null, lock);
+          else await fenceDeadOwner(owner.pid, owner.group, owner.started ?? null);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+        await replaceOwner(lock, owner);
+      },
+      options.box?.ticketJudge
+    );
     try {
       const journal = await Journal.load(join(options.root, 'shared-state.jsonl'), (value) =>
         sharedStateRecordSchema.parse(value)
@@ -136,9 +143,9 @@ export class SharedState {
           cwd,
           operationId: randomUUID(),
         });
-      return new SharedState(journal, lock, options.root, owner);
+      return new SharedState(journal, lock, options.root, owner, options.box?.ticketJudge);
     } catch (error) {
-      await releaseOwner(options.root, lock, owner);
+      await releaseOwner(options.root, lock, owner, options.box?.ticketJudge);
       throw error;
     }
   }
@@ -156,6 +163,6 @@ export class SharedState {
   }
 
   async unlock(): Promise<void> {
-    await releaseOwner(this.root, this.lock, this.owner);
+    await releaseOwner(this.root, this.lock, this.owner, this.ticketJudge);
   }
 }

@@ -1,3 +1,11 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { TONE_DOT, TonePill } from '@switch-console/chat-ui/primitives/tone-pill';
 import { format } from 'date-fns';
 import { ExternalLink, MoreHorizontal, Pencil, Plus, RotateCw, Trash2 } from 'lucide-react';
 import { CopyButton } from '@renderer/features/admin/copy-button';
@@ -15,20 +23,13 @@ import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
 import { Progress } from '@renderer/lib/ui/progress';
 import { formatBytes } from '@renderer/utils/formatBytes';
 import { cn } from '@renderer/utils/utils';
 import type { MachineDetail, ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { Card } from './detail-card';
-import { MachineIcon, TONE_DOT, TonePill } from './machine-marks';
+import { MachineIcon } from './machine-marks';
 import { MachineProviders } from './machine-providers';
 import {
   controllerRelease,

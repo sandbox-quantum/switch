@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { hostBoxMode, insideBox } from '../box-mode';
 import { openSwitchStream, runAgentHost } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
 import {
@@ -44,6 +45,17 @@ import { bundleIdentity, recordWatcherHealth } from './watcher-health-file';
 import { WatcherControl } from './watcher-tools';
 
 const [root, configPath, mode] = process.argv.slice(2);
+/** Box mode once `main` has read it from the configuration; false until then. */
+let boxMode = false;
+// In a box, the supervisors and hosts that write supervisor.log and
+// worker.log put the time on every line; a helper whose output its caller
+// parses never does. Keyed on the image's marker, not box mode: this runs
+// before the configuration box mode is read from, and a host in a box image
+// runs only in box mode or refuses to start.
+if (insideBox()) {
+  const { longRunning, stampConsole } = await import('./box/daemon-box');
+  if (longRunning(root, configPath, mode)) stampConsole();
+}
 async function main(): Promise<void> {
   if (!root || !configPath)
     throw new Error('Shared SDK host requires a state directory and configuration file.');
@@ -118,6 +130,12 @@ async function main(): Promise<void> {
     return;
   }
   const config = sharedConfigSchema.parse(JSON.parse(await readFile(configPath, 'utf8')));
+  // Box mode, read once here and passed down (`box-mode.ts`). A host configured for a box outside one refuses.
+  const box = hostBoxMode(config.box === true, insideBox());
+  boxMode = box;
+  // Box mode's own modules load here and only here, so Console's hosts never load them.
+  const daemonBox = box ? await import('./box/daemon-box') : null;
+  const splitBox = daemonBox !== null && daemonBox.launcherStartsHosts(process.env);
   if (mode === '--ensure' || mode === '--ensure-watch' || mode === '--restart') {
     console.log(
       JSON.stringify(
@@ -127,12 +145,21 @@ async function main(): Promise<void> {
           resuming: process.argv[5] === 'true',
           watcher: mode === '--ensure-watch',
           restart: mode === '--restart',
-          supervision: detachedSupervision(process.argv[1]!),
+          supervision: detachedSupervision(
+            process.argv[1]!,
+            daemonBox?.supervisionBox({ extraEnv: {}, selfRestart: !splitBox })
+          ),
           startSource: null,
         })
       )
     );
   } else if (mode === '--supervise' || mode === '--watch-supervise') {
+    // On a split box, the launcher's push key, read before anything else, on its pipe.
+    const pushKey = splitBox ? daemonBox!.readPushKey() : undefined;
+    if (pushKey === null) {
+      console.error('No push key from the launcher: not starting.');
+      process.exit(1);
+    }
     const stop = new AbortController();
     onStopRequest(() => stop.abort(), resolve(root));
     await superviseSharedHost({
@@ -148,8 +175,24 @@ async function main(): Promise<void> {
       signal: stop.signal,
       build: process.argv[1]!,
       links: null,
+      // On launcher boxes only the controller starts a host again, with a fresh ticket.
+      ...(daemonBox
+        ? {
+            box: daemonBox.supervisionBox({
+              extraEnv: {},
+              selfRestart: !splitBox,
+              ...(pushKey ? { pushKey } : {}),
+            }),
+          }
+        : {}),
     });
   } else if (mode === '--watch-worker') {
+    // On a split box, the push key first of all, from the supervisor's pipe.
+    const pushKey = splitBox ? daemonBox!.readPushKey() : undefined;
+    if (pushKey === null) {
+      console.error('No push key from the supervisor: not starting.');
+      process.exit(1);
+    }
     // Read before anything else, while the file is the one this process loaded.
     const bundle = await bundleIdentity(process.argv[1]!);
     const stop = new AbortController();
@@ -157,13 +200,22 @@ async function main(): Promise<void> {
     // The sidecar is the parent of the sessions it runs: it talks to each over
     // IPC, and Console reaches them through its control port.
     const links = new SessionLinks();
-    const supervision = inProcessSupervision(process.argv[1]!, links);
+    const supervision = inProcessSupervision(
+      process.argv[1]!,
+      links,
+      daemonBox?.supervisionBox({ extraEnv: {}, selfRestart: true })
+    );
     const ensure = ensureSessions(supervision);
     // Console's "Reconnect to room" reaches the watcher through the control port.
-    const control = new WatcherControl();
+    const tickets = daemonBox ? new daemonBox.HubTickets() : null;
+    if (tickets && pushKey) tickets.setPushKey(pushKey);
+    const control = new WatcherControl(
+      tickets ? { box: { restartNotice: undefined, tickets } } : {}
+    );
     const transfers = new AttachmentTransfers(resolve(root));
     await transfers.clear();
     const context: ControlContext = {
+      ...(daemonBox ? { box: daemonBox.supervisionBox({ extraEnv: {}, selfRestart: true }) } : {}),
       agentId: config.session.agentId,
       links,
       ensure,
@@ -212,7 +264,22 @@ async function main(): Promise<void> {
           stop.signal,
           supervision,
           control,
-          hub ? openHubStream(hub) : openSwitchStream
+          hub
+            ? openHubStream(
+                hub,
+                daemonBox
+                  ? {
+                      valveChannel: new daemonBox.HubValveChannel(),
+                      // On a split box each hello carries the one-time ticket
+                      // the launcher hands this host.
+                      ...(splitBox && tickets
+                        ? { ticket: () => tickets.takeHubTicket(30_000) }
+                        : {}),
+                    }
+                  : undefined
+              )
+            : openSwitchStream,
+          { box }
         ).finally(() => stop.abort()),
         serveControl(resolve(root), context, stop.signal),
       ]);
@@ -272,6 +339,7 @@ async function main(): Promise<void> {
         services,
         servicesChange,
         entrypoint: process.argv[1]!,
+        box,
         port: process,
         authenticate:
           config.start.provider === 'claude'
@@ -282,7 +350,10 @@ async function main(): Promise<void> {
                   cwd: input.cwd,
                   env: input.env,
                 });
-                if (readiness.status === 'unauthenticated') throw new Error(readiness.message);
+                if (readiness.status === 'unauthenticated')
+                  throw daemonBox
+                    ? new daemonBox.NotSignedInError(readiness.message)
+                    : new Error(readiness.message);
                 if (readiness.status === 'unknown') console.warn(readiness.message);
               }
             : null,
@@ -347,6 +418,8 @@ else
       await mkdir(join(root, 'supervisor'), { recursive: true, mode: dirMode(0o700) });
       await replaceOwner(join(root, 'supervisor', 'failure.json'), {
         message: error instanceof Error ? error.message : String(error),
+        // In a box, what the room is told: no login, or another setup failure.
+        ...(boxMode ? { kind: (await import('./box/daemon-box')).recordedKindOf(error) } : {}),
       });
     }
     console.error(error);

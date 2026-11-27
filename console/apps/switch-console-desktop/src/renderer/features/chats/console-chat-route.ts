@@ -1,4 +1,4 @@
-import { type ChatAgent, chatAgentLabel } from '@shared/core/chats/chats';
+import { type ChatAgent, chatAgentLabel } from '@switch-console/chat-ui/contracts/chats';
 
 export type ConsoleChatRoute =
   | {

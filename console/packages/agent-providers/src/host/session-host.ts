@@ -72,6 +72,16 @@ export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('model'), id: z.string(), options: z.record(z.string(), z.string()) }),
   /** The host posts this turn's reply to its room itself: decided once, before posting. */
   z.object({ type: z.literal('room-reply'), commandId: z.string() }),
+  /**
+   * Box mode: the "I was restarted" line for a cut-off turn: `pending` before
+   * the first try, `sent` once Switch confirmed it, or once the room already
+   * showed it.
+   */
+  z.object({
+    type: z.literal('restart-reply'),
+    commandId: z.string(),
+    state: z.enum(['pending', 'sent']),
+  }),
 ]);
 /**
  * The notices that end a continued conversation's import, either way. Read
@@ -82,7 +92,27 @@ const HISTORY_SETTLED = new Set(['HISTORY_IMPORTED', 'HISTORY_UNAVAILABLE']);
 /** The title of a message sent into a running turn with an outcome nobody knows. */
 const UNKNOWN_DELIVERY = 'Sent to the running turn; the agent may not have received it';
 type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
+/**
+ * What a box's session host does beyond Console's (`box/session-host-box`):
+ * the "I was restarted" line for a turn a restart cut off, a fresh
+ * conversation without a notice when the old one was never used, and a
+ * copy-free read for the idle checks. Given only in box mode.
+ */
+export type SessionHostBox = {
+  newReplica: (snapshot: Snapshot) => SessionReplica;
+  view: (replica: SessionReplica) => Readonly<Snapshot>;
+  stopWasAsked: (root: string) => Promise<boolean>;
+  clearStopAsked: (root: string) => Promise<void>;
+  restartReplyRounds: (root: string) => Promise<Record<string, number>>;
+  restartReplyGivenUp: (rounds: Record<string, number>, turnId: string) => boolean;
+  addRestartReplyRound: (root: string, turnId: string) => Promise<number>;
+  /** Starts' worth of tries before a restart line is given up on. */
+  restartReplyRoundsLimit: number;
+};
+
 export type HostSessionStart = {
+  /** Box mode only; absent, the host behaves as on Console's own hosts. */
+  box?: SessionHostBox;
   session: Session;
   resumeOperationId?: string;
   authenticate?: () => Promise<void>;
@@ -94,7 +124,12 @@ export type HostSessionStart = {
    * Posts to a room as the agent, raising when the post did not land. Absent
    * where the host has no way to reach the agent's rooms.
    */
-  replyToRoom?: (reply: RoomReply) => Promise<void>;
+  replyToRoom?: (reply: RoomReply) => Promise<RoomReplyOutcome | void>;
+  /**
+   * Box mode: waits before each try of the "I was restarted" line after the
+   * first. Tests shorten it.
+   */
+  restartReplyRetryMs?: number[];
   /** Service tokens to scrub from every event before it is recorded; none when absent. */
   redactions?: Redactions;
   /**
@@ -110,7 +145,26 @@ export type HostSessionStart = {
   connectorApproval?: (connector: string) => void;
 };
 /** What the host posts for a turn a room message started that ended without the agent posting. */
-export type RoomReply = { roomId: string; threadId: string | null; body: string };
+export type RoomReply = {
+  roomId: string;
+  threadId: string | null;
+  body: string;
+  /**
+   * Post only if the room doesn't already show this line from the agent, in
+   * this thread, after this message: a retry whose earlier try did post, with
+   * the answer lost on the way back, then posts nothing.
+   */
+  once?: { afterMessageId: string };
+  /**
+   * The turn this is the "I was restarted" line for. Where the watcher can,
+   * it posts the line through its controller under `restart:<turn>`, so
+   * Switch itself never posts it twice.
+   */
+  restartTurnId?: string;
+};
+/** `already` when a `once` reply was found in the room and not posted again. */
+export type RoomReplyOutcome = 'posted' | 'already';
+
 type PendingQuestion = { request: Request; options: Map<string, string> };
 /**
  * What Switch recorded for a request: for an approval, `answer` is the chosen
@@ -134,6 +188,16 @@ export class HostedSession {
   private readonly dispatched = new Set<string>();
   private readonly finished = new Set<string>();
   private readonly roomReplies = new Set<string>();
+  /** Turns someone asked to interrupt: their interrupted ending is wanted, and owes no restart line. */
+  private readonly interruptsAsked = new Set<string>();
+  /** This host's state root, where its supervisor marks a stop it asked for. */
+  private root = '';
+  /** Cut-off turns whose "I was restarted" line is owed or sent, by turn id. */
+  private readonly restartReplies = new Map<string, 'pending' | 'sent'>();
+  /** The turns whose line is being tried right now. */
+  private readonly restartReplyTurns = new Set<string>();
+  /** The line's tries under way, so a test (or a shutdown) can wait for them. */
+  private readonly restartReplyTries = new Set<Promise<void>>();
   private historyImported = false;
   private readonly postedTurns = new Set<string>();
   /** Turns in which the agent did something through a Switch tool other than read. */
@@ -197,7 +261,7 @@ export class HostedSession {
     const first = events.records.find((event) => event.body.type === 'session.upsert');
     if (first?.body.type === 'session.upsert')
       snapshot.session = structuredClone(first.body.session);
-    this.replica = new SessionReplica(snapshot);
+    this.replica = this.newReplica(snapshot);
     for (const event of events.records) {
       if (
         event.body.type === 'session.upsert' &&
@@ -205,7 +269,7 @@ export class HostedSession {
       ) {
         const prior = this.replica.snapshot();
         prior.session = event.body.session;
-        this.replica = new SessionReplica(prior);
+        this.replica = this.newReplica(prior);
       }
       this.replica.apply(event);
       if (event.body.type === 'notice' && HISTORY_SETTLED.has(event.body.code))
@@ -234,6 +298,7 @@ export class HostedSession {
       if (record.type === 'reset-completed') this.resetPending = false;
       if (record.type === 'model') config.input.model = { id: record.id, options: record.options };
       if (record.type === 'room-reply') this.roomReplies.add(record.commandId);
+      if (record.type === 'restart-reply') this.restartReplies.set(record.commandId, record.state);
     }
     this.projector = new ChatProjector(config.session, config.redactions ?? null);
     this.projector.restore(this.replica.snapshot().items);
@@ -274,6 +339,7 @@ export class HostedSession {
       hostInboxRecordSchema.parse(input)
     );
     const host = new HostedSession(config, adapter, events, inbox);
+    host.root = root;
     try {
       if (config.resumeOperationId && !host.resumeOperations.has(config.resumeOperationId)) {
         await inbox.append({ type: 'resumed', operationId: config.resumeOperationId });
@@ -281,8 +347,23 @@ export class HostedSession {
         host.stopped = false;
       }
       const recovered = events.records.length > 0;
+      // Box mode: the last stop was asked for (the agent stopped, a new build,
+      // ...), so a turn it cut off is still marked interrupted but owes no line.
+      // Cleared on every start: the mark speaks only for the stop just before it.
+      const stopAsked = config.box ? await config.box.stopWasAsked(root) : true;
+      if (config.box) await config.box.clearStopAsked(root);
       if (recovered) {
-        await host.interruptOpenWork();
+        const cutOff = await host.interruptOpenWork();
+        if (config.box) {
+          // The host died mid-turn (a crash, an out-of-memory kill, an
+          // upgrade): say so in each cut-off turn's room once, rather than leave
+          // the person waiting on a reply that will never come.
+          if (!stopAsked) for (const turnId of cutOff) host.tellRoomAfterRestart(turnId);
+          // A line an earlier start owed but never confirmed: its turn already
+          // reads "interrupted", so interruptOpenWork no longer finds it.
+          for (const [turnId, state] of host.restartReplies)
+            if (state === 'pending') host.tellRoomAfterRestart(turnId);
+        }
         for (const command of host.commands.values()) {
           const status = host
             .snapshot()
@@ -309,7 +390,7 @@ export class HostedSession {
           host.config.session = { ...config.session, status: 'stopped' };
           const stoppedSnapshot = host.replica.snapshot();
           stoppedSnapshot.session = host.config.session;
-          host.replica = new SessionReplica(stoppedSnapshot);
+          host.replica = host.newReplica(stoppedSnapshot);
           await host.publish({ type: 'session.upsert', session: host.config.session });
           clearInterval(host.timer);
           host.unsubscribe();
@@ -332,7 +413,7 @@ export class HostedSession {
         config.session.models = next.session.models;
         config.session.context = next.session.context;
         next.session = structuredClone(config.session);
-        host.replica = new SessionReplica(next);
+        host.replica = host.newReplica(next);
       }
       await host.publish({ type: 'session.upsert', session: structuredClone(config.session) });
       if (config.importHistory) {
@@ -378,9 +459,16 @@ export class HostedSession {
         // a fresh one it started since was not.
         const resuming = host.nativeId ?? config.input.resume?.nativeSessionId;
         const copy = config.importHistory ? config.input.resume?.nativeSessionId : undefined;
-        if (!host.providerAnswered() && (copy === undefined || resuming !== copy)) {
+        const resumingCopy = copy !== undefined && resuming === copy;
+        const answered = resumingCopy || host.providerAnswered();
+        const unused = config.box !== undefined && !resumingCopy && host.conversationUnused();
+        if (!answered || unused) {
+          if (answered)
+            console.info(
+              `Session ${config.session.sessionId} starts a new conversation: the conversation it would resume had no turns.`
+            );
           try {
-            await host.startFresh();
+            await host.startFresh(!answered || !unused);
             return host;
           } catch (fresh) {
             await host.fail(fresh);
@@ -409,8 +497,32 @@ export class HostedSession {
     });
   }
 
-  /** Start a new provider conversation in place of one that cannot be resumed. */
-  private async startFresh(): Promise<void> {
+  /**
+   * Whether the provider conversation this session would resume never had a
+   * turn sent to it since it was opened: nothing was said in it, so there is
+   * nothing to lose by starting another.
+   */
+  private conversationUnused(): boolean {
+    let opened = false;
+    let used = false;
+    for (const record of this.inbox.records) {
+      if (record.type === 'native') {
+        opened = true;
+        used = false;
+      } else if (
+        record.type === 'dispatched' &&
+        this.commands.get(record.commandId)?.body.type === 'message.send'
+      )
+        used = true;
+    }
+    return opened && !used;
+  }
+
+  /**
+   * Start a new provider conversation in place of one that cannot be resumed,
+   * saying so unless `announce` is false (the reset before it already did).
+   */
+  private async startFresh(announce = true): Promise<void> {
     const { resume: _resume, ...fresh } = this.config.input;
     const native = await this.startProvider(fresh);
     await this.inbox.append({ type: 'native', nativeSessionId: native.nativeSessionId });
@@ -427,6 +539,7 @@ export class HostedSession {
         });
       })
       .catch((error: unknown) => this.fail(error));
+    if (!announce) return;
     await this.publish({
       type: 'notice',
       level: 'info',
@@ -590,7 +703,7 @@ export class HostedSession {
     };
     const snapshot = this.replica.snapshot();
     snapshot.session = structuredClone(this.config.session);
-    this.replica = new SessionReplica(snapshot);
+    this.replica = this.newReplica(snapshot);
     await this.publish({ type: 'session.upsert', session: structuredClone(this.config.session) });
     await this.publish({ type: 'notice', level: 'error', code, message });
   }
@@ -722,6 +835,19 @@ export class HostedSession {
     return this.adapter.hasBackgroundWork?.(this.config.session.sessionId) ?? false;
   }
 
+  /** A replica of the session's state: the box's copy-free one in box mode. */
+  private newReplica(snapshot: Snapshot): SessionReplica {
+    return this.config.box ? this.config.box.newReplica(snapshot) : new SessionReplica(snapshot);
+  }
+
+  /**
+   * The state for a read that is let go at once: without a copy in box mode
+   * (the idle loop's checks run many times a second), a copy otherwise.
+   */
+  view(): Readonly<Snapshot> {
+    return this.config.box ? this.config.box.view(this.replica) : this.replica.snapshot();
+  }
+
   snapshot(): Snapshot {
     return this.replica.snapshot();
   }
@@ -737,6 +863,13 @@ export class HostedSession {
     };
   }
   replay(after: number): { events: ServerEvent[]; throughSequence: number } {
+    if (this.config.box) {
+      // Sequences only grow, so a caller already up to date gets nothing
+      // without a pass over the whole journal.
+      const last = this.events.records.at(-1);
+      if (!last || last.sequence <= after)
+        return { events: [], throughSequence: this.view().throughSequence };
+    }
     return {
       events: structuredClone(this.events.records.filter((event) => event.sequence > after)),
       throughSequence: this.replica.snapshot().throughSequence,
@@ -834,6 +967,8 @@ export class HostedSession {
         );
       respond = () => this.adapter.respondToRequest(sessionId, outcome.requestId, option.decision);
       const cancelled = option.decision === 'cancel';
+      // A person cancelling an approval interrupts the turn on purpose.
+      if (cancelled && this.activeTurn) this.interruptsAsked.add(this.activeTurn);
       settled = cancelled ? 'cancelled' : 'answered';
       result = cancelled ? null : { kind: 'approval', optionId: option.optionId };
     } else {
@@ -1137,7 +1272,7 @@ export class HostedSession {
           this.config.session.context = null;
           const snapshot = this.snapshot();
           snapshot.session = structuredClone(this.config.session);
-          this.replica = new SessionReplica(snapshot);
+          this.replica = this.newReplica(snapshot);
           await this.publish({
             type: 'session.upsert',
             session: structuredClone(this.config.session),
@@ -1166,6 +1301,7 @@ export class HostedSession {
         }
       } else if (body.type === 'turn.interrupt') {
         if (body.turnId !== this.activeTurn) throw new Error('Turn is no longer active.');
+        this.interruptsAsked.add(body.turnId);
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
         await this.adapter.interruptTurn(session.sessionId);
@@ -1428,6 +1564,126 @@ export class HostedSession {
    * posts it twice. The post runs beside the session; one that fails is
    * logged and noted in the transcript, and nothing else.
    */
+  /**
+   * Records that a cut-off turn is owed its "I was restarted" line, then tries
+   * to post it after a short pause. A host that is itself stopping won't post
+   * (`replyAfterRestart` returns once shutting down); the next start finds the
+   * line pending and posts it then.
+   */
+  private async oweRestartReply(turnId: string): Promise<void> {
+    if (!this.config.box || !this.config.replyToRoom || this.restartReplies.has(turnId)) return;
+    // Stopped on purpose by its supervisor: nothing restarted under the person.
+    if (this.root && (await this.config.box!.stopWasAsked(this.root))) return;
+    const origin = this.commands.get(turnId)?.origin;
+    if (!origin?.roomId || !origin.messageId) return;
+    await this.inbox.append({ type: 'restart-reply', commandId: turnId, state: 'pending' });
+    this.restartReplies.set(turnId, 'pending');
+    this.roomReplies.add(turnId);
+    const pause = this.config.restartReplyRetryMs?.[0] ?? RESTART_REPLY_RETRY_MS[0];
+    setTimeout(() => {
+      if (!this.shuttingDown) this.tellRoomAfterRestart(turnId);
+    }, pause).unref?.();
+  }
+
+  /**
+   * Tell the room a turn was cut off by the host restarting, without holding
+   * up the rest of recovery: the tries can take about 2 minutes.
+   */
+  tellRoomAfterRestart(turnId: string): void {
+    // One round of tries per line at a time.
+    if (this.restartReplyTurns.has(turnId)) return;
+    this.restartReplyTurns.add(turnId);
+    const tries = this.replyAfterRestart(turnId).finally(() => {
+      this.restartReplyTries.delete(tries);
+      this.restartReplyTurns.delete(turnId);
+    });
+    this.restartReplyTries.add(tries);
+  }
+
+  /**
+   * Another round for every line still owed (`pending`) and not being tried
+   * now: the watcher's connection to Switch came back, and this start's tries
+   * may all have been lost to the outage. Lines given up on stay given up
+   * (`replyAfterRestart`). Answers how many were tried again.
+   */
+  retryOwedRestartReplies(): number {
+    let owed = 0;
+    for (const [turnId, state] of this.restartReplies)
+      if (state === 'pending' && !this.restartReplyTurns.has(turnId)) {
+        this.tellRoomAfterRestart(turnId);
+        owed++;
+      }
+    return owed;
+  }
+
+  /** Resolves once every "I was restarted" line under way has been sent or given up on. */
+  async restartRepliesSettled(): Promise<void> {
+    while (this.restartReplyTries.size > 0) await Promise.allSettled([...this.restartReplyTries]);
+  }
+
+  /**
+   * Tell the room a turn was cut off by the host restarting: once per turn.
+   *
+   * The journal records `pending` before the first try and `sent` after one
+   * Switch confirmed. Every try asks Switch to post only if the room doesn't
+   * already show the line (`once`), so a try that posted but whose answer was
+   * lost is not posted again, here or after another restart. A try that fails,
+   * including that check, posts nothing and is tried again: a few times over
+   * about 2 minutes, and again on the next start while still `pending`, for
+   * up to `restartReplyRoundsLimit` starts.
+   *
+   * Known limit: the room check matches the line's text in the turn's thread
+   * after the turn's message. Two turns in one thread cut off by the same
+   * restart get one line between them, not two.
+   */
+  async replyAfterRestart(turnId: string): Promise<void> {
+    const reply = this.config.replyToRoom;
+    const box = this.config.box;
+    if (!box || !reply || this.restartReplies.get(turnId) === 'sent') return;
+    const origin = this.commands.get(turnId)?.origin;
+    if (!origin?.roomId || !origin.messageId) return;
+    if (this.root && box.restartReplyGivenUp(await box.restartReplyRounds(this.root), turnId))
+      return;
+    if (!this.restartReplies.has(turnId)) {
+      await this.inbox.append({ type: 'restart-reply', commandId: turnId, state: 'pending' });
+      this.restartReplies.set(turnId, 'pending');
+    }
+    // The turn ended here: its reply is ours to post, never `replyIfUnposted`'s too.
+    this.roomReplies.add(turnId);
+    const waits = [0, ...(this.config.restartReplyRetryMs ?? RESTART_REPLY_RETRY_MS)];
+    for (const [index, wait] of waits.entries()) {
+      // Unref'd: a wait of up to a minute must not hold a stopping host's process open.
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait).unref?.());
+      if (this.shuttingDown) return;
+      try {
+        await reply({
+          roomId: origin.roomId,
+          threadId: origin.threadId,
+          body: RESTARTED_REPLY,
+          once: { afterMessageId: origin.messageId },
+          restartTurnId: turnId,
+        });
+        await this.inbox.append({ type: 'restart-reply', commandId: turnId, state: 'sent' });
+        this.restartReplies.set(turnId, 'sent');
+        return;
+      } catch (error: unknown) {
+        console.warn(
+          `Could not tell room ${origin.roomId} that turn ${turnId} was cut off by a restart (try ${
+            index + 1
+          } of ${waits.length}): ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    // Every try this start was lost. The line stays owed for the next start,
+    // up to `restartReplyRoundsLimit` starts, then it is given up on.
+    if (!this.root || this.shuttingDown) return;
+    const rounds = await box.addRestartReplyRound(this.root, turnId).catch(() => 0);
+    if (rounds >= box.restartReplyRoundsLimit)
+      console.warn(
+        `Gave up telling room ${origin.roomId} that turn ${turnId} was cut off by a restart, after ${rounds} starts' worth of tries.`
+      );
+  }
+
   private async replyIfUnposted(
     turnId: string,
     outcome: TurnOutcome,
@@ -1499,10 +1755,17 @@ export class HostedSession {
     )
       return;
     if (event.type === 'session.exited') {
-      await this.interruptOpenWork();
+      const cutOff = await this.interruptOpenWork();
       this.queue.length = 0;
       this.activeTurn = null;
       this.questions.clear();
+      // Box mode: the provider went away mid-turn without anyone stopping the
+      // session (on a clean box stop the whole box gets SIGTERM at once, so the
+      // CLI exits before this host starts its own shutdown). Owe each cut-off
+      // turn its "I was restarted" line now, in the journal, so whichever start
+      // comes next posts it; if this host carries on, it posts it itself.
+      if (this.config.box && !this.stopped)
+        for (const turnId of cutOff) await this.oweRestartReply(turnId);
     }
     if (event.type === 'session.started') {
       this.nativeId = event.nativeSessionId;
@@ -1592,6 +1855,17 @@ export class HostedSession {
     }
     await this.publishAll(this.projector.ingest(event, Date.now()));
     if (event.type === 'turn.completed') {
+      // Box mode: interrupted without anyone asking, so the provider was killed
+      // under it, as when the whole box gets SIGTERM on a clean stop. Owe the
+      // room its line.
+      if (
+        this.config.box &&
+        event.outcome === 'interrupted' &&
+        !this.interruptsAsked.has(event.turnId) &&
+        !this.stopped &&
+        !this.resetting
+      )
+        await this.oweRestartReply(event.turnId);
       await this.replyIfUnposted(
         event.turnId,
         event.outcome,
@@ -1644,6 +1918,7 @@ export class HostedSession {
         (x) => x.optionId === (body.answer as { optionId: string }).optionId
       )!;
       cancelled = option.decision === 'cancel';
+      if (cancelled && this.activeTurn) this.interruptsAsked.add(this.activeTurn);
       await this.adapter.respondToRequest(command.sessionId, body.requestId, option.decision);
     } else if (body.answer.kind === 'questions') {
       await this.adapter.respondToUserInput(
@@ -1743,9 +2018,13 @@ export class HostedSession {
     }
   }
 
-  /** Ends what the provider can no longer finish: open requests and unfinished turns. */
-  private async interruptOpenWork(): Promise<void> {
+  /**
+   * Ends what the provider can no longer finish: open requests and unfinished
+   * turns. Returns the turns it interrupted.
+   */
+  private async interruptOpenWork(): Promise<string[]> {
     const snapshot = this.snapshot();
+    const cutOff: string[] = [];
     for (const request of snapshot.requests)
       if (request.state === 'open' || request.state === 'submitting')
         await this.publish({
@@ -1757,8 +2036,11 @@ export class HostedSession {
           result: null,
         });
     for (const turn of snapshot.turns)
-      if (turn.status === 'running' || turn.status === 'queued')
+      if (turn.status === 'running' || turn.status === 'queued') {
         await this.publish({ ...turn, status: 'interrupted' });
+        cutOff.push(turn.turnId);
+      }
+    return cutOff;
   }
 }
 
@@ -1800,6 +2082,17 @@ export function recentTurns(
  * room, so none of it is posted. A turn someone stopped posts nothing: they
  * know why it ended.
  */
+/**
+ * The waits between tries of the "I was restarted" line within one start (box
+ * mode): about 2 minutes in all, so a room Switch can't reach for a minute or
+ * so still gets its line this start.
+ */
+export const RESTART_REPLY_RETRY_MS = [5_000, 10_000, 15_000, 30_000, 60_000];
+
+/** What a room is told when the host restarted mid-turn (box mode). */
+export const RESTARTED_REPLY =
+  'I was restarted while working on this and lost my reply. Please send it again.';
+
 export function unpostedReply(outcome: TurnOutcome, detail: string | null): string | null {
   if (outcome === 'interrupted') return null;
   if (outcome === 'completed') return 'I finished without replying.';

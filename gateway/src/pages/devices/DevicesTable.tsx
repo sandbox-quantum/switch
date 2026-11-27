@@ -8,14 +8,14 @@ import DataTable, { type FilterOption, type SelectFilter, type TableColumn } fro
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import type { DeviceType, WorkspaceDevice } from "../../data/management";
 import { EM_DASH, MONO_SX, absoluteTitle, formatRelative } from "../../theme/format";
-import type { CloudPresentation } from "./cloudMachine";
+import type { MachinePresentation } from "@switch-console/chat-ui/model/cloud-machine-state";
 import { connectionDetail, deviceProblems } from "./deviceHealth";
 
 /** A device as the table shows it. `cloud` is its owner's cloud machine as
  *  they see it, shown in place of online and offline; `workspace_name` is for
  *  a table across several workspaces. */
 export interface DeviceTableRow extends WorkspaceDevice {
-  cloud?: CloudPresentation;
+  cloud?: MachinePresentation;
   workspace_name?: string;
 }
 

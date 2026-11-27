@@ -1,15 +1,15 @@
-import { useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
-import { Switch } from '@renderer/lib/ui/switch';
+} from '@switch-console/chat-ui/primitives/select';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
+import { useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
 import type { RemoteRoomDetail, RoomAutoRoute } from '@shared/core/switch-servers/switch-servers';
 
 /** The value the triage picker uses for "nobody": Select values are strings. */

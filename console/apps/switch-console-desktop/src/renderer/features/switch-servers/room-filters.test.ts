@@ -1,12 +1,12 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import { isConsoleDirectChatSummary } from '@switch-console/chat-ui/model/agent-conversations';
 import { describe, expect, it } from 'vitest';
-import type { ChatSummary } from '@shared/core/chats/chats';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 import {
   consoleChatNotice,
   isConsoleDirectChat,
   isHiddenDirectChat,
   isMarkedConsoleDirectChat,
-  isConsoleDirectChatSummary,
   isConsoleGroupChatSummary,
   withConsoleGroupChats,
 } from './room-filters';

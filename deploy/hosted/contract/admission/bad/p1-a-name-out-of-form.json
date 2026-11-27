@@ -4,7 +4,7 @@
   "from_good": "good/provisioner-a-base-box-box-keyed-post-namespace-box-namespace.json",
   "group": "",
   "message": "a box namespace is agents-user-k1-<16 hex> or agents-box-k1-<16 hex>",
-  "name": "agents-box-k1-0123456789ABCDEF",
+  "name": "agents-box-k1-0123456789abcdeg",
   "namespace": "",
   "object": {
     "apiVersion": "v1",
@@ -18,9 +18,9 @@
         "app.kubernetes.io/part-of": "hosted-agents-test",
         "pod-security.kubernetes.io/enforce": "restricted",
         "pod-security.kubernetes.io/warn": "restricted",
-        "switch.dev/box": "box-k1-0123456789ABCDEF"
+        "switch.dev/box": "box-k1-0123456789abcdeg"
       },
-      "name": "agents-box-k1-0123456789ABCDEF"
+      "name": "agents-box-k1-0123456789abcdeg"
     }
   },
   "operation": "CREATE",
@@ -41,9 +41,9 @@
           "app.kubernetes.io/part-of": "hosted-agents-test",
           "pod-security.kubernetes.io/enforce": "restricted",
           "pod-security.kubernetes.io/warn": "restricted",
-          "switch.dev/box": "box-k1-0123456789ABCDEF"
+          "switch.dev/box": "box-k1-0123456789abcdeg"
         },
-        "name": "agents-box-k1-0123456789ABCDEF"
+        "name": "agents-box-k1-0123456789abcdeg"
       }
     },
     "method": "POST",

@@ -1,7 +1,9 @@
 import { Alert, CircularProgress, Link, Stack, Typography } from "@mui/material";
 import { useCallback } from "react";
 import { Link as RouterLink } from "react-router";
+import { agentPath } from "../../data/agentPaths";
 import ConfirmDialog from "../../components/ConfirmDialog";
+import { useAuth } from "../../data/AuthContext";
 import { type Member, loadAgents, previewMemberRemoval } from "../../data/api";
 import { removalDescription } from "./memberRemoval";
 import { useLoad } from "./useLoad";
@@ -30,6 +32,7 @@ export default function RemoveMemberDialog({
   onClose,
 }: Props) {
   const leaving = member.user_id === selfId;
+  const { capabilities } = useAuth();
   const agents = useLoad(loadAgents);
   const loadPreview = useCallback(
     () => previewMemberRemoval(tenantId, member.user_id),
@@ -52,7 +55,7 @@ export default function RemoveMemberDialog({
         <Stack component="ul" spacing={0.5} sx={{ m: 0, pl: 2.5 }}>
           {owned.map((agent) => (
             <li key={agent.id}>
-              <Link component={RouterLink} to={`/agents/${encodeURIComponent(agent.id)}`}>
+              <Link component={RouterLink} to={agentPath(agent.id, capabilities)}>
                 {agent.display_name ?? agent.name}
               </Link>
               {!agent.can_transfer && agent.transfer_blocked_reason !== null && (

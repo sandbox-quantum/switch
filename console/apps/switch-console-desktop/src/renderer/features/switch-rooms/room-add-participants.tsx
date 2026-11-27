@@ -1,9 +1,15 @@
+import { type ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import {
+  agentParticipant,
+  type Participant,
+  personParticipant,
+} from '@switch-console/chat-ui/model/participant-search';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
+import { chatFailure } from '@renderer/features/chats/chat-errors';
 import { workspaceRosterQuery } from '@renderer/features/chats/chat-people';
-import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { forgetBuddyChat } from '@renderer/features/switch-buddy/buddy-chat';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -11,11 +17,6 @@ import { administersWorkspaceById } from '@renderer/features/switch-servers/work
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { ParticipantPicker } from '@renderer/lib/components/participant-picker';
-import {
-  agentParticipant,
-  type Participant,
-  personParticipant,
-} from '@renderer/lib/components/participant-search';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -32,7 +33,6 @@ import {
   InputGroupInput,
 } from '@renderer/lib/ui/input-group';
 import { cn } from '@renderer/utils/utils';
-import { type ChatSummary } from '@shared/core/chats/chats';
 import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';

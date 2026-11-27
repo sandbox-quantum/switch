@@ -1,19 +1,19 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  DialogContentArea,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
 import { useSessionSettings } from '@renderer/features/sessions/hooks/useSessionSettings';
 import { getSessionManagerStore } from '@renderer/features/sessions/stores/session-selectors';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import {
-  DialogContentArea,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
 import {
   liveTransformSessionName,
   MAX_SESSION_NAME_LENGTH,

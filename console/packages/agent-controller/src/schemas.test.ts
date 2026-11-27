@@ -233,6 +233,44 @@ describe('status report', () => {
     expect(statusReportSchema.safeParse(report).success).toBe(true);
   });
 
+  it('leaves a desktop or v1 report exactly as it was: the box-only fields are all optional and absent', () => {
+    const parsed = statusReportSchema.parse(report);
+    expect(parsed.machine).toEqual(report.machine);
+    expect(parsed.agents).toEqual(report.agents);
+  });
+
+  it('carries the box-only fields when a box sets them, and holds each to its bounds', () => {
+    const machine = {
+      ...report.machine,
+      disk_scope: 'workspace',
+      valve_hosts: 2,
+      valve_hosts_joined: 1,
+      valve_memory: 'failing',
+      gateway_agents: 1,
+      gateway_refused: 0,
+      operator_exec: false,
+      valve_parks: 0,
+      mem_anon_bytes: 1024,
+      mem_cached_bytes: 2048,
+    };
+    const agent = {
+      ...report.agents[0]!,
+      session: 'parked',
+      waiting_for_room: { count: 1, oldest_since: null },
+    };
+    const parsed = statusReportSchema.parse({ ...report, machine, agents: [agent] });
+    expect(parsed.machine).toEqual(machine);
+    expect(parsed.agents[0]).toEqual(agent);
+    for (const bad of [
+      { mem_anon_bytes: 2 ** 51 },
+      { valve_memory: 'fine' },
+      { valve_parks: 1_000_001 },
+    ])
+      expect(
+        statusReportSchema.safeParse({ ...report, machine: { ...machine, ...bad } }).success
+      ).toBe(false);
+  });
+
   it('carries the controller’s start time when it has one', () => {
     const started = { ...report.controller, started_at: '2026-01-01T00:00:00.000Z' };
     expect(statusReportSchema.safeParse({ ...report, controller: started }).success).toBe(true);

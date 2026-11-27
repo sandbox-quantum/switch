@@ -1,0 +1,80 @@
+{
+  "as": "system:serviceaccount:switch-hosted:switch-drain",
+  "expect": "refuse",
+  "from_good": "good/drain-worker-a-box-evicted-post-pod-eviction-box-0.json",
+  "group": "",
+  "message": "the operator may only evict box-0 in a box namespace",
+  "name": "box-0",
+  "namespace": "contract-plain",
+  "object": {
+    "apiVersion": "policy/v1",
+    "deleteOptions": {
+      "preconditions": {
+        "uid": "00000000-0000-4000-8000-00000000000b"
+      }
+    },
+    "kind": "Eviction",
+    "metadata": {
+      "name": "box-0",
+      "namespace": "contract-plain"
+    }
+  },
+  "operation": "CREATE",
+  "policies": [
+    "switch-operator-evict-boxes-only"
+  ],
+  "refused_by": "admission",
+  "request": {
+    "body": {
+      "apiVersion": "policy/v1",
+      "deleteOptions": {
+        "preconditions": {
+          "uid": "00000000-0000-4000-8000-00000000000b"
+        }
+      },
+      "kind": "Eviction",
+      "metadata": {
+        "name": "box-0",
+        "namespace": "contract-plain"
+      }
+    },
+    "method": "POST",
+    "path": "/api/v1/namespaces/contract-plain/pods/box-0/eviction"
+  },
+  "resource": "pods",
+  "setup": [
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "labels": {},
+          "name": "contract-plain"
+        }
+      },
+      "path": "/api/v1/namespaces/contract-plain"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+          "name": "box-0",
+          "namespace": "contract-plain"
+        },
+        "spec": {
+          "containers": [
+            {
+              "image": "registry.example/pause@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "name": "c"
+            }
+          ]
+        }
+      },
+      "path": "/api/v1/namespaces/contract-plain/pods/box-0"
+    }
+  ],
+  "subresource": "eviction",
+  "version": "v1",
+  "what": "refused: evict outside a box namespace"
+}

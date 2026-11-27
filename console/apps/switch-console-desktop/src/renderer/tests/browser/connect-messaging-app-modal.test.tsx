@@ -78,9 +78,9 @@ vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
   administersWorkspaceInScope: () => true,
 }));
 
+import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 import { ConnectMessagingAppModal } from '@renderer/features/switch-servers/ConnectMessagingAppModal';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { Dialog } from '@renderer/lib/ui/dialog';
 
 const onSuccess = vi.fn();
 const onClose = vi.fn();

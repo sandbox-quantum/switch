@@ -7,6 +7,14 @@
  * The controller serves them while it runs; a request with nothing serving it
  * fails rather than waiting.
  */
+/** A recheck asked for before the controller serves them (not connected to Switch yet). */
+export class RechecksNotServing extends Error {
+  override name = 'RechecksNotServing';
+  constructor() {
+    super('The controller is not connected to Switch yet.');
+  }
+}
+
 export class ProviderRechecks {
   private handler: (() => Promise<void>) | null = null;
 
@@ -19,8 +27,7 @@ export class ProviderRechecks {
   }
 
   run(): Promise<void> {
-    if (!this.handler)
-      return Promise.reject(new Error('The controller is not connected to Switch yet.'));
+    if (!this.handler) return Promise.reject(new RechecksNotServing());
     return this.handler();
   }
 }

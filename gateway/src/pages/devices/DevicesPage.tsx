@@ -2,6 +2,7 @@ import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import EditOutlined from "@mui/icons-material/EditOutlined";
 import InfoOutlined from "@mui/icons-material/InfoOutlined";
+import KeyOutlined from "@mui/icons-material/KeyOutlined";
 import LinkOffOutlined from "@mui/icons-material/LinkOffOutlined";
 import PauseCircleOutline from "@mui/icons-material/PauseCircleOutline";
 import PlayCircleOutline from "@mui/icons-material/PlayCircleOutline";
@@ -20,6 +21,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import DataTable, { TableEmptyState } from "../../components/DataTable";
 import InfoTip from "../../components/InfoTip";
@@ -51,10 +53,12 @@ import {
   updateManagedAgent,
 } from "../../data/management";
 import { absoluteTitle, formatRelative } from "../../theme/format";
+import DeviceProvidersDialog from "../ai-providers/DeviceProvidersDialog";
 import AddMachineDialog from "../machines/AddMachineDialog";
 import EditMachineDialog from "../machines/EditMachineDialog";
+import { NewAgentDialog } from "../agents/NewAgentDialog";
 import ManagedAgentDialog from "../machines/ManagedAgentDialog";
-import { cloudPresentation } from "./cloudMachine";
+import { machinePresentation } from "@switch-console/chat-ui/model/cloud-machine-state";
 import DeviceDetailsDialog from "./DeviceDetailsDialog";
 import DevicesTable, { type DeviceTableRow } from "./DevicesTable";
 import ManagedAgentsTable, { type ManagedAgentTableRow, managedAgentRows } from "./ManagedAgentsTable";
@@ -101,7 +105,7 @@ export function withCloud(
 ): DeviceTableRow[] {
   const rows = [...devices];
   for (const machine of clouds) {
-    const cloud = cloudPresentation(machine, now);
+    const cloud = machinePresentation(machine, now);
     const at = rows.findIndex((row) => row.id === machine.controller_id);
     if (at >= 0) {
       rows[at] = { ...rows[at], cloud };
@@ -174,6 +178,7 @@ function Devices({
   userName: string;
   workspace: string;
 }) {
+  const [params, setParams] = useSearchParams();
   const [data, setData] = useState<WorkspaceDevices | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [clouds, setClouds] = useState<CloudMachine[]>([]);
@@ -186,13 +191,16 @@ function Devices({
   // edits one opens: the lists above carry only what the tables show.
   const [own, setOwn] = useState<{ controllers: Controller[]; agents: ManagedAgent[] } | null>(null);
   const [editingDevice, setEditingDevice] = useState<Controller | null>(null);
-  const [editingAgent, setEditingAgent] = useState<ManagedAgent | "new" | null>(null);
+  const [editingAgent, setEditingAgent] = useState<ManagedAgent | null>(null);
+  const [newAgentOpen, setNewAgentOpen] = useState(false);
   // What each confirmation shows, kept after it closes so it fades out with
   // its words; the `…Open` flags alone open and close them.
   const [removing, setRemoving] = useState<DeviceTableRow | null>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [detailsOf, setDetailsOf] = useState<DeviceTableRow | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [providersOf, setProvidersOf] = useState<string | null>(null);
+  const [providersOpen, setProvidersOpen] = useState(false);
   const [unmanaging, setUnmanaging] = useState<ManagedAgentTableRow | null>(null);
   const [unmanageOpen, setUnmanageOpen] = useState(false);
   const [deleting, setDeleting] = useState<ManagedAgentTableRow | null>(null);
@@ -275,6 +283,22 @@ function Devices({
   }, [clouds, deviceRows]);
   const agentRows = useMemo(() => managedAgentRows(data?.managed_agents ?? []), [data]);
 
+  useEffect(() => {
+    const deviceId = params.get("device");
+    if (deviceId && deviceRows.length > 0 && !detailsOpen) {
+      const device = deviceRows.find((row) => row.id === deviceId);
+      if (device && !device.id.startsWith("cloud:")) {
+        setDetailsOf(device);
+        setDetailsOpen(true);
+        setParams((prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("device");
+          return next;
+        });
+      }
+    }
+  }, [params, deviceRows, detailsOpen, setParams]);
+
   const deviceActions = useCallback(
     (row: DeviceTableRow): RowAction[] => {
       const actions: RowAction[] = [];
@@ -287,6 +311,17 @@ function Devices({
           onClick: () => {
             setDetailsOf(row);
             setDetailsOpen(true);
+          },
+        });
+      }
+      // A login is sealed for one of the person's own devices, once it has enrolled here.
+      if (row.owner_id === userId && !row.id.startsWith("cloud:")) {
+        actions.push({
+          label: "AI providers",
+          icon: <KeyOutlined fontSize="small" />,
+          onClick: () => {
+            setProvidersOf(row.id);
+            setProvidersOpen(true);
           },
         });
       }
@@ -558,9 +593,7 @@ function Devices({
               <Button
                 variant="outlined"
                 startIcon={<AddCircleOutline />}
-                onClick={async () => {
-                  if (await loadOwn()) setEditingAgent("new");
-                }}
+                onClick={() => setNewAgentOpen(true)}
               >
                 New managed agent
               </Button>
@@ -661,14 +694,23 @@ function Devices({
         onClose={() => setDetailsOpen(false)}
       />
 
+      <DeviceProvidersDialog
+        open={providersOpen}
+        deviceId={providersOf}
+        label={label}
+        onClose={() => setProvidersOpen(false)}
+      />
+
       <ManagedAgentDialog
         open={editingAgent !== null}
-        agent={editingAgent === "new" ? null : editingAgent}
+        agent={editingAgent}
         controllers={own?.controllers ?? []}
         providers={providers ?? []}
         onClose={() => setEditingAgent(null)}
         onSaved={() => void load()}
       />
+
+      <NewAgentDialog open={newAgentOpen} onClose={() => setNewAgentOpen(false)} onAddOutsideAgent={null} />
 
       <ConfirmDialog
         open={removeOpen}

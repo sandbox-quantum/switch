@@ -118,6 +118,21 @@ export interface AcpProviderHooks {
   /** Executable used when the caller names none. */
   defaultBinary: string;
   capabilities: ProviderCapabilities;
+  /**
+   * With `capabilities.steering`, whether the executable at `binaryPath`
+   * steers: takes a `session/prompt` sent while another runs into the running
+   * turn, rather than refusing or queueing it. ACP leaves a second prompt
+   * undefined, so a provider claims steering only where its CLI documents it.
+   * Omitted, every executable of a steering provider steers. A session that
+   * cannot steer refuses each steer, and the host queues the message.
+   *
+   * The turn ends with the answer to its latest prompt, so a provider that
+   * steers must answer each earlier prompt no later than the latest one (agy
+   * answers it `end_turn` as soon as the later prompt arrives). One that
+   * answered the steered prompt first would end the turn while an earlier
+   * prompt was still running.
+   */
+  steersRunningTurn?(binaryPath: string): boolean;
   /** The command, arguments and environment to run the agent with. May prepare the host first. */
   launch(input: AcpLaunchInput): Promise<AcpLaunch> | AcpLaunch;
   /**
@@ -211,8 +226,10 @@ export interface AcpProviderHooks {
    * session id and the message's prompt content. The agent answers
    * `{ outcome: 'injected' }` when the turn took it and
    * `{ outcome: 'promptRequired' }` when no turn was running, in which case
-   * the message is sent as a turn of its own. Omit for an agent that cannot
-   * steer; its `capabilities.steering` should then be false.
+   * the message is sent as a turn of its own. Omit for an agent that has no
+   * such request: with `capabilities.steering` it is steered with another
+   * `session/prompt` (see {@link AcpProviderHooks.steersRunningTurn}), and
+   * without, it cannot be steered.
    */
   steerMethod?: string;
   /**

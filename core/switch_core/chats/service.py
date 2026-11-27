@@ -63,7 +63,7 @@ from switch_core.chats.views import (
     SHOWN_EVENT_TYPES,
     ChatMention,
 )
-from switch_core.clients.mentions import mention_regex, strip_emphasis
+from switch_core.clients.mentions import mention_regex, mentionable_text
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
@@ -2741,7 +2741,7 @@ class ChatService:
         if any(agent_id not in in_room for agent_id in agent_ids):
             raise ChatError(422, "AGENT_NOT_IN_CHAT", "That agent is not in this chat.")
         aliases = await self._room_store.list_aliases(session, room.id)
-        text = strip_emphasis(body)
+        text = mentionable_text(body)
         missing: list[str] = []
         for agent_id in agent_ids:
             agent = await self._agent_store.get(session, agent_id)

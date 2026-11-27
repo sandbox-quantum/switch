@@ -1,8 +1,8 @@
+import { SectionLabel } from '@switch-console/chat-ui/primitives/label';
+import { SidebarGroup, SidebarMenu } from '@switch-console/chat-ui/primitives/sidebar';
 import { observer } from 'mobx-react-lite';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
-import { SectionLabel } from '@renderer/lib/ui/label';
 import { SidebarSessionItem } from './session-item';
-import { SidebarGroup, SidebarMenu } from './sidebar-primitives';
 
 export const SidebarPinnedSessionList = observer(function SidebarPinnedSessionList() {
   const entries = sidebarStore.pinnedSidebarEntries;

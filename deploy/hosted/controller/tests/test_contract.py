@@ -95,6 +95,41 @@ def test_every_recorded_call_is_a_services(files):
     assert all(account.startswith("system:serviceaccount:") for account in calls)
 
 
+# Every list the policies keep add-only: each has a sample that removes an entry, and one that changes one.
+ADD_ONLY_LISTS = {"box-map", "pool-map", "box-owners", "box-removals"}
+
+
+def test_each_entry_removed_sample_drops_an_entry_the_list_already_held(files):
+    """An add-only list written back without an entry it had before: the body lacks a key the setup's copy of the
+    list holds, and it isn't merely the good write without its own new entry."""
+    removed = {
+        n: json.loads(d)
+        for n, d in files.items()
+        if n.startswith("admission/bad/") and "entry-removed" in n
+    }
+    assert {s["name"] for s in removed.values()} == ADD_ONLY_LISTS
+    for name, sample in removed.items():
+        path = sample["request"]["path"]
+        (old,) = [o["object"] for o in sample["setup"] if o["path"] == path]
+        dropped = set(old["data"]) - set(sample["request"]["body"]["data"])
+        assert dropped, name
+
+
+def test_each_value_changed_sample_rewrites_an_entry_the_list_already_held(files):
+    """An add-only list written back with an entry it had before now holding another value."""
+    changed = {
+        n: json.loads(d)
+        for n, d in files.items()
+        if n.startswith("admission/bad/") and "entry-value-changed" in n
+    }
+    assert {s["name"] for s in changed.values()} == ADD_ONLY_LISTS
+    for name, sample in changed.items():
+        path = sample["request"]["path"]
+        (old,) = [o["object"] for o in sample["setup"] if o["path"] == path]
+        new = sample["request"]["body"]["data"]
+        assert any(key in new and new[key] != value for key, value in old["data"].items()), name
+
+
 def test_each_good_request_is_one_its_account_made(files):
     rbac = json.loads(files["rbac.json"])["calls"]
     for name, data in files.items():
@@ -247,3 +282,9 @@ def _rbac_only(policy: str, rule: str) -> bool:
             "the operator may only create placeholder pods",
         )
     )
+
+
+def test_each_bad_sample_has_its_own_name():
+    """Two bad samples of one name would write one file, and the earlier would silently go."""
+    slugs = [bad.slug for bad in contract.BAD]
+    assert len(slugs) == len(set(slugs)), sorted({s for s in slugs if slugs.count(s) > 1})

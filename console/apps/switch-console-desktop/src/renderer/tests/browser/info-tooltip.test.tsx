@@ -1,7 +1,7 @@
+import { InfoTooltip } from '@switch-console/chat-ui/primitives/info-tooltip';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 
 describe('InfoTooltip', () => {
   let container: HTMLDivElement;

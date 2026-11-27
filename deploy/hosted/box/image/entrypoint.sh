@@ -45,7 +45,7 @@ enrol_box() {
     exit 2
   fi
   echo "switch-box: enrolling as \"$SWITCH_MACHINE_NAME\" with $SWITCH_SERVER"
-  switch-agent-controller enroll \
+  switch-agent-controller enroll --box \
     --server "$SWITCH_SERVER" \
     --code "$(cat "$code_file")" \
     --name "$SWITCH_MACHINE_NAME" \
@@ -54,7 +54,7 @@ enrol_box() {
     --secret-store file
 }
 
-if ! switch-agent-controller status --data-dir "$data" >/dev/null 2>&1; then
+if ! switch-agent-controller status --box --data-dir "$data" >/dev/null 2>&1; then
   enrol_box
 fi
 
@@ -79,7 +79,7 @@ cli=$(readlink -f "$(command -v switch-agent-controller)")
 # again. With no code it exits as before, so a revoked box never loops. The
 # code itself is never printed. Only the newest retired copy is kept.
 set +e
-node --optimize-for-size "$cli" run --data-dir "$data" --updated-by-console "$@"
+node --optimize-for-size "$cli" run --box --data-dir "$data" --updated-by-console "$@"
 rc=$?
 set -e
 if { [ "$rc" -eq 3 ] || [ "$rc" -eq 6 ]; } && [ -s "$code_file" ]; then
@@ -99,6 +99,6 @@ if { [ "$rc" -eq 3 ] || [ "$rc" -eq 6 ]; } && [ -s "$code_file" ]; then
   mkdir -p "${HOME:-/data/home}"
   cd "${HOME:-/data/home}"
   enrol_box
-  exec node --optimize-for-size "$cli" run --data-dir "$data" --updated-by-console "$@"
+  exec node --optimize-for-size "$cli" run --box --data-dir "$data" --updated-by-console "$@"
 fi
 exit "$rc"
