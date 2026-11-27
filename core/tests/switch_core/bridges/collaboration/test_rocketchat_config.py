@@ -61,6 +61,11 @@ def test_a_server_url_that_names_no_server_is_refused(bad: str) -> None:
         config(server_url=bad)
 
 
+def test_a_server_url_carrying_a_password_is_refused() -> None:
+    with pytest.raises(ValidationError, match="user name or password"):
+        config(server_url="https://user:secret@chat.example.com")
+
+
 @pytest.mark.parametrize("field", ["bot_user_id", "personal_access_token"])
 def test_a_blank_credential_is_refused(field: str) -> None:
     with pytest.raises(ValidationError, match=field):
@@ -162,6 +167,13 @@ async def test_a_deactivated_bot_is_refused(fake: FakeRocketChat) -> None:
 async def test_something_that_is_not_rocket_chat_is_named(fake: FakeRocketChat) -> None:
     fake.on("me", lambda _: httpx.Response(502, text="<html>bad gateway</html>"))
     with pytest.raises(BridgeCredentialError, match="Check the server URL"):
+        await RocketChatAdapter.verify_credentials(_raw())
+
+
+async def test_a_web_page_answering_for_the_api_is_named(fake: FakeRocketChat) -> None:
+    # A site that answers every path with its own page, and a 200.
+    fake.on("me", lambda _: httpx.Response(200, text="<html>sign in</html>"))
+    with pytest.raises(BridgeCredentialError, match="not JSON. Check the server URL"):
         await RocketChatAdapter.verify_credentials(_raw())
 
 
