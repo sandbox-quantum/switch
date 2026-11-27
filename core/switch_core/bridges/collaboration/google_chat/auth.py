@@ -2,23 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 import jwt
 from cryptography.hazmat.primitives import serialization
 
 from switch_core.bridges.collaboration.models import BridgeCredentialError
+from switch_core.outbound import (
+    GuardedAsyncClient,
+    OutboundPolicy,
+    guarded_async_client,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token"
-ALLOWED_TOKEN_HOSTS = frozenset({
-    "oauth2.googleapis.com",
-    "accounts.google.com",
-})
 DEFAULT_SERVICE_ACCOUNT_SCOPES = (
     "https://www.googleapis.com/auth/chat.bot https://www.googleapis.com/auth/pubsub"
 )
@@ -29,45 +30,45 @@ WORKSPACE_EVENTS_SCOPES = (
 )
 
 
+_TOKEN_REQUEST_TIMEOUT_SECONDS = 30.0
+_OAUTH_ERROR_CODE_RE = re.compile(r"^[a-z_]{1,64}$")
+
+
+# A service account's JSON names its own token endpoint, and the uploaded
+# file is the tenant's to write. Google issues every key with this one, so any
+# other value is refused rather than POSTed a signed assertion.
 def validate_token_uri(token_uri: str) -> None:
-    """Validate that token_uri uses HTTPS and points to a permitted Google OAuth host."""
-    if not token_uri or not isinstance(token_uri, str):
+    """Refuse any token endpoint but Google's own."""
+    if token_uri != DEFAULT_TOKEN_URI:
         raise BridgeCredentialError(
-            "Service account token_uri must be a non-empty string."
+            f"Service account token_uri must be {DEFAULT_TOKEN_URI}."
         )
 
+
+def _token_http_client() -> GuardedAsyncClient:
+    # The token endpoint is a fixed public host, so no operator-listed private
+    # address is ever needed: an empty policy allows public addresses only.
+    return guarded_async_client(
+        OutboundPolicy.parse(""), timeout=_TOKEN_REQUEST_TIMEOUT_SECONDS
+    )
+
+
+def _oauth_rejection(resp: httpx.Response, what: str) -> BridgeCredentialError:
+    """The error for a refused token request, naming Google's error code but
+    never echoing the response body."""
+    code: str | None = None
     try:
-        parsed = urlparse(token_uri)
-    except Exception as exc:
-        raise BridgeCredentialError(
-            f"Invalid service account token_uri '{token_uri}': {exc}"
-        ) from exc
-
-    if parsed.scheme.lower() != "https":
-        raise BridgeCredentialError(
-            f"Service account token_uri must use HTTPS scheme: {token_uri}"
-        )
-
-    hostname = (parsed.hostname or "").lower()
-    if not hostname or hostname not in ALLOWED_TOKEN_HOSTS:
-        raise BridgeCredentialError(
-            f"Service account token_uri hostname '{hostname}' is not a permitted Google OAuth endpoint."
-        )
-
-    if parsed.port is not None and parsed.port != 443:
-        raise BridgeCredentialError(
-            f"Service account token_uri port {parsed.port} is not permitted."
-        )
-
-    if parsed.username or parsed.password:
-        raise BridgeCredentialError(
-            "Service account token_uri must not contain user credentials."
-        )
-
-    if parsed.query or parsed.fragment:
-        raise BridgeCredentialError(
-            "Service account token_uri must not contain query parameters or fragments."
-        )
+        body = resp.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        raw = body.get("error")
+        if isinstance(raw, str) and _OAUTH_ERROR_CODE_RE.match(raw):
+            code = raw
+    suffix = f": {code}" if code else ""
+    return BridgeCredentialError(
+        f"Google OAuth rejected {what} (status {resp.status_code}){suffix}"
+    )
 
 
 class GoogleAuthManager:
@@ -81,7 +82,7 @@ class GoogleAuthManager:
         user_client_secret: str | None = None,
         user_refresh_token: str | None = None,
         scopes: str = DEFAULT_SERVICE_ACCOUNT_SCOPES,
-        http_client: httpx.AsyncClient | None = None,
+        http_client: GuardedAsyncClient | None = None,
     ) -> None:
         self._sa_info = service_account_info
         self._user_client_id = user_client_id
@@ -189,33 +190,21 @@ class GoogleAuthManager:
             close_client = False
             client = self._http_client
             if client is None:
-                client = httpx.AsyncClient(timeout=30.0)
+                client = _token_http_client()
                 close_client = True
 
             try:
                 resp = await client.post(self._token_uri, data=data)
             except Exception as exc:
                 raise BridgeCredentialError(
-                    f"Failed to connect to Google OAuth endpoint ({self._token_uri}): {exc}"
+                    f"Failed to connect to Google OAuth endpoint ({type(exc).__name__})."
                 ) from exc
             finally:
                 if close_client:
                     await client.aclose()
 
             if resp.status_code != 200:
-                try:
-                    err_json = resp.json()
-                    err_desc = (
-                        err_json.get("error_description")
-                        or err_json.get("error")
-                        or resp.text
-                    )
-                except Exception:
-                    err_desc = resp.text
-                err_text = str(err_desc)[:300]
-                raise BridgeCredentialError(
-                    f"Google OAuth rejected service account assertion (status {resp.status_code}): {err_text}"
-                )
+                raise _oauth_rejection(resp, "service account assertion")
 
             token_data = resp.json()
             access_token = token_data.get("access_token")
@@ -261,33 +250,21 @@ class GoogleAuthManager:
             close_client = False
             client = self._http_client
             if client is None:
-                client = httpx.AsyncClient(timeout=30.0)
+                client = _token_http_client()
                 close_client = True
 
             try:
                 resp = await client.post(DEFAULT_TOKEN_URI, data=data)
             except Exception as exc:
                 raise BridgeCredentialError(
-                    f"Failed to connect to Google OAuth endpoint for User OAuth refresh: {exc}"
+                    f"Failed to connect to Google OAuth endpoint for User OAuth refresh ({type(exc).__name__})."
                 ) from exc
             finally:
                 if close_client:
                     await client.aclose()
 
             if resp.status_code != 200:
-                try:
-                    err_json = resp.json()
-                    err_desc = (
-                        err_json.get("error_description")
-                        or err_json.get("error")
-                        or resp.text
-                    )
-                except Exception:
-                    err_desc = resp.text
-                err_text = str(err_desc)[:300]
-                raise BridgeCredentialError(
-                    f"Google OAuth rejected User OAuth refresh token (status {resp.status_code}): {err_text}"
-                )
+                raise _oauth_rejection(resp, "User OAuth refresh token")
 
             token_data = resp.json()
             access_token = token_data.get("access_token")

@@ -39,6 +39,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     OutboundAttachment,
 )
+from switch_core.outbound import GuardedAsyncClient
 from switch_core.sessions.contract import (
     ApprovalContent,
     ApprovalOption,
@@ -112,30 +113,48 @@ class TestGoogleChatConfigurationAndCredentials:
             "http://169.254.169.254/latest/meta-data/",
             "http://localhost:8080/token",
             "https://127.0.0.1/token",
-            "https://evil.com/token",
-            "https://oauth2.googleapis.com.evil.com/token",
+            "https://evil.example/token",
+            "https://oauth2.googleapis.com.evil.example/token",
             "https://user:pass@oauth2.googleapis.com/token",
             "https://oauth2.googleapis.com:8080/token",
+            "https://oauth2.googleapis.com:443/token",
             "https://oauth2.googleapis.com/token?query=1",
+            "http://oauth2.googleapis.com/token",
+            "https://accounts.google.com/o/oauth2/token",
             "not-a-url",
             "",
+            42,
         ]:
-            bad_sa = json.dumps({
-                "type": "service_account",
-                "client_email": TEST_CLIENT_EMAIL,
-                "private_key": _TEST_PEM_KEY,
-                "token_uri": bad_uri,
-            })
+            bad_sa = json.dumps(
+                {
+                    "type": "service_account",
+                    "client_email": TEST_CLIENT_EMAIL,
+                    "private_key": _TEST_PEM_KEY,
+                    "token_uri": bad_uri,
+                }
+            )
             with pytest.raises(
                 ValueError, match="service_account_json 'token_uri' is invalid"
             ):
                 _make_config(service_account_json=bad_sa)
 
+    def test_google_token_uri_accepted(self) -> None:
+        sa = json.dumps(
+            {
+                "type": "service_account",
+                "client_email": TEST_CLIENT_EMAIL,
+                "private_key": _TEST_PEM_KEY,
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        )
+        _make_config(service_account_json=sa)
+        validate_token_uri("https://oauth2.googleapis.com/token")
+
     def test_auth_manager_validates_token_uri(self) -> None:
         for bad_uri in [
             "http://169.254.169.254/latest/meta-data/",
             "http://localhost/token",
-            "https://evil.com/token",
+            "https://evil.example/token",
             "https://oauth2.googleapis.com:8080/token",
         ]:
             sa_info = {
@@ -160,32 +179,82 @@ class TestGoogleChatConfigurationAndCredentials:
             await auth.get_service_account_token()
         client.post.assert_not_called()
 
-    def test_validate_token_uri_accepts_valid_google_endpoints(self) -> None:
-        validate_token_uri("https://oauth2.googleapis.com/token")
-        validate_token_uri("https://accounts.google.com/o/oauth2/token")
-        validate_token_uri("https://oauth2.googleapis.com:443/token")
+    @pytest.mark.asyncio
+    async def test_token_request_goes_through_the_guarded_client(self) -> None:
+        sa_info = {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
+        auth = GoogleAuthManager(sa_info)
+        seen: list[httpx.AsyncClient] = []
+
+        async def fake_post(
+            self: httpx.AsyncClient, url: str, **_: Any
+        ) -> httpx.Response:
+            seen.append(self)
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 3600})
+
+        with patch.object(GuardedAsyncClient, "post", fake_post):
+            assert await auth.get_service_account_token() == "tok"
+        assert len(seen) == 1
+        assert isinstance(seen[0], GuardedAsyncClient)
 
     @pytest.mark.asyncio
-    async def test_oauth_error_truncated_in_exception(self) -> None:
-        mock_resp = MagicMock(spec=httpx.Response)
-        mock_resp.status_code = 400
-        mock_resp.json.side_effect = Exception("not json")
-        mock_resp.text = "A" * 1000
-
+    async def test_oauth_rejection_does_not_echo_the_body(self) -> None:
         client = AsyncMock(spec=httpx.AsyncClient)
-        client.post.return_value = mock_resp
-
-        sa_info = {
-            "client_email": TEST_CLIENT_EMAIL,
-            "private_key": _TEST_PEM_KEY,
-            "token_uri": "https://oauth2.googleapis.com/token",
-        }
+        client.post.return_value = httpx.Response(
+            400,
+            json={
+                "error": "invalid_grant",
+                "error_description": "secret-looking-internal-detail",
+            },
+        )
+        sa_info = {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
         auth = GoogleAuthManager(sa_info, http_client=client)
         with pytest.raises(BridgeCredentialError) as exc_info:
             await auth.get_service_account_token()
-        assert len(str(exc_info.value)) < 400
-        assert "A" * 300 in str(exc_info.value)
-        assert "A" * 301 not in str(exc_info.value)
+        message = str(exc_info.value)
+        assert "status 400" in message
+        assert "invalid_grant" in message
+        assert "secret-looking-internal-detail" not in message
+
+    @pytest.mark.asyncio
+    async def test_oauth_rejection_with_non_json_body_names_only_the_status(
+        self,
+    ) -> None:
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = httpx.Response(502, text="<html>internal</html>")
+        sa_info = {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
+        auth = GoogleAuthManager(sa_info, http_client=client)
+        with pytest.raises(BridgeCredentialError) as exc_info:
+            await auth.get_service_account_token()
+        assert str(exc_info.value) == (
+            "Google OAuth rejected service account assertion (status 502)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_connection_failure_does_not_echo_the_exception(self) -> None:
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.side_effect = httpx.ConnectError("detail from the far side")
+        sa_info = {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
+        auth = GoogleAuthManager(sa_info, http_client=client)
+        with pytest.raises(BridgeCredentialError) as exc_info:
+            await auth.get_service_account_token()
+        assert "detail from the far side" not in str(exc_info.value)
+        assert "ConnectError" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_user_oauth_rejection_does_not_echo_the_body(self) -> None:
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = httpx.Response(401, text="body-detail")
+        sa_info = {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
+        auth = GoogleAuthManager(
+            sa_info,
+            http_client=client,
+            user_client_id="cid",
+            user_client_secret="csecret",
+            user_refresh_token="rt",
+        )
+        with pytest.raises(BridgeCredentialError) as exc_info:
+            await auth.get_user_token()
+        assert "body-detail" not in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_verify_credentials_success(self) -> None:

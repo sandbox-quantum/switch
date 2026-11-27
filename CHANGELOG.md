@@ -73,6 +73,14 @@ version of their own to them without also giving them a release of their own.
   room, so messages sent at the same instant can no longer be counted twice
   or skipped.
 
+#### Security
+- **A Google Chat service account's `token_uri` must be
+  `https://oauth2.googleapis.com/token`.** Any other value in the uploaded
+  JSON is refused when the bridge is saved, instead of Switch posting a signed
+  assertion to it. The token request goes through the outbound address guard,
+  and a refusal names only the status and Google's error code, not the
+  response body.
+
 ### [0.32.2] - 2026-11-25
 
 #### Changed
