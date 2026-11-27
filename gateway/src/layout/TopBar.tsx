@@ -16,6 +16,7 @@ import {
 import CreateInvitationDialog from "../pages/workspace/CreateInvitationDialog";
 import { areaOf, outsideWorkspace, underAreaOutsideWorkspace } from "../routes/routeTable";
 import { DevRoleSlot } from "./DevRoleSlot";
+import ProductSwitcher from "./ProductSwitcher";
 import { useWayBackToWorkspace } from "./wayBack";
 import WorkspaceMenu from "./WorkspaceMenu";
 
@@ -228,11 +229,16 @@ export default function TopBar() {
         height: "var(--top-bar-height)",
         alignItems: "center",
         justifyContent: "space-between",
+        flexShrink: 0,
         color: "text.primary",
-        pr: 1,
+        pl: "var(--surface-gutter)",
+        pr: "calc(var(--surface-gutter) + 8px)",
       }}
     >
-      <WorkspaceCrumbs section={section} outside={outside} wayBack={wayBack} fallback={fallback} />
+      <Stack direction="row" sx={{ alignItems: "center", gap: 1, minWidth: 0 }}>
+        <ProductSwitcher />
+        <WorkspaceCrumbs section={section} outside={outside} wayBack={wayBack} fallback={fallback} />
+      </Stack>
 
       <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
         <DevRoleSlot />

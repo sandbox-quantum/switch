@@ -6,9 +6,14 @@ import LinkNoticeBanner from "./LinkNoticeBanner";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
 
-/** The signature shell: a narrow icon rail and a slim top bar sitting bare on
- *  the warm canvas, framing a single rounded content surface. Chrome recedes so
- *  the content is the hero — an "app within a surface", not edge-to-edge chrome.
+/** Switch Rooms' brand-blue wash, from the top left. Light theme only: on dark
+ *  it reads as a colour cast, so dark keeps its flat canvas. */
+const SHELL_WASH =
+  "radial-gradient(ellipse 80% 100% at 14% 0%, color-mix(in oklch, var(--sw-brand-blue) 28%, transparent) 0%, color-mix(in oklch, var(--sw-brand-blue) 10%, transparent) 100%)";
+
+/** The signature shell: a slim top bar across the top and a narrow icon rail
+ *  beneath it, sitting bare on the canvas, framing a single rounded content
+ *  surface. Chrome recedes so the content is the hero — an "app within a surface", not edge-to-edge chrome.
  *  Organization settings are a place of their own, outside the workspace: no
  *  rail there, and the top bar leads back. A settings area draws its own title
  *  bar, menu and padding across the whole surface; one refused is shown like
@@ -19,32 +24,31 @@ export default function PageShell() {
   const area = enteredArea(pathname, capabilities);
   const withRail = area === null || !AREAS[area].outsideWorkspace;
   return (
-    <Box
+    <Stack
       sx={{
-        display: "flex",
         height: "100vh",
         overflow: "hidden",
-        backgroundColor: "var(--sw-canvas)",
+        backgroundColor: "var(--sw-brand-clarity-white)",
+        backgroundImage: SHELL_WASH,
+        '[data-mui-color-scheme="dark"] &': {
+          backgroundColor: "var(--sw-canvas)",
+          backgroundImage: "none",
+        },
       }}
     >
-      {withRail && <NavRail />}
-      <Stack
-        sx={{
-          flex: 1,
-          minWidth: 0,
-          overflow: "hidden",
-          pl: withRail ? 0 : "var(--surface-gutter)",
-          pr: "var(--surface-gutter)",
-          pb: "var(--surface-gutter)",
-        }}
-      >
-        <TopBar />
+      <TopBar />
+      <Box sx={{ display: "flex", flex: 1, minHeight: 0 }}>
+        {withRail && <NavRail />}
         <Stack
           component="main"
           sx={{
             flex: 1,
+            minWidth: 0,
             minHeight: 0,
             overflowY: "auto",
+            ml: withRail ? 0 : "var(--surface-gutter)",
+            mr: "var(--surface-gutter)",
+            mb: "var(--surface-gutter)",
             borderRadius: "16px",
             backgroundColor: "background.paper",
             color: "text.primary",
@@ -59,8 +63,8 @@ export default function PageShell() {
           </Box>
           <Outlet />
         </Stack>
-      </Stack>
-    </Box>
+      </Box>
+    </Stack>
   );
 }
 

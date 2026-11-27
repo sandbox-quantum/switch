@@ -12,7 +12,6 @@ import {
   MenuItem,
   Snackbar,
   Stack,
-  Tooltip,
   Typography,
 } from "@mui/material";
 import { memo, useState } from "react";
@@ -30,9 +29,6 @@ const TARGET = "clamp(36px, 4vh, 44px)";
 const ICON = "clamp(20px, 2.2vh, 22px)";
 const ITEM_GAP = "clamp(4px, 1.4vh, 16px)";
 const LABEL = "clamp(0.6875rem, 1.05vh, 0.75rem)";
-// The logo sits slightly inside the nav button footprint: it is a solid mark
-// against thin-stroke icons, so matching the container would read as heavier.
-const LOGO = "clamp(24px, 2.6vh, 28px)";
 
 function RailItem({ item, active }: { item: RailItemDefinition; active: boolean }) {
   return (
@@ -129,49 +125,6 @@ export default memo(function NavRail() {
         color: "text.primary",
       }}
     >
-      <Tooltip title="Switch" placement="right">
-        {/* Two assets rather than one recoloured mark: the swap is done in CSS
-            off the colour-scheme attribute so there is no flash on first paint,
-            and a future coloured logo drops in without rework. The file names
-            describe the ink — `dark` is the black mark, for the light theme.
-            An image, so the name the tooltip gives it is allowed on it. */}
-        <Box
-          role="img"
-          sx={{
-            width: TARGET,
-            height: TARGET,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Box
-            component="img"
-            src="/switch_logo_dark.svg"
-            alt="Switch"
-            sx={{
-              width: LOGO,
-              height: LOGO,
-              '[data-mui-color-scheme="dark"] &': { display: "none" },
-            }}
-          />
-          <Box
-            component="img"
-            src="/switch_logo_light.svg"
-            alt=""
-            aria-hidden
-            sx={{
-              width: LOGO,
-              height: LOGO,
-              display: "none",
-              '[data-mui-color-scheme="dark"] &': { display: "block" },
-            }}
-          />
-        </Box>
-      </Tooltip>
-
-      <Divider sx={{ my: 1.5, width: 29 }} />
-
       <Stack component="nav" aria-label="Main" sx={{ width: "100%", flex: 1, minHeight: 0 }}>
         <Stack
           sx={{

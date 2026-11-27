@@ -724,7 +724,25 @@ describe("the layout", () => {
       mockFetch(signedInAs("member"));
       renderAt("/rooms");
       expect(await screen.findByRole("button", { name: /Acme Group\s*\/\s*Acme/ })).toBeTruthy();
-      expect(screen.getByText("Rooms", { selector: "span" })).toBeTruthy();
+      expect(screen.getByText("Rooms", { selector: "span > span" })).toBeTruthy();
+    });
+
+    it("leads with the product badge, which offers Switch Trust in a new tab", async () => {
+      mockFetch(signedInAs("member"));
+      renderAt("/rooms");
+      const badge = await screen.findByRole("button", { name: "Rooms" });
+      expect(badge.getAttribute("aria-expanded")).toBe("false");
+      fireEvent.click(badge);
+      const menu = await screen.findByRole("menu", { name: "Switch product" });
+      expect(badge.getAttribute("aria-expanded")).toBe("true");
+      const rooms = within(menu).getByRole("menuitemradio", { name: /^Rooms/ });
+      const trust = within(menu).getByRole("menuitemradio", { name: /^Trust/ });
+      expect(rooms.getAttribute("aria-checked")).toBe("true");
+      expect(trust.getAttribute("aria-checked")).toBe("false");
+      expect(trust.getAttribute("href")).toBe("https://app.switchagents.ai");
+      expect(trust.getAttribute("target")).toBe("_blank");
+      fireEvent.click(rooms);
+      await waitFor(() => expect(screen.queryByRole("menu", { name: "Switch product" })).toBeNull());
     });
 
     it("names only the workspace where it belongs to no organization", async () => {
