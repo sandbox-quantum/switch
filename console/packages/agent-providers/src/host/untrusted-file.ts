@@ -1,11 +1,12 @@
-import { constants } from 'node:fs';
-import { open, realpath, stat } from 'node:fs/promises';
+import { type BigIntStats, constants } from 'node:fs';
+import { lstat, open, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, sep } from 'node:path';
 import type { z } from 'zod';
 
 /**
- * Opens without following a link at the last component and without waiting on
- * a FIFO for a writer. The flags Windows lacks are 0 there.
+ * Opens without following a link at the last component, where the OS can (see
+ * `readUntrusted` for Windows, which cannot), and without waiting on a FIFO for
+ * a writer. The flags Windows lacks are 0 there.
  */
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
@@ -33,15 +34,27 @@ export async function readUntrusted(
     throw error;
   }
   try {
-    const info = await file.stat();
+    const info = await file.stat({ bigint: true });
+    // Windows has no O_NOFOLLOW, so the open above follows a link there: the
+    // name is checked again, not followed, and must still be the file opened.
+    let named;
+    try {
+      named = await lstat(path, { bigint: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+        throw new Error(`${path} changed while being opened.`);
+      throw error;
+    }
+    if (named.isSymbolicLink()) throw new Error(`${path} is a link, which is not followed.`);
+    if (!sameFile(named, info)) throw new Error(`${path} changed while being opened.`);
     if (!info.isFile()) throw new Error(`${path} is not a regular file.`);
-    if (info.size > options.maxBytes)
+    if (info.size > BigInt(options.maxBytes))
       throw new Error(`${path} is larger than the ${options.maxBytes} bytes allowed.`);
     if (options.within !== undefined) {
       const root = await realpath(options.within);
       const real = await realpath(path);
-      const named = await stat(real);
-      if (!strictlyInside(root, real) || named.dev !== info.dev || named.ino !== info.ino)
+      const resolved = await stat(real, { bigint: true });
+      if (!strictlyInside(root, real) || !sameFile(resolved, info))
         throw new Error(`${path} is not inside ${options.within}, or changed while being opened.`);
     }
     const buffer = Buffer.alloc(options.maxBytes + 1);
@@ -81,6 +94,18 @@ export function parseUntrustedJson<T extends z.ZodType>(
     throw new Error(`${what} is not in the expected shape (at ${where}).`);
   }
   return parsed.data;
+}
+
+/**
+ * Whether two stats name one file: device and inode, read as bigints so a
+ * Windows file index (64 bits) is compared whole. A file system that reports
+ * no inode (0, as FAT on Windows does) leaves only the device to compare, and
+ * the caller's link check stands alone.
+ */
+function sameFile(a: BigIntStats, b: BigIntStats): boolean {
+  if (a.dev !== b.dev) return false;
+  if (a.ino === 0n && b.ino === 0n) return true;
+  return a.ino === b.ino;
 }
 
 function strictlyInside(root: string, target: string): boolean {

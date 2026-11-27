@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import type * as NodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { parseUntrustedJson, readUntrusted } from './untrusted-file';
 
@@ -31,6 +32,29 @@ it('refuses a link, an oversized file and a FIFO, quoting none of them', async (
     await expect(readUntrusted(join(dir, 'fifo'), { maxBytes: 64 })).rejects.toThrow(
       'not a regular file'
     );
+  }
+});
+
+it('refuses a link where the open follows it, as on Windows, which has no O_NOFOLLOW', async () => {
+  vi.resetModules();
+  vi.doMock('node:fs', async (importOriginal) => {
+    const actual = await importOriginal<typeof NodeFs>();
+    const { O_NOFOLLOW: _dropped, ...constants } = actual.constants;
+    return { ...actual, constants };
+  });
+  try {
+    const followed = await import('./untrusted-file');
+    writeFileSync(join(dir, 'target'), 'SECRET');
+    symlinkSync(join(dir, 'target'), join(dir, 'link'));
+    const error = await followed
+      .readUntrusted(join(dir, 'link'), { maxBytes: 64 })
+      .catch((e: Error) => e);
+    expect((error as Error).message).toContain('is a link');
+    expect((error as Error).message).not.toContain('SECRET');
+    expect(await followed.readUntrusted(join(dir, 'target'), { maxBytes: 64 })).toBe('SECRET');
+  } finally {
+    vi.doUnmock('node:fs');
+    vi.resetModules();
   }
 });
 
