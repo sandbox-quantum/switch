@@ -7,6 +7,7 @@ from starlette.types import Message, Receive, Scope, Send
 from switch_core.logging_context import structured_fields
 from switch_core.refusal_breaker import (
     INITIAL_COOLDOWN_S,
+    MAX_EXCHANGE_BODY_BYTES,
     REFUSALS_TO_TRIP,
     RefusalBreaker,
 )
@@ -130,6 +131,49 @@ async def test_a_controller_token_exchange_is_told_apart_by_its_credential() -> 
     assert (await _request(breaker, path, bearer=None, method="POST", body=fresh))[
         0
     ] == 200
+
+
+async def test_a_token_exchange_body_too_long_to_be_a_credential_is_refused() -> None:
+    app = _App(200)
+    breaker = RefusalBreaker(app, clock=_Clock())
+    path = "/v1/management/controllers/c1/token"
+    chunk = b"x" * 4096
+    reads = 0
+
+    async def receive() -> Message:
+        nonlocal reads
+        reads += 1
+        return {"type": "http.request", "body": chunk, "more_body": True}
+
+    sent: list[Message] = []
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    scope = {"type": "http", "method": "POST", "path": path, "headers": []}
+    await breaker(scope, receive, send)
+
+    assert sent[0]["status"] == 413
+    assert json.loads(sent[1]["body"])["error"]["code"] == "request_too_large"
+    assert reads == MAX_EXCHANGE_BODY_BYTES // len(chunk) + 1
+    assert app.calls == 0
+
+
+async def test_a_token_exchange_body_at_the_limit_is_read() -> None:
+    app = _App(200)
+    breaker = RefusalBreaker(app, clock=_Clock())
+    body = b"x" * MAX_EXCHANGE_BODY_BYTES
+
+    status, _, _ = await _request(
+        breaker,
+        "/v1/management/controllers/c1/token",
+        bearer=None,
+        method="POST",
+        body=body,
+    )
+
+    assert status == 200
+    assert app.bodies == [body]
 
 
 async def test_a_trip_is_a_security_event_naming_no_credential(
