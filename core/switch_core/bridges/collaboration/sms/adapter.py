@@ -62,6 +62,7 @@ from switch_core.bridges.collaboration.sms.signature import (
     verify_signature,
 )
 from switch_core.clients.admin_messages import AdminMessageType
+from switch_core.outbound import OutboundPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +184,12 @@ class SmsAdapter(PlatformAdapter):
         )
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         """Check the Auth Token opens this account, and that the account owns
         the number and the number can text."""
         config = SmsConnectionConfig.model_validate(connection_config)

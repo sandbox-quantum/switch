@@ -37,6 +37,7 @@ from switch_core.bridges.collaboration.sms.config import SmsConnectionConfig
 from switch_core.bridges.collaboration.sms.segments import CUT_NOTICE, count_segments
 from switch_core.bridges.collaboration.sms.signature import compute_signature
 from switch_core.db.models import TENANT_ZERO_ID
+from switch_core.outbound import OutboundPolicy
 from switch_core.sessions.contract import TurnUpsert
 
 from ...db.stores.test_bridge_send_store import make_bridge
@@ -215,7 +216,9 @@ class TestCredentials:
         monkeypatch.setattr(
             "switch_core.bridges.collaboration.sms.adapter.httpx.AsyncClient", mocked
         )
-        await SmsAdapter.verify_credentials(CONFIG)
+        await SmsAdapter.verify_credentials(
+            CONFIG, outbound_policy=OutboundPolicy.parse("")
+        )
 
     async def test_good_credentials_pass(
         self, twilio: FakeTwilio, monkeypatch: pytest.MonkeyPatch
