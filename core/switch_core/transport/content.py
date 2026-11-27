@@ -13,7 +13,11 @@ change, and it is not this module's to make.
 
 from __future__ import annotations
 
+import html
+
 import markdown
+from markdown import Markdown
+from markdown.extensions import Extension
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.transport.types import MessageFormat
@@ -135,10 +139,22 @@ def _rendered(body: str, mentions: list[str] | None) -> str:
     still wants the id there for exactly that reason, so the form is shared
     rather than being made Matrix-only.
     """
-    html: str = markdown.markdown(body)
+    rendered: str = markdown.markdown(body, extensions=[_NoRawHtml()])
     for user_id in mentions or ():
-        local = user_id.split(":")[0].lstrip("@")
-        html = html.replace(
-            f"@{local}", f'<a href="https://matrix.to/#/{user_id}">{local}</a>'
+        local = html.escape(user_id.split(":")[0].lstrip("@"), quote=False)
+        rendered = rendered.replace(
+            f"@{local}",
+            f'<a href="https://matrix.to/#/{html.escape(user_id)}">{local}</a>',
         )
-    return html
+    return rendered
+
+
+class _NoRawHtml(Extension):
+    """Markdown with raw HTML shown as text rather than passed through.
+
+    A body is whatever a person or an agent typed, so a `<script>` in it has
+    to reach a client as the characters, not as markup."""
+
+    def extendMarkdown(self, md: Markdown) -> None:
+        md.preprocessors.deregister("html_block")
+        md.inlinePatterns.deregister("html")
