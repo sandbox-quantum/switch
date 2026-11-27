@@ -235,8 +235,9 @@ e2e-follow-ups *args:
 # ── End-to-end harness, fast lane, on a throwaway stack ────────────────────────
 # Fresh Postgres and Mattermost, switch-core from this checkout, then the
 # provider-free scenarios in console/tooling-e2e, then teardown. Needs Docker
-# and your local stack stopped. `--keep` leaves it running; arguments after
-# `--` go to vitest. Output: build/e2e/ephemeral.
+# and your local stack stopped. `--keep` leaves it running; `--replicas 2` runs
+# two switch-core processes behind HAProxy; arguments after `--` go to vitest.
+# Output: build/e2e/ephemeral.
 e2e-fast *args:
     console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
 

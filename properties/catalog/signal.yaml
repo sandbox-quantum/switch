@@ -12,8 +12,6 @@ properties:
     levels: [model, system]
     owner: platform
     status: proposed
-    gaps:
-      system: no lane drops `NOTIFY` yet; it comes with the two-replica lane
     notes: >
       One rule on two channels: the signal bus (`signals.py`) and the room
       wake-ups (`messages/notify.py`). One model, `signals.qnt`, covers both,
@@ -21,4 +19,16 @@ properties:
       (`held_rows.py`), and the room wake-up. Each family's re-reads apply
       only over what an older re-read or change brought, so whichever began
       last wins; the bound on a process's view includes how long its reads
-      take.
+      take. Checked at the system level on the two-replica lane
+      (`src/fast/replica-bus-faults.ts`): one replica's signal or wake-up
+      listener is ended just after its heartbeat and again each time it
+      reconnects, while the other closes an agent's connection or an agent
+      posts to a bridged room. The deaf replica must act once its listener
+      reconnects, within its first backoff, rather than at the re-check, and
+      the listener must be back within its first backoff once the cuts stop.
+      Not covered yet at that level: the lane ends listening
+      connections, which the server sees end; a connection that goes
+      silent without ending (a half-open socket, a dropped packet) is
+      noticed only by its heartbeat and the socket's own keepalive, and
+      needs a proxy between a replica and Postgres, such as toxiproxy,
+      to fault.

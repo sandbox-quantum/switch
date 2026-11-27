@@ -794,6 +794,8 @@ class PlatformAdapter(ABC):
         # Set by the lifecycle (`set_holder_relay`): hands a request to the
         # process that holds the bridge, for work only the holder does.
         self._relay_to_holder: Callable[[dict[str, str]], None] | None = None
+        # Set by the lifecycle (`set_hold_check`).
+        self._holds: Callable[[], bool] | None = None
         # Set by the lifecycle (`set_gateway_public_url`).
         self._gateway_public_url: str | None = None
 
@@ -805,6 +807,20 @@ class PlatformAdapter(ABC):
         for it, or runs it quietly. Before `start`; an adapter that cannot
         keep quiet ignores it (`keeps_quiet_unless_listening`)."""
         self._listening = listening
+
+    def set_hold_check(self, holds: Callable[[], bool]) -> None:
+        """How a listening adapter asks whether this process still surely
+        holds the bridge (`OwnedKind.surely_holds`). An event read off the
+        platform's connection after that is no longer sure is dropped: another
+        process may hold the bridge by then and handle it too. Before `start`."""
+        self._holds = holds
+
+    def still_holds(self) -> bool:
+        """Whether this process may act on an event its platform connection
+        delivered (`set_hold_check`)."""
+        if self._holds is None:
+            raise RuntimeError("set_hold_check was not called before start")
+        return self._holds()
 
     def set_holder_relay(self, relay: Callable[[dict[str, str]], None]) -> None:
         """How a quiet copy hands the process holding the bridge a piece of

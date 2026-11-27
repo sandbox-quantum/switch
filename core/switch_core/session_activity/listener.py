@@ -24,6 +24,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from switch_core.db.listening import ReconnectBackoff, hold_open
 from switch_core.db.session_activity_notify_ddl import SESSION_ACTIVITY_CHANNEL
 from switch_core.messages.notify import (
     HEARTBEAT_SECONDS,
@@ -169,6 +170,9 @@ class AgentSessionActivityListener:
         self._tasks: list[asyncio.Task[None]] = []
         self._running = False
         self.connected = asyncio.Event()
+        self._backoff = ReconnectBackoff(
+            base=RECONNECT_BACKOFF_BASE, cap=RECONNECT_BACKOFF_CAP
+        )
 
     def subscribe(
         self, tenant_id: str, on_change: OnChange, on_resync: OnResync
@@ -235,18 +239,13 @@ class AgentSessionActivityListener:
     # ── The listening connection ──────────────────────────────────────────────
 
     async def _listen_forever(self) -> None:
-        attempt = 0
         while self._running:
             try:
                 await self._listen_once()
-                attempt = 0
             except asyncio.CancelledError:
                 raise
             except Exception:
-                attempt += 1
-                delay = min(
-                    RECONNECT_BACKOFF_BASE * 2 ** (attempt - 1), RECONNECT_BACKOFF_CAP
-                )
+                delay = self._backoff.next_delay()
                 logger.error(
                     "Session-activity listener lost its connection; retrying in %.1fs",
                     delay,
@@ -270,11 +269,14 @@ class AgentSessionActivityListener:
                 try:
                     self._queue.put_nowait(_RESYNC)
                     self.connected.set()
-                    while self._running:
-                        await asyncio.sleep(HEARTBEAT_SECONDS)
-                        await driver.execute(
-                            "SELECT 1", timeout=HEARTBEAT_TIMEOUT_SECONDS
-                        )
+                    self._backoff.connected()
+                    await hold_open(
+                        driver,
+                        heartbeat_seconds=HEARTBEAT_SECONDS,
+                        heartbeat_timeout_seconds=HEARTBEAT_TIMEOUT_SECONDS,
+                        running=lambda: self._running,
+                        after_beat=None,
+                    )
                 finally:
                     self.connected.clear()
                     with contextlib.suppress(Exception):

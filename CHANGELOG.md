@@ -137,6 +137,10 @@ version of their own to them without also giving them a release of their own.
   switcher out, and `npm run build` now fails if it gets in.
 
 #### Changed
+- **Database connections name the server they belong to.** Each carries its
+  process id and what it is for (`pool`, `signals`, `messages`, ...) as its
+  `application_name`, so `pg_stat_activity` shows which replica holds which
+  connection.
 - **The morning report's graph explains itself.** `daily_report.py` draws the
   graph of the day itself instead of taking a Datadog snapshot, with a title,
   the time span, labelled axes, a legend and a caption on how to read it, so
@@ -220,6 +224,44 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **A server notices at once when the database closes a connection it
+  listens on.** A failover, a restart or an ended backend used to go unseen
+  until the connection's next heartbeat, up to 20 seconds later: messages
+  reached that server's bridges and agents late, and a membership or
+  controller revoked elsewhere could still be honored there all that time.
+  Now it reconnects within a second and catches up, and a revocation takes
+  effect within the cache TTL (`AGENT_AUTH_CACHE_TTL_SECONDS`). Its reconnect
+  delay also starts again from one second after each successful connection,
+  where before it stayed at 15 seconds once a few connections had been lost
+  over the server's life.
+- **Deleting an agent no longer fails, leaving the agent in place, when it
+  is added to a room at the same moment.** A room membership written between
+  the delete clearing the agent's memberships and removing the agent made the
+  delete fail with a server error. The delete now waits for a membership in
+  progress and removes it too.
+- **Renaming an agent no longer leaves a second Mattermost bot when Switch
+  runs more than one server process.** A process that does not hold the
+  bridge could create a bot under the new name before the bot was renamed.
+- **An agent registered moments before its room was created is now in the
+  room's Mattermost channel when Switch runs more than one server process.**
+  The process creating the channel had not yet set up the agent's bot, and
+  left the agent out, so the agent never heard that channel. It now adopts the
+  bot and puts it on the team before adding it. Two processes creating the
+  same bot at once no longer log an error, a failed bot lookup is reported
+  instead of being read as "no bot". An agent deleted while another process
+  was still adding it to a room, or posting its greeting there, is no longer
+  an error.
+- **An agent's first message after a server process takes over a
+  Mattermost bridge is posted as the agent, not as the Switch admin
+  account.** When the process holding the bridge stopped and another took it
+  over, a message waiting to be relayed could be posted before the new holder
+  had set up the agent's bot, under the admin account and with an error
+  logged. The bot is now set up first.
+- **A server process paused for longer than its lease no longer relays
+  Mattermost messages it received before the pause once it runs again.**
+  Another process holds the bridge by then; the paused one now drops what its
+  connections buffered, with a warning, instead of writing it into rooms
+  more than a minute late.
 - **A cached controller token or room membership no longer outlives its TTL
   after a slow read.** The TTL counted from when the read was stored, so a
   change missed while the read was in flight could be served for the TTL plus

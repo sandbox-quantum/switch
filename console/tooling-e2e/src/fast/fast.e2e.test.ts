@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
+import { REPLICA_KINDS, Replicas } from '../clients/replicas.ts';
 import { describeEnv } from '../core/env.ts';
 import { HistoryCheck } from '../core/history.ts';
 import { RunContext } from '../core/run.ts';
@@ -7,6 +8,7 @@ import {
   describeServerLogCheck,
   expectNoServerErrors,
   ServerLogWatch,
+  setAsideExpected,
 } from '../core/server-log.ts';
 import { resolveLane, type LaneResolution } from '../core/suite.ts';
 import { Fixtures } from '../fixtures/fixtures.ts';
@@ -57,16 +59,37 @@ describe('fast lane', () => {
       }
 
       const names = run.scope();
+      if (!names.wipeable && env.environment !== 'ephemeral') {
+        throw new Error(
+          `${scenario.header.id} would be scenario number ${run.scopesTaken} of this run, past the ` +
+            `letters the scheduled wipe recognises; on '${env.environment}' what it leaves behind ` +
+            'would never be cleared. Run fewer scenarios at once.'
+        );
+      }
       const fixtures = new Fixtures(env, names, switchClient, mattermost);
       const log = (message: string): void => console.log(`[${scenario.header.id}] ${message}`);
+      const replicas =
+        scenario.header.requires.includes('replicas') && env.replicas !== null
+          ? new Replicas(env.replicas, log)
+          : null;
       const observer = watch.begin(switchClient, names.tag, scenario.header.id);
       let failure: unknown = null;
       let leftovers: string[];
       try {
         try {
-          await scenario.run({ env, names, switchClient, mattermost, fixtures, log });
+          await scenario.run({ env, names, switchClient, mattermost, fixtures, replicas, log });
         } catch (error) {
           failure = error;
+        }
+        // First, so the history check and the teardown run on two healthy
+        // replicas, and so the next scenario does.
+        if (replicas !== null) {
+          try {
+            await replicas.restore(REPLICA_KINDS);
+          } catch (error) {
+            if (failure === null) failure = error;
+            else log(`restoring the replicas: ${error instanceof Error ? error.message : String(error)}`);
+          }
         }
         // Before teardown, which deletes the agents and with them their own
         // events, and whether or not the scenario failed: a failing run's
@@ -84,7 +107,11 @@ describe('fast lane', () => {
         observer.stop();
       }
       for (const line of leftovers) log(`teardown: ${line}`);
-      const serverErrors = observer.errors(failure, log);
+      const serverErrors = setAsideExpected(
+        observer.errors(failure, log),
+        scenario.expectedServerErrors ?? [],
+        log
+      );
       // The scenario's own failure is the root cause and is reported as is; a
       // leak, then a server error, is the verdict only when nothing else went
       // wrong.

@@ -124,6 +124,28 @@ describe('server log watch', () => {
     expect(() => observer.errors(null, () => {})).toThrow(/rotated or truncated/);
   });
 
+  it("reads every replica's log, given several", async () => {
+    const one = logFile([record('error', 'replica one, at boot')]);
+    const two = logFile([record('error', 'replica two, at boot')]);
+    const watch = new ServerLogWatch(`${one}, ${two}`);
+    const observer = watch.begin(tagger, 'e2e-abc123b', 'some-scenario');
+    append(one, [record('error', 'on replica one', 'e2e-abc123b-1')]);
+    append(two, [record('error', 'on replica two', 'e2e-abc123b-2')]);
+    observer.stop();
+    expect(observer.errors(null, () => {})?.map((error) => error.message)).toEqual([
+      'on replica one',
+      'on replica two',
+    ]);
+    append(two, [record('error', 'after, on replica two')]);
+    expect((await watch.sweep())?.map((error) => error.message)).toEqual([
+      'after, on replica two',
+    ]);
+  });
+
+  it('refuses a setting that names no log', () => {
+    expect(() => new ServerLogWatch(' , ')).toThrow(/names no log/);
+  });
+
   it('is off, reading nothing, without a log', async () => {
     const watch = new ServerLogWatch(null);
     expect(watch.begin(tagger, 'e2e-abc123b', 'some-scenario').errors(null, () => {})).toBe(null);

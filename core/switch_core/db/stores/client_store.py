@@ -122,7 +122,12 @@ class ClientStore:
         claims it. A caller that gets that order wrong gets the same foreign
         key violation this clears for `client_rooms`.
         """
-        client = await session.get(Client, client_id)
+        # Locked first: a membership being added takes a key-share lock on
+        # this row, so one in flight finishes before the memberships are
+        # cleared (and is cleared with them), and one started later waits and
+        # then finds no client. Without it, a membership committed between
+        # the clearing and the delete refuses the delete.
+        client = await session.get(Client, client_id, with_for_update=True)
         if client is None:
             return
         await session.execute(

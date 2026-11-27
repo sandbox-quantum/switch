@@ -47,6 +47,7 @@ from collections.abc import Awaitable, Callable, Hashable
 from typing import TYPE_CHECKING, Any
 
 from switch_core.announcer import MAX_PAYLOAD_BYTES, Announcer
+from switch_core.db.listening import ReconnectBackoff, hold_open
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -164,6 +165,9 @@ class SignalBus:
         self._tasks: list[asyncio.Task[None]] = []
         self._running = False
         self.connected = asyncio.Event()
+        self._backoff = ReconnectBackoff(
+            base=RECONNECT_BACKOFF_BASE, cap=RECONNECT_BACKOFF_CAP
+        )
         # How many listening connections have been established. What a process
         # keeps current by signals is current only while this stays the same
         # and `connected` stays set: a signal sent between two connections
@@ -259,18 +263,13 @@ class SignalBus:
     # ── The listening connection ──────────────────────────────────────────────
 
     async def _listen_forever(self) -> None:
-        attempt = 0
         while self._running:
             try:
                 await self._listen_once()
-                attempt = 0
             except asyncio.CancelledError:
                 raise
             except Exception:
-                attempt += 1
-                delay = min(
-                    RECONNECT_BACKOFF_BASE * 2 ** (attempt - 1), RECONNECT_BACKOFF_CAP
-                )
+                delay = self._backoff.next_delay()
                 logger.error(
                     "Signal listener lost its connection; retrying in %.1fs",
                     delay,
@@ -294,19 +293,21 @@ class SignalBus:
                 try:
                     self.listens += 1
                     self.connected.set()
+                    self._backoff.connected()
                     await self._resync_all()
-                    await self._hold_open(driver)
+                    await hold_open(
+                        driver,
+                        heartbeat_seconds=HEARTBEAT_SECONDS,
+                        heartbeat_timeout_seconds=HEARTBEAT_TIMEOUT_SECONDS,
+                        running=lambda: self._running,
+                        after_beat=None,
+                    )
                 finally:
                     self.connected.clear()
                     with contextlib.suppress(Exception):
                         await driver.remove_listener(SIGNAL_CHANNEL, self._on_notify)
         finally:
             await engine.dispose()
-
-    async def _hold_open(self, driver: Any) -> None:
-        while self._running:
-            await asyncio.sleep(HEARTBEAT_SECONDS)
-            await driver.execute("SELECT 1", timeout=HEARTBEAT_TIMEOUT_SECONDS)
 
     def _on_notify(
         self, _connection: Any, _pid: int, _channel: str, payload: str

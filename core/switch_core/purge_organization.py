@@ -58,6 +58,7 @@ from switch_core.config import SwitchConfig
 from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.connections.registry import ClientRegistration
 from switch_core.db.engine import (
+    connection_name,
     create_engine_from_config,
     create_session_factory,
     create_unpooled_engine,
@@ -219,7 +220,8 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
     if arguments.execute and not arguments.request:
         print("--execute needs --request REFERENCE", file=sys.stderr)
         return 2
-    engine = create_engine_from_config(config)
+    process_id = f"organization-purge-{uuid.uuid4().hex[:8]}"
+    engine = create_engine_from_config(config, connection_name(process_id, "pool"))
     try:
         # The service broker finds a workspace's sign-ins through the
         # tenant-isolation policies alone, so on a connection they don't
@@ -233,8 +235,8 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
     announcer = Announcer(session_factory)
     signals = SignalBus(
         session_factory,
-        lambda: create_unpooled_engine(config),
-        process_id=f"organization-purge-{uuid.uuid4().hex[:8]}",
+        lambda: create_unpooled_engine(config, connection_name(process_id, "signals")),
+        process_id=process_id,
         announcer=announcer,
     )
     await announcer.start()

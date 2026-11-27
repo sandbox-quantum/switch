@@ -56,7 +56,10 @@ class TestItAppliesToMigrationsOnly:
     def test_the_application_engine_never_sends_it(self) -> None:
         # A query killed for waiting on a busy row is a user-visible error for
         # no gain; only DDL escalates a wait into a queue behind it.
-        assert "server_settings" not in app_connect_args(_config())
+        assert (
+            "lock_timeout"
+            not in app_connect_args(_config(), "replica-1-0a1b2c3d")["server_settings"]
+        )  # type: ignore[operator]
 
     def test_db_connect_args_stays_free_of_it(self) -> None:
         # `boot_lock` and `main._prepare_database` build their connections from

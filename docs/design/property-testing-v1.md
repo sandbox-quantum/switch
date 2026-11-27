@@ -575,13 +575,27 @@ In this order, each checker shown to fail on a planted bug:
       round robin with no stickiness, WebSocket upgrades passed through, so a
       client's requests and sockets land on either replica. Both replicas
       write the shared assertion log (the SDK appends each record in one
-      write), and `SWITCH_E2E_SERVER_LOG` takes both servers' logs. Every
-      fast-lane scenario runs through it, each with the history check before
-      teardown. This closes the system level of `bus.room-seq-dense`,
-      `delivery.decided-at-write`, `chats.membership-is-read-authority`,
+      write), and `SWITCH_E2E_SERVER_LOG` takes both servers' logs, comma
+      separated. The replicas start one after the other, so the start-up work
+      runs alone, as in a rolling deploy. Every fast-lane scenario runs
+      through it, each with the history check before teardown, so what the
+      lane already checks at the system level (the `delivery.*` history
+      checks, `retention.erasure-complete`, `tenancy.no-cross-tenant-ids`,
+      `api.no-5xx`, `chats.streams-close-on-sign-out` and the server's
+      assertions) is now checked with every request free to land on either
+      replica. It closes no gap by itself: the system-level gaps of
+      `bus.room-seq-dense`, `delivery.decided-at-write`,
+      `chats.membership-is-read-authority`,
       `tenancy.agent-surface-no-cross-tenant` and
-      `connector.token-only-to-granted`, whose scenarios and history checks
-      exist and need only the second replica.
+      `connector.token-only-to-granted` are missing scenarios or a commit-order
+      log, not a second replica, and each is written for this lane when it is
+      added.
+
+      Its first run found an agent left out of a new room's Mattermost
+      channel: registered on one replica and put in a room on the other
+      before that one had set up the agent's bot. Two replicas creating the
+      same bot also logged an error each time, and a failed bot lookup was
+      read as "no bot". All three are fixed.
    2. **Process faults.** A fault hook in the harness, implemented by the stack
       script: kill a replica (`SIGKILL`, or `SIGTERM` as a deploy does), pause
       and resume one (`SIGSTOP`/`SIGCONT`, which lets its lease lapse without
@@ -600,17 +614,134 @@ In this order, each checker shown to fail on a planted bug:
       - `controller.takeover-fenced` at the system level, and the case the
         eventual-ownership model found: a replica paused for less than its
         lease, a replica added meanwhile, and the key moved once it resumes.
-   3. **Bus faults.** The listening connection is cut on its own with
-      `pg_terminate_backend` on the backends whose query is `LISTEN`, which
-      loses every notification sent until it reconnects; no proxy is needed.
-      - `signal.loss-only-delays`: cut one replica's listener, change something
-        on the other (rename an agent, remove a member), and see the change
-        take effect within the periodic re-check.
-      - `revocation.takes-effect-everywhere` at the system level: revoke on one
-        replica, then use what was revoked against the other, with its
-        listener whole and cut; it is refused within the bound.
-      A proxy such as toxiproxy, for latency between a replica and Postgres,
-      is added only if stage 2 shows timing hides what the checks look for.
+
+      Built so far: the hook (`src/clients/replicas.ts`, with
+      `scripts/replica.sh` starting a replica and HAProxy's runtime API on
+      `127.0.0.1:9999`), and three scenarios on the Mattermost bridge
+      (`src/fast/replica-faults.ts`), which hold `replica.single-owner` and
+      `replica.ownership-eventual` for it: its holder crashed (`SIGKILL`),
+      stopped as a deploy stops it (`SIGTERM`), and paused past its lease.
+      Each reads `ownership_leases` (`properties/history/ownership.py`, which
+      also reports the product's timers, so every wait is derived from them),
+      checks that the survivor holds the bridge within the lease's lifetime
+      and one balance (a balance after a `SIGTERM`), that an agent's message
+      sent while nothing held the bridge is posted once, as the agent, and
+      that both directions work once each after the hand-over and again once
+      the faulted replica is back. The paused scenario also checks that the
+      resumed replica logs that it stopped its work, that a message the agent
+      sent during the pause is posted once, and that a person's post its
+      sockets buffered is not relayed when it runs again. A scenario that
+      causes an error log on purpose names it (`expectedServerErrors`); any
+      other error still fails it. Each fault is undone after the scenario,
+      which then waits for the bridge to settle on a live holder, so the next
+      scenario does not start in a hand-over.
+
+      They found three bugs. A process that took a bridge over after a crash
+      relayed a waiting message before it had set up the agent's bot, so the
+      message was posted under the admin account. A process paused past its
+      lease, once resumed, wrote the posts its sockets had buffered into the
+      rooms before its balance stopped the bridge: a write after its lease had
+      lapsed, more than a minute late. Both are fixed: a send adopts the bot
+      it lacks, and an adapter drops what its platform connection delivers
+      once its process is no longer sure it holds the bridge
+      (`OwnedKind.surely_holds`). The third is open (Known issues): a person's
+      post made before the new holder's sockets are open is lost. The
+      scenarios measure that gap rather than fail on it.
+
+      Then two more on the bridge, and two on the connections clients hold
+      (`src/fast/replica-connections.ts`, with an agent's socket and a
+      controller's held open by the harness and answering pings):
+      - the case the eventual-ownership model found: a process the key
+        belongs to joins while its holder is paused for less than its lease.
+        The bridge's rightful holder is paused past its lease, so the other
+        takes it over; that one is paused for less than its lease (past half
+        of it, short of the lease less one renewal interval, both from the
+        timers), and the first resumed meanwhile, rejoining at once. It must
+        take nothing while the paused holder's lease holds, and get the
+        bridge back, under a new claim, within two balances of that holder
+        running again. A first version started a replica during the pause
+        instead, but a start took from 4 to 17 seconds against a pause of
+        10, and where the bridge hashed was drawn with the new process's id;
+      - the holder taken out of HAProxy's rotation, which keeps the bridge;
+      - `presence.online-iff-lease`: an agent's socket claims a room and its
+        holder is killed. The survivor must read the agent offline within the
+        lease's lifetime and one lease watch, and live again once it
+        reconnects with the same connection id;
+      - `controller.takeover-fenced`: a controller's socket held by a paused
+        replica, and the controller opening again through the other. Once
+        resumed, the old holder must evict the replaced socket as
+        `taken_over`, with nothing after, an attach naming the replaced
+        connection must be refused, and the row must stay on the survivor.
+      `properties/history/ownership.py` reports each key's rightful owner
+      among the live processes, so `settled` waits for that, and who holds
+      each open agent and controller connection.
+
+      Each new check was seen to fail on a planted bug: a claim that takes a
+      key from a live holder, a row read as live whatever its holder's lease
+      with the lease watch off (either alone is not enough: re-reading an
+      agent's rows also drops a lapsed holder's copies), and a takeover that
+      leaves the replaced socket open. A lease renewed after it lapsed
+      reading as sure again, the review finding fixed with `ProcessLease`'s
+      lapse count, is held by a unit test: on the lane the balance usually
+      runs before the renewal, so the plant passes there.
+
+   3. **Bus faults.** One replica's listening connection is cut on its own,
+      with `pg_terminate_backend`, and no proxy. Every connection names its
+      process and what it is for as its `application_name`
+      (`replica-1-<suffix> signals`, `... messages`, `... pool`), so a cut
+      reaches one replica's signal bus or its room wake-ups and nothing
+      else, and the replica goes on serving requests on its pool. A single
+      cut is over in about a second, the reconnect's resync closing the gap,
+      so the harness (`Replicas.deafen`, with
+      `properties/history/listeners.py`) cuts just after the listener's
+      heartbeat and again each time it reconnects, for a window past the
+      heartbeat and the bound checked. A scenario makes its change right
+      after the first cut, from the other replica, straight to its port
+      (`SwitchClient.at`), so the change surely falls while the replica is
+      deaf (`src/fast/replica-bus-faults.ts`):
+      - `revocation.takes-effect-everywhere`: an agent taken out of a room,
+        and a controller revoked. The deaf replica read the membership or the
+        controller's row again after the cut; the agent's post, or the
+        controller's token, through it must be refused within a held row's
+        TTL (`AGENT_AUTH_CACHE_TTL_SECONDS`). Read again after the cut, so the
+        refusal waits out the TTL rather than finding it over already.
+      - `signal.loss-only-delays`: an agent's connection closed on the other
+        replica, which the deaf one must read offline within its first
+        reconnect backoff of the other doing so; and an agent's posts through
+        the other replica while the bridge's holder has its wake-ups cut,
+        each of which must reach Mattermost once, within the first backoff.
+        The posts are spaced across more than a room re-check
+        (`transport/postgres.py` wakes a client's rooms with unread rows every
+        30 seconds), which would relay at most two of them in time: one post
+        alone passed with the wake-up on reconnect removed when a re-check
+        happened to fall within its bound.
+      - Each also checks the listener is back within its first backoff once
+        the cuts stop.
+
+      Their first run found two bugs, in all four listeners
+      (`messages/notify.py`, `signals.py`, and the agent-event and
+      session-activity listeners), both fixed in `db/listening.py`. A
+      listener noticed its connection had ended only at its next heartbeat,
+      up to 20 seconds later; all that time it lost every notification, and a
+      held row stayed held past its TTL under a connection that no longer
+      existed, so a removed agent could still post through that replica. It
+      now notices when asyncpg reports the connection closed. And the
+      reconnect backoff never started again after a connection was made, so
+      a process that had lost its connection a few times waited the 15-second
+      cap before every reconnect.
+
+      Each check was seen to fail on a planted bug: a held row kept across a
+      reconnect (both revocations), no resync on reconnect (the closed
+      connection, read live until the periodic re-check), and no wake-up of
+      every room on reconnect (the post never reached the channel), as well
+      as on the two bugs above before their fix.
+
+      What is left: a connection that goes silent without ending (a half-open
+      socket, dropped packets) is noticed only by the heartbeat and the
+      socket's keepalive, and latency between a replica and Postgres is not
+      injected at all. Both need a proxy such as toxiproxy, added if a check
+      ever needs it. A connector grant and the room membership of a client
+      that reads rooms are not revoked on the lane yet.
 
 Not planned here: the controller's own rules on its side (TypeScript), such as
 a handed-over session never being driven by two controllers at once in
@@ -642,6 +773,18 @@ to track them.
   `POST /collaborations/setup/slack/check`, `POST /templates`, `PUT
   /chats/{room_id}/read`), all on the type of `detail`. They look like one
   error-shape fix, and are outside `api.no-5xx`, which only says 5xx.
+- **A Mattermost post made while a bridge changes hands is lost.** The
+  adapter reads each bot's socket from the moment it connects and never
+  fetches what was posted before, so a person's post between the old holder
+  letting go (or dying, or being paused) and the new holder's sockets
+  opening reaches no agent. On a deploy that is a second or two; after a
+  crash, the lease's lifetime. Closing it needs a stored position per
+  channel, the last post relayed, and a fetch of what came after it when a
+  socket opens, which a holder paused past its lease must not do. The
+  replica fault scenarios log how many posts each hand-over lost; make them
+  fail on any once this is fixed. Other adapters that listen on a socket
+  (Slack in socket mode, Discord, Telegram) likely have the same gap, and
+  do not yet drop what reaches them after their hold is unsure.
 - **An agent's runtime state is announced only on the replica that has it.**
   `com.switch.agent.runtime_state`, Switch Console's working and idle, goes
   over an in-process bus (`transport/ephemeral.py`). Nothing reads it today:

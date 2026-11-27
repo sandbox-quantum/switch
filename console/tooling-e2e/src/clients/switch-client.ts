@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import type { Environment, SwitchEnv } from "../core/env.ts";
+import { type Environment, stripTrailingSlash, type SwitchEnv } from "../core/env.ts";
 import { assertAllowed } from "../core/guard.ts";
 import type { IssuedSecrets } from "../core/secrets.ts";
 
@@ -140,6 +140,48 @@ export interface StreamEnd {
 export interface OpenStream {
   ended: Promise<StreamEnd>;
   close(): void;
+}
+
+/** A frame a held socket sent (`{event, data}`, with an `id` on an agent's events). */
+export interface SocketFrame {
+  event: string;
+  data: Record<string, unknown>;
+  id?: string | number;
+}
+
+/**
+ * A connection socket, an agent's or a controller's, held open and answering
+ * pings, so it stays connected until it is closed or the server ends it.
+ */
+export interface HeldSocket {
+  /** The `connection_state` frame the socket opened with. */
+  state: Record<string, unknown>;
+  /** Every frame received, the opening one included, in order. */
+  frames: SocketFrame[];
+  ended: Promise<StreamEnd>;
+  close(): void;
+}
+
+/** A socket the server refused with a `refused` frame. */
+export class SocketRefused extends Error {
+  readonly detail: Record<string, unknown>;
+
+  constructor(path: string, detail: Record<string, unknown>) {
+    super(`${path} refused: ${JSON.stringify(detail)}`);
+    this.detail = detail;
+  }
+}
+
+/** A controller enrolled by the harness, with its access token. */
+export interface EnrolledController {
+  id: string;
+  accessToken: string;
+}
+
+/** A controller connection opened, for its socket to attach to. */
+export interface ControllerConnection {
+  connectionId: string;
+  generation: number;
 }
 
 export interface RouteProbe {
@@ -481,6 +523,166 @@ export class SwitchClient {
     };
   }
 
+  /**
+   * Open the agent's connection socket (`WS /agents/{id}/connection/ws`) with
+   * its API key, as connection `connectionId` (reused to reconnect), claiming
+   * `rooms` before its stream starts. Answers every ping, so only the server
+   * or `close` ends it. Resolves on the opening `connection_state` frame;
+   * rejects if the server refuses the socket or closes it first.
+   */
+  async openAgentSocket(
+    agent: RegisteredAgent,
+    connectionId: string,
+    rooms: readonly string[],
+  ): Promise<HeldSocket> {
+    const query: Record<string, string> = {
+      connection_id: connectionId,
+      scope: "single",
+      filter: "addressed",
+    };
+    if (rooms.length > 0) query.rooms = rooms.join(",");
+    return this.holdSocket(
+      `/agents/${agent.id}/connection/ws`,
+      query,
+      { Authorization: `Bearer ${agent.apiKey}` },
+      { type: "pong" },
+    );
+  }
+
+  /**
+   * Enroll a Switch Console controller for the signed-in admin, as Console
+   * does, and exchange its credential for an access token.
+   */
+  async enrollController(name: string): Promise<EnrolledController> {
+    const enrolled = await this.gateway<{ controller_id: string; credential: string }>(
+      "POST",
+      "/management/controllers",
+      {
+        name,
+        kind: "console",
+        platform: { os: "linux", arch: "x64", os_version: "6.1.0" },
+        version: "0.1.0",
+      },
+    );
+    const token = await this.request<{ access_token: string }>(
+      "POST",
+      `/v1/management/controllers/${enrolled.controller_id}/token`,
+      { body: { credential: enrolled.credential } },
+    );
+    return { id: enrolled.controller_id, accessToken: token.access_token };
+  }
+
+  /** `DELETE /gateway/management/controllers/{id}`: revoke the controller. */
+  async revokeController(controllerId: string): Promise<void> {
+    await this.gateway("DELETE", `/management/controllers/${controllerId}`);
+  }
+
+  /**
+   * The status `GET /v1/management/controllers/{id}/assignment` answers with,
+   * as the controller: 200 while its token stands, 401 once it is revoked.
+   */
+  async controllerAssignmentStatus(controller: EnrolledController): Promise<number> {
+    try {
+      await this.request("GET", `/v1/management/controllers/${controller.id}/assignment`, {
+        token: controller.accessToken,
+      });
+      return 200;
+    } catch (error) {
+      if (!(error instanceof SwitchHttpError)) throw error;
+      return error.status;
+    }
+  }
+
+  /** The admin's controllers as the gateway lists them: `state` is `online`, `offline`, `unknown` or `revoked`. */
+  async controllers(): Promise<{ id: string; state: string }[]> {
+    return this.gateway("GET", "/management/controllers");
+  }
+
+  /**
+   * `POST /v1/controllers/{id}/connection`: open the controller's connection,
+   * taking over any it had, wherever that is held.
+   */
+  async openControllerConnection(controller: EnrolledController): Promise<ControllerConnection> {
+    const opened = await this.request<{ connection_id: string; generation: number }>(
+      "POST",
+      `/v1/controllers/${controller.id}/connection`,
+      { token: controller.accessToken, body: { cursors: {} } },
+    );
+    return { connectionId: opened.connection_id, generation: opened.generation };
+  }
+
+  /**
+   * Attach the controller's socket (`WS /v1/controllers/{id}/connection/ws`)
+   * to an opened connection, answering every ping with its beat. Resolves on
+   * the opening `connection_state` frame; rejects if the attach is refused.
+   */
+  async openControllerSocket(
+    controller: EnrolledController,
+    connection: ControllerConnection,
+  ): Promise<HeldSocket> {
+    return this.holdSocket(
+      `/v1/controllers/${controller.id}/connection/ws`,
+      { connection_id: connection.connectionId, generation: String(connection.generation) },
+      { Authorization: `Bearer ${controller.accessToken}` },
+      { type: "pong", cursors: {} },
+    );
+  }
+
+  /**
+   * A WebSocket that answers each `ping` frame with `pong`, recording every
+   * frame. Resolves on its opening `connection_state` frame; rejects on a
+   * `refused` frame, or if it closes or fails first.
+   */
+  private async holdSocket(
+    path: string,
+    query: Record<string, string>,
+    headers: Record<string, string>,
+    pong: Record<string, unknown>,
+  ): Promise<HeldSocket> {
+    assertAllowed(this.environment, "GET", path);
+    const url = new URL(`${this.apiUrl}${path}`);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
+    const Socket = WebSocket as unknown as new (
+      url: string,
+      init: { headers: Record<string, string> },
+    ) => WebSocket;
+    const socket = new Socket(url.toString(), {
+      headers: { ...headers, ...this.requestId() },
+    });
+    const frames: SocketFrame[] = [];
+    let closedByClient = false;
+    const ended = new Promise<StreamEnd>((resolve) => {
+      socket.addEventListener("close", (event) =>
+        resolve({ by: closedByClient ? "client" : "server", code: event.code }),
+      );
+    });
+    const state = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      socket.addEventListener("message", (event) => {
+        const frame = JSON.parse(String(event.data)) as SocketFrame;
+        frames.push(frame);
+        if (frame.event === "ping") socket.send(JSON.stringify(pong));
+        if (frame.event === "connection_state") resolve(frame.data);
+        if (frame.event === "refused") {
+          reject(new SocketRefused(path, frame.data));
+        }
+      });
+      socket.addEventListener("error", () => reject(new Error(`${path} would not open`)));
+      void ended.then((end) =>
+        reject(new Error(`${path} closed (${end.code}) before its connection_state`)),
+      );
+    });
+    return {
+      state,
+      frames,
+      ended,
+      close: () => {
+        closedByClient = true;
+        socket.close();
+      },
+    };
+  }
+
   private async probe(
     method: string,
     path: string,
@@ -568,6 +770,30 @@ export class SwitchClient {
       this.issued,
     );
     other.tagging = this.tagging;
+    return other;
+  }
+
+  /**
+   * The same client, sending every request straight to replica `replica` of a
+   * two-replica stack, which serves on port `8000 + replica`
+   * (`scripts/replica.sh`), instead of through HAProxy. Shares the session,
+   * the record of issued credentials and the request tagging.
+   */
+  at(replica: 1 | 2): SwitchClient {
+    const url = new URL(this.apiUrl);
+    url.port = String(8000 + replica);
+    const other = new SwitchClient(
+      {
+        apiUrl: stripTrailingSlash(url.toString()),
+        agentRegistrationToken: this.registrationToken,
+        gatewayAdminEmail: this.adminEmail,
+        gatewayAdminPassword: this.adminPassword,
+      },
+      this.environment,
+      this.issued,
+    );
+    other.tagging = this.tagging;
+    other.gatewayCookie = this.gatewayCookie;
     return other;
   }
 
@@ -1019,6 +1245,11 @@ export class SwitchClient {
     if (!statuses || typeof statuses !== "object") return null;
     const status = (statuses as Record<string, unknown>)[agentId];
     return typeof status === "string" ? status : null;
+  }
+
+  /** `DELETE /gateway/rooms/{room}/agents/{agent}`: take an agent out of a room. */
+  async removeAgentFromRoom(roomId: string, agentId: string): Promise<void> {
+    await this.gateway("DELETE", `/rooms/${roomId}/agents/${agentId}`);
   }
 
   /**
@@ -1669,8 +1900,10 @@ export class SwitchClient {
 
   /**
    * Wait for a notification satisfying `predicate`, collecting everything seen
-   * along the way. Returns `{ match: null, seen }` on timeout rather than
-   * throwing, so a caller can report the stream it did see.
+   * along the way, the rest of the batch the match came in included: the
+   * server has handed those over, and no later poll returns them. Returns
+   * `{ match: null, seen }` on timeout rather than throwing, so a caller can
+   * report the stream it did see.
    */
   async waitForNotification(
     agent: RegisteredAgent,
@@ -1685,10 +1918,9 @@ export class SwitchClient {
         Math.min(10, Math.ceil((until - Date.now()) / 1000)),
       );
       const events = await this.pollNotifications(agent, remaining);
-      for (const event of events) {
-        seen.push(event);
-        if (predicate(event)) return { match: event, seen };
-      }
+      seen.push(...events);
+      const match = events.find(predicate);
+      if (match !== undefined) return { match, seen };
     }
     return { match: null, seen };
   }

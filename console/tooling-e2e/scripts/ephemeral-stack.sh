@@ -9,6 +9,7 @@
 #   just e2e-agentic              the agentic lane: scenario files, a driver and a judge model
 #   just e2e-explore              the explore lane: Bombadil drives the gateway UI at random
 #   just e2e-fast --keep          leave the stack running afterwards
+#   just e2e-fast --replicas 2    two switch-core replicas behind HAProxy
 #   just e2e-fast -- <vitest args> pass arguments through to vitest
 #
 # The provider lane also builds console/packages and starts an agent controller
@@ -26,7 +27,14 @@
 # to :8000 as nginx does in a deployment, and install Playwright's Chromium.
 # SWITCH_E2E_EXPLORE_TIME_LIMIT sets how long the explore lane explores (5m).
 #
+# With --replicas 2, two switch-core processes run from this checkout on :8001
+# and :8002 (collaboration callbacks on :8091 and :8092), behind HAProxy in a
+# container on :8000 and :8081 (scripts/haproxy.cfg): round robin, no
+# stickiness, WebSockets passed through. Each logs to its own file and the
+# harness reads both; their assertions go to one shared file.
+#
 # Ports 4173, 5432, 8000, 8065 and 8081 must be free: stop a local stack first.
+# With two replicas, so must 8001, 8002, 8091 and 8092.
 # Logs and the JUnit report go to build/e2e/ephemeral/ (or $E2E_OUT); the env
 # file, the controller's state and the agent's working directory go to a
 # temporary directory, so the output holds nothing secret by construction.
@@ -48,10 +56,16 @@ NEEDS_CONTROLLER=0
 FOLLOW_WINDOW_SECONDS=20
 case "$LANE" in provider|agentic) NEEDS_CONTROLLER=1 ;; esac
 KEEP=0
+REPLICAS=1
 VITEST_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --keep) KEEP=1 ;;
+    --replicas)
+      [ $# -ge 2 ] || { echo "--replicas needs a count" >&2; exit 2; }
+      REPLICAS="$2"; shift
+      case "$REPLICAS" in 1|2) ;; *) echo "--replicas is 1 or 2, not $REPLICAS" >&2; exit 2 ;; esac
+      ;;
     --) shift; VITEST_ARGS=("$@"); break ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -61,7 +75,9 @@ done
 for tool in docker uv openssl curl jq lsof; do
   command -v "$tool" >/dev/null || { echo "$tool is required but not on PATH." >&2; exit 1; }
 done
-for port in 4173 5432 8000 8065 8081; do
+PORTS=(4173 5432 8000 8065 8081)
+[ "$REPLICAS" = 2 ] && PORTS+=(8001 8002 8091 8092 9999)
+for port in "${PORTS[@]}"; do
   if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "Port $port is in use. Stop your local stack first ('just down', and any 'just run')." >&2
     exit 1
@@ -81,9 +97,37 @@ SECRETS="$WORK/secrets"
 cd "$REPO"
 COMPOSE=(docker compose -p switch-e2e-ephemeral -f deploy/local/docker-compose.yml
          --env-file "$ENV_FILE" --project-directory .)
-SERVER_PID=""
+# One per replica, in order.
+SERVER_PIDS=()
+SERVER_LOGS=()
+PROXY="switch-e2e-ephemeral-haproxy"
+# With two replicas: each one's current pid, rewritten when the harness starts
+# one again after a fault (scripts/replica.sh).
+REPLICAS_DIR=""
 CONTROLLER_PID=""
 UI_PID=""
+# The replicas' current pids. They are not this shell's children once the
+# harness has started one again, so they are waited for by polling.
+replica_pids() {
+  [ -n "$REPLICAS_DIR" ] || return 0
+  cat "$REPLICAS_DIR"/*.pid 2>/dev/null | tr '\n' ' '
+}
+stop_replicas() {
+  local pid pids
+  pids="$(replica_pids)"
+  [ -n "$pids" ] || return 0
+  for pid in $pids; do
+    # A paused replica takes no SIGTERM until it runs again.
+    kill -CONT "$pid" 2>/dev/null
+    kill "$pid" 2>/dev/null
+  done
+  for _ in $(seq 30); do
+    for pid in $pids; do kill -0 "$pid" 2>/dev/null && break; pid=""; done
+    [ -z "$pid" ] && return 0
+    sleep 1
+  done
+  for pid in $pids; do kill -KILL "$pid" 2>/dev/null; done
+}
 cleanup() {
   local status=$?
   # Every step runs whatever the one before it did: a process that exits
@@ -93,12 +137,21 @@ cleanup() {
   if [ "$KEEP" = 0 ]; then
     [ -n "$UI_PID" ] && kill "$UI_PID" 2>/dev/null && wait "$UI_PID" 2>/dev/null
     [ -n "$CONTROLLER_PID" ] && kill "$CONTROLLER_PID" 2>/dev/null && wait "$CONTROLLER_PID" 2>/dev/null
-    [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null && wait "$SERVER_PID" 2>/dev/null
+    for pid in ${SERVER_PIDS[@]+"${SERVER_PIDS[@]}"}; do
+      kill "$pid" 2>/dev/null && wait "$pid" 2>/dev/null
+    done
+    stop_replicas
+    if [ "$REPLICAS" = 2 ]; then
+      docker logs "$PROXY" >"$OUT/haproxy.log" 2>&1
+      docker rm -f "$PROXY" >/dev/null 2>&1
+    fi
     "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
   else
-    echo "Left running: switch-core :8000 (pid $SERVER_PID), Mattermost :8065${CONTROLLER_PID:+, agent controller (pid $CONTROLLER_PID)}${UI_PID:+, gateway UI :4173 (pid $UI_PID)}."
+    local proxy="" behind=""
+    [ "$REPLICAS" = 2 ] && { proxy="docker rm -f $PROXY; "; behind=", behind HAProxy"; }
+    echo "Left running: switch-core :8000 (pid ${SERVER_PIDS[*]-}$behind), Mattermost :8065${CONTROLLER_PID:+, agent controller (pid $CONTROLLER_PID)}${UI_PID:+, gateway UI :4173 (pid $UI_PID)}."
     echo "Secrets and state for this stack: $WORK. Tear down with:"
-    echo "  kill $SERVER_PID $CONTROLLER_PID $UI_PID; ${COMPOSE[*]} down -v; rm -rf $WORK"
+    echo "  kill ${SERVER_PIDS[*]-} $(replica_pids) $CONTROLLER_PID $UI_PID; $proxy${COMPOSE[*]} down -v; rm -rf $WORK"
   fi
   if "$HARNESS/scripts/scan-artifacts.sh" "$OUT" <"$SECRETS"; then
     : >"$OUT/.secret-scan-passed"
@@ -124,6 +177,14 @@ else
   sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=follow_the_conversation|" "$ENV_FILE"
   rm -f "$ENV_FILE.bak"
   printf 'FOLLOW_THE_CONVERSATION_WINDOW_SECONDS=%s\n' "$FOLLOW_WINDOW_SECONDS" >>"$ENV_FILE"
+  if [ "$REPLICAS" = 2 ]; then
+    # The replica fault scenarios enroll a controller and hold its socket
+    # (`src/fast/replica-connections.ts`). No controller runs here, so no
+    # request card or agentic setup message is answered untagged.
+    sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=follow_the_conversation,agent_management|" \
+               -e "s|^CONTROLLER_TOKEN_SECRET=.*|CONTROLLER_TOKEN_SECRET=$(openssl rand -hex 32)|" "$ENV_FILE"
+    rm -f "$ENV_FILE.bak"
+  fi
 fi
 chmod 600 "$ENV_FILE"
 set -a; source "$ENV_FILE"; set +a
@@ -162,19 +223,53 @@ done
 uv run --project core alembic -c core/alembic.ini upgrade head >"$OUT/migrate.log" 2>&1 \
   || { echo "migrations failed; see $OUT/migrate.log" >&2; exit 1; }
 
-echo "Starting switch-core from this checkout…"
 # JSON, so the harness can read back what the server logged during each
 # scenario (SWITCH_E2E_SERVER_LOG): one record per line, timed to the
 # millisecond. `jq -r '"\(.timestamp) \(.status) \(.message)"'` reads it.
 # The server's assertions (Antithesis SDK local mode) are logged here, and read
 # after the fast lane by properties/history/assertions.py.
-ANTITHESIS_SDK_LOCAL_OUTPUT="$OUT/assertions.jsonl" \
-GATEWAY_COOKIE_SECURE=false LOG_FORMAT=json uv run --project core python -m switch_core.main \
-  >"$OUT/switch-core.log" 2>&1 &
-SERVER_PID=$!
-for _ in $(seq 120); do curl -sf localhost:8000/health >/dev/null && break; sleep 1; done
-curl -sf localhost:8000/health >/dev/null \
-  || { echo "switch-core did not come up; see $OUT/switch-core.log" >&2; exit 1; }
+start_server() {
+  local port="$1" callback_port="$2" log="$3"
+  ANTITHESIS_SDK_LOCAL_OUTPUT="$OUT/assertions.jsonl" \
+  SERVER_PORT="$port" COLLABORATION_CALLBACK_PORT="$callback_port" \
+  GATEWAY_COOKIE_SECURE=false LOG_FORMAT=json uv run --project core python -m switch_core.main \
+    >"$log" 2>&1 &
+  SERVER_PIDS+=($!)
+  SERVER_LOGS+=("$log")
+  for _ in $(seq 120); do curl -sf "localhost:$port/health" >/dev/null && break; sleep 1; done
+  curl -sf "localhost:$port/health" >/dev/null \
+    || { echo "switch-core on :$port did not come up; see $log" >&2; exit 1; }
+}
+
+if [ "$REPLICAS" = 1 ]; then
+  echo "Starting switch-core from this checkout…"
+  start_server 8000 8081 "$OUT/switch-core.log"
+else
+  # One after the other: the first runs the start-up work (the bootstrap
+  # admin, the default workspace) alone, as a rolling deploy would.
+  echo "Starting two switch-core replicas from this checkout…"
+  REPLICAS_DIR="$WORK/replicas"
+  mkdir -p "$REPLICAS_DIR"
+  export SWITCH_E2E_REPLICAS_DIR="$REPLICAS_DIR" SWITCH_E2E_REPLICA_LOGS="$OUT"
+  for n in 1 2; do
+    "$HARNESS/scripts/replica.sh" "$n" || exit 1
+    SERVER_LOGS+=("$OUT/switch-core-$n.log")
+  done
+  echo "Starting HAProxy in front of them…"
+  docker rm -f "$PROXY" >/dev/null 2>&1 || true
+  # Docker Desktop and OrbStack define host.docker.internal; Linux Docker
+  # needs it mapped to the host gateway. :9999 is HAProxy's runtime API, for
+  # the harness to take a replica out of rotation; on loopback only.
+  docker run -d --name "$PROXY" --add-host host.docker.internal:host-gateway \
+    -p 8000:8000 -p 8081:8081 -p 127.0.0.1:9999:9999 \
+    -v "$HARNESS/scripts/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" \
+    haproxy:3.0-alpine >"$OUT/haproxy-start.log" 2>&1 \
+    || { echo "HAProxy did not start; see $OUT/haproxy-start.log" >&2; exit 1; }
+  for _ in $(seq 30); do curl -sf localhost:8000/health >/dev/null && break; sleep 1; done
+  curl -sf localhost:8000/health >/dev/null \
+    || { docker logs "$PROXY" >"$OUT/haproxy.log" 2>&1
+         echo "switch-core is not reachable through HAProxy; see $OUT/haproxy.log" >&2; exit 1; }
+fi
 
 echo "Waiting for the Mattermost bridge to be registered…"
 for _ in $(seq 150); do
@@ -270,17 +365,28 @@ status=0
   # The credentials the harness is issued, for the scan on exit.
   export SWITCH_E2E_SECRETS_FILE="$SECRETS"
   # What the server logs, so a scenario during which it logs an error fails.
-  export SWITCH_E2E_SERVER_LOG="$OUT/switch-core.log"
+  # Every replica's, separated by commas.
+  SWITCH_E2E_SERVER_LOG="$(IFS=,; echo "${SERVER_LOGS[*]}")"
+  export SWITCH_E2E_SERVER_LOG
+  # What the replica fault scenarios act on (src/clients/replicas.ts); with
+  # one server, that they have nothing to act on.
+  if [ "$REPLICAS" = 2 ]; then
+    export SWITCH_E2E_HAPROXY_ADMIN=127.0.0.1:9999
+  else
+    export SWITCH_E2E_NO_REPLICAS=1
+  fi
   # The delivery history check, which reads the stack's database (DB_* above).
   [ "$LANE" = fast ] && export SWITCH_E2E_HISTORY_CHECK="$REPO/properties/history/check.sh"
   # Screenshots of failed pages, and agentic transcripts and verdicts.
   export SWITCH_E2E_OUTPUT_DIR="$OUT"
   # The follow-up window the server was started with, for the scenario that waits it out.
   [ "$NEEDS_CONTROLLER" = 0 ] && export SWITCH_E2E_FOLLOW_WINDOW_SECONDS="$FOLLOW_WINDOW_SECONDS"
+  # SWITCH_API_URL is IPv4 by address: `localhost` may resolve to ::1, which Docker reaches
+  # through its own port forwarder rather than HAProxy's listener.
   SWITCH_E2E_LANE="$LANE" \
   SWITCH_E2E_ENVIRONMENT=ephemeral \
   SWITCH_E2E_STRICT=1 \
-  SWITCH_API_URL=http://localhost:8000 \
+  SWITCH_API_URL=http://127.0.0.1:8000 \
   SWITCH_GATEWAY_ADMIN_EMAIL="$GATEWAY_ADMIN_EMAIL" \
   SWITCH_GATEWAY_ADMIN_PASSWORD="$GATEWAY_ADMIN_PASSWORD" \
   SWITCH_AGENT_REGISTRATION_TOKEN="$AGENT_REGISTRATION_TOKEN" \
@@ -304,7 +410,8 @@ if [ "$LANE" = fast ] && [ ${#VITEST_ARGS[@]} -eq 0 ]; then
 fi
 
 if [ "$status" != 0 ]; then
-  echo "The $LANE lane failed. switch-core log: $OUT/switch-core.log" >&2
+  echo "The $LANE lane failed. switch-core log: ${SERVER_LOGS[*]}" >&2
+  [ "$REPLICAS" = 2 ] && echo "HAProxy log: $OUT/haproxy.log" >&2
   [ "$NEEDS_CONTROLLER" = 1 ] && echo "Agent controller log: $OUT/controller.log" >&2
   [ "$LANE" = browser ] && echo "Screenshots of failed pages: $OUT/screenshots" >&2
   [ "$LANE" = explore ] && echo "The explorer's trace: pnpm --dir $HARNESS exec bombadil browser inspect $OUT/explore" >&2

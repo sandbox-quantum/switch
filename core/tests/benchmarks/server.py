@@ -468,7 +468,9 @@ async def _serve(
     # production. The events themselves are rows and outlive the restart.
     async with session_env.engine.begin() as connection:
         event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
-    message_listener = MessageListener(lambda: create_unpooled_engine(config))
+    message_listener = MessageListener(
+        lambda: create_unpooled_engine(config, "benchmark-server")
+    )
     await message_listener.start()
     event_buffer = EventBuffer(
         session_factory,
@@ -478,14 +480,14 @@ async def _serve(
         session_slots=session_slots_for(config.db_pool_size, config.db_max_overflow),
     )
     agent_event_listener = AgentEventListener(
-        lambda: create_unpooled_engine(config), event_buffer
+        lambda: create_unpooled_engine(config, "benchmark-server"), event_buffer
     )
     connections = AgentConnectionRegistry()
     collab_lifecycle = _NoBridges()
 
     await agent_event_listener.start()
     activity_listener = AgentSessionActivityListener(
-        lambda: create_unpooled_engine(config)
+        lambda: create_unpooled_engine(config, "benchmark-server")
     )
     await activity_listener.start()
     activity = AgentSessionActivityService(session_factory)
@@ -601,7 +603,7 @@ async def _serve(
             session_factory=session_factory,
             bus=SignalBus(
                 session_factory,
-                lambda: create_unpooled_engine(config),
+                lambda: create_unpooled_engine(config, "benchmark-server"),
                 process_id=lease.process_id,
             ),
             store=OwnershipLeaseStore(),

@@ -102,6 +102,18 @@ describe('run naming', () => {
     expect(run.owns('e2e-zzz999a-snd')).toBe(false);
   });
 
+  it('has 36 scopes of distinct names, the wipe recognising the 26 letter ones', () => {
+    const run = new RunContext('abc123');
+    const scopes = Array.from({ length: 36 }, () => run.scope());
+    const names = scopes.map((scope) => scope.name('controller'));
+    expect(new Set(names).size).toBe(36);
+    expect(names.at(-1)).toBe('e2e-abc1239-controller');
+    expect(names.every(isValidMattermostUsername)).toBe(true);
+    expect(scopes.map((scope) => scope.wipeable)).toEqual([...Array(26).fill(true), ...Array(10).fill(false)]);
+    expect(names.map(isHarnessArtifact)).toEqual(scopes.map((scope) => scope.wipeable));
+    expect(() => run.scope()).toThrow(/ran out of name scopes/);
+  });
+
   it('refuses a name too long for a bot username, or one handed out twice', () => {
     const scope = new RunContext('abc123').scope();
     expect(() => scope.name('much-too-long')).toThrow(/Shorten/);
@@ -201,6 +213,51 @@ describe('admission', () => {
   });
 });
 
+describe('replica faults', () => {
+  const replicas = {
+    pidDir: '/tmp/replicas',
+    logDir: '/tmp/out',
+    haproxyAdmin: '127.0.0.1:9999',
+    startScript: '/tmp/replica.sh',
+  };
+
+  it('runs a scenario that faults replicas only on a stack of two', () => {
+    const needsReplicas = header({ requires: ['replicas'] });
+    expect(admit(needsReplicas, env({ replicas }))).toEqual({ run: true });
+    expect(admit(needsReplicas, env({ strict: true }))).toMatchObject({
+      run: false,
+      failure: true,
+      reason: expect.stringContaining('SWITCH_E2E_HAPROXY_ADMIN'),
+    });
+  });
+
+  it('skips without failing, even when strict, on a stack that runs one server by design', () => {
+    expect(
+      admit(header({ requires: ['replicas'] }), env({ strict: true, noReplicas: true }))
+    ).toMatchObject({ run: false, failure: false, reason: expect.stringContaining('one server') });
+  });
+
+  it('reads the stack from the environment, and refuses half of it', () => {
+    const given = {
+      SWITCH_E2E_HAPROXY_ADMIN: '127.0.0.1:9999',
+      SWITCH_E2E_REPLICAS_DIR: '/tmp/replicas',
+      SWITCH_E2E_REPLICA_LOGS: '/tmp/out',
+    };
+    expect(loadEnv('fast', BASE, given).replicas).toMatchObject({
+      pidDir: '/tmp/replicas',
+      logDir: '/tmp/out',
+      haproxyAdmin: '127.0.0.1:9999',
+    });
+    expect(loadEnv('fast', BASE, {}).replicas).toBe(null);
+    expect(() =>
+      loadEnv('fast', BASE, { SWITCH_E2E_HAPROXY_ADMIN: '127.0.0.1:9999' })
+    ).toThrow(/SWITCH_E2E_REPLICAS_DIR/);
+    expect(() =>
+      loadEnv('fast', BASE, { ...given, SWITCH_E2E_NO_REPLICAS: '1' })
+    ).toThrow(/Unset one/);
+  });
+});
+
 describe('cleanup scope', () => {
   it('takes every name the harness builds, and none of the e2e- names people choose', () => {
     const scope = new RunContext('k3x9q2').scope();
@@ -214,6 +271,8 @@ describe('cleanup scope', () => {
       'e2e-hub-shared',
       'e2e-k3x9q2a',
       'my-e2e-k3x9q2a-x',
+      'e2e-test123-bot',
+      'e2e-build12-agent',
     ]) {
       expect(isHarnessArtifact(name)).toBe(false);
     }

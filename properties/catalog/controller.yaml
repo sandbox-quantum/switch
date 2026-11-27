@@ -27,9 +27,14 @@ properties:
     levels: [code, system]
     owner: platform
     status: proposed
-    gaps:
-      system: waits on the two-replica lane
     notes: >
+      Checked at the system level by `src/fast/replica-connections.ts`, on the
+      two-replica lane: a controller's socket is held by a replica that is
+      paused, and the controller opens its connection again through the
+      other. Once resumed, the old holder must send the replaced socket
+      `evicted taken_over` and nothing after it, an attach naming the replaced
+      connection must be refused, and the controller's row must name the new
+      connection on the survivor.
       A different mechanism from `lease.fenced-takeover` (the controller's row
       and each process's presence, not ownership tokens), with the same shape.
       Checked at the code level by `takeover_machine.py`. Two processes share

@@ -36,15 +36,20 @@ class TestDefaultIsOff:
         assert _config().db_idle_in_transaction_session_timeout is None
 
     def test_the_engine_sends_no_server_setting_by_default(self) -> None:
-        assert app_connect_args(_config()) == {}
+        assert app_connect_args(_config(), "replica-1-0a1b2c3d pool") == {
+            "server_settings": {"application_name": "replica-1-0a1b2c3d pool"}
+        }
 
 
 class TestWhenEnabled:
     def test_it_reaches_asyncpg_as_a_server_setting(self) -> None:
         config = _config(db_idle_in_transaction_session_timeout="15s")
 
-        assert app_connect_args(config) == {
-            "server_settings": {"idle_in_transaction_session_timeout": "15s"}
+        assert app_connect_args(config, "replica-1-0a1b2c3d pool") == {
+            "server_settings": {
+                "application_name": "replica-1-0a1b2c3d pool",
+                "idle_in_transaction_session_timeout": "15s",
+            }
         }
 
     def test_it_composes_with_tls(self) -> None:
@@ -52,9 +57,12 @@ class TestWhenEnabled:
             db_ssl_mode="require", db_idle_in_transaction_session_timeout="15s"
         )
 
-        assert app_connect_args(config) == {
+        assert app_connect_args(config, "replica-1-0a1b2c3d pool") == {
             "ssl": "require",
-            "server_settings": {"idle_in_transaction_session_timeout": "15s"},
+            "server_settings": {
+                "application_name": "replica-1-0a1b2c3d pool",
+                "idle_in_transaction_session_timeout": "15s",
+            },
         }
 
     def test_it_does_not_leak_into_db_connect_args(self) -> None:

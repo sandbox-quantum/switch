@@ -174,7 +174,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
-    engine = create_engine_from_config(config)
+    engine = create_engine_from_config(config, "switch-cloud-machine")
     try:
         factory = create_session_factory(engine)
         try:

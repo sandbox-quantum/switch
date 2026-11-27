@@ -47,8 +47,44 @@ export const SETTLE_MS = 1_500;
 const UNLOGGED_FAILURE =
   /^(Traceback \(most recent call last\):|Exception in thread |Fatal Python error:|Task was destroyed but it is pending!)/;
 
+/** Something that hands over the errors logged since it was last asked. */
+interface ErrorSource {
+  take(): ServerLogError[];
+}
+
+/**
+ * Several servers' logs read as one, for a stack of more than one replica:
+ * each read takes what every log gained since the one before.
+ */
+class ServerLogCursors implements ErrorSource {
+  private readonly cursors: ServerLogCursor[];
+
+  constructor(cursors: ServerLogCursor[]) {
+    this.cursors = cursors;
+  }
+
+  take(): ServerLogError[] {
+    return this.cursors.flatMap((cursor) => cursor.take());
+  }
+}
+
+/**
+ * The logs `SWITCH_E2E_SERVER_LOG` names: one path, or several separated by
+ * commas, one per replica.
+ */
+function serverLogs(serverLog: string): ErrorSource {
+  const paths = serverLog
+    .split(',')
+    .map((path) => path.trim())
+    .filter((path) => path !== '');
+  if (paths.length === 0) {
+    throw new Error(`SWITCH_E2E_SERVER_LOG names no log: ${JSON.stringify(serverLog)}`);
+  }
+  return new ServerLogCursors(paths.map((path) => ServerLogCursor.atEnd(path)));
+}
+
 /** A position in the server log, always at the start of a line. */
-export class ServerLogCursor {
+export class ServerLogCursor implements ErrorSource {
   readonly path: string;
   private offset: number;
 
@@ -198,11 +234,11 @@ interface Taggable {
  * here.
  */
 export class ServerLogWatch {
-  private readonly cursor: ServerLogCursor | null;
+  private readonly cursor: ErrorSource | null;
   private readonly outside: ServerLogError[] = [];
 
   constructor(serverLog: string | null) {
-    this.cursor = serverLog === null ? null : ServerLogCursor.atEnd(serverLog);
+    this.cursor = serverLog === null ? null : serverLogs(serverLog);
   }
 
   /**
@@ -236,10 +272,10 @@ export class ServerLogWatch {
 
 export class ScenarioObserver {
   readonly tag: string;
-  private readonly cursor: ServerLogCursor | null;
+  private readonly cursor: ErrorSource | null;
   private readonly client: Taggable;
 
-  constructor(cursor: ServerLogCursor | null, client: Taggable, tag: string) {
+  constructor(cursor: ErrorSource | null, client: Taggable, tag: string) {
     this.cursor = cursor;
     this.client = client;
     this.tag = tag;
@@ -272,6 +308,28 @@ export class ScenarioObserver {
     if (errors.length > 0) log(`the server logged errors:\n  ${describeErrors(errors, this.tag)}`);
     return errors;
   }
+}
+
+/**
+ * The errors not matched by any of `expected`, the ones a scenario causes on
+ * purpose (a fault it injects). Those matched are logged as expected, so the
+ * run still shows them.
+ */
+export function setAsideExpected(
+  errors: ServerLogError[] | null,
+  expected: readonly RegExp[],
+  log: (message: string) => void
+): ServerLogError[] | null {
+  if (errors === null || expected.length === 0) return errors;
+  const unexpected: ServerLogError[] = [];
+  for (const error of errors) {
+    if (expected.some((pattern) => pattern.test(error.message))) {
+      log(`expected server error: ${error.timestamp} [${error.logger}] ${error.message}`);
+    } else {
+      unexpected.push(error);
+    }
+  }
+  return unexpected;
 }
 
 /** Fail when the server logged errors; `null` (the check is off) passes. */

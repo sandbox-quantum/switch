@@ -1739,9 +1739,22 @@ class CollaborationCore:
         if existing is not None:
             logger.debug("Room already exist, add %s to channel", join.agent_name)
             room_id, _ = existing
-            await self._room_service.add_agents_to_room(
-                room_id, agent_names=[join.agent_name], added_by_kind="system"
-            )
+            try:
+                await self._room_service.add_agents_to_room(
+                    room_id, agent_names=[join.agent_name], added_by_kind="system"
+                )
+            except IntegrityError:
+                # Deleted since it was read above, on another process or by a
+                # request here: there is no agent left to add.
+                async with self._session_factory() as session:
+                    if await self._agent_store.get_by_name(session, join.agent_name):
+                        raise
+                logger.warning(
+                    "Agent '%s' was deleted while its join to channel %s was "
+                    "handled; not added to its room",
+                    join.agent_name,
+                    join.channel_id,
+                )
             return
 
         await self._create_room_for_channel(

@@ -139,8 +139,8 @@ class TestOnARealConnection:
         self, request: pytest.FixtureRequest
     ) -> Callable[[SwitchConfig], AsyncEngine]:
         if request.param == "pooled":
-            return create_engine_from_config
-        return create_unpooled_engine
+            return lambda config: create_engine_from_config(config, "test-dead-peer")
+        return lambda config: create_unpooled_engine(config, "test-dead-peer")
 
     async def _read(self, engine: AsyncEngine, level: int, option: int) -> int:
         """One socket option, read while the connection is still open.

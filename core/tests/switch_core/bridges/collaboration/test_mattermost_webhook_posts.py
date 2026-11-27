@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
+
+import pytest
 
 from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
@@ -42,6 +45,7 @@ def _adapter() -> tuple[MattermostAdapter, list[Any]]:
         )
     )
     adapter._admin_driver = type("_Driver", (), {"users": _Users()})()  # type: ignore[assignment]
+    adapter.set_hold_check(lambda: True)
     received: list[Any] = []
 
     async def record(event: Any) -> None:
@@ -151,3 +155,20 @@ def test_a_post_mattermost_marks_from_a_bot_is_an_apps() -> None:
     [message] = received
     assert isinstance(message, InboundMessage)
     assert message.sender_is_app is True
+
+
+def test_a_post_read_after_the_hold_is_unsure_is_dropped_and_said(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A process paused past its lease finds the posts its sockets buffered
+    meanwhile waiting when it runs again, before its next balance stops the
+    bridge here. Another process may hold the bridge by then, so they are
+    not written into the room from here."""
+    adapter, received = _adapter()
+    adapter.set_hold_check(lambda: False)
+
+    with caplog.at_level(logging.WARNING):
+        _deliver(adapter, _post("hello"))
+
+    assert received == []
+    assert "stopped being sure it holds the bridge" in caplog.text

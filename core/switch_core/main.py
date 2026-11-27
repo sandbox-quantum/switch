@@ -117,6 +117,7 @@ from switch_core.db.boot_lock import boot_lock
 from switch_core.db.connection_budget import check_connection_budget
 from switch_core.db.engine import (
     app_connect_args,
+    connection_name,
     create_engine_from_config,
     create_session_factory,
     create_unpooled_engine,
@@ -720,6 +721,7 @@ async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> 
 
 async def _audit_history_sessions(
     config: SwitchConfig,
+    process_id: str,
     engine: AsyncEngine,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> tuple[AsyncEngine | None, async_sessionmaker[AsyncSession]]:
@@ -734,7 +736,11 @@ async def _audit_history_sessions(
         await check_purge_privilege(engine, owner=False)
         return None, session_factory
     owner_engine = create_async_engine(
-        owner_url, poolclass=NullPool, connect_args=app_connect_args(config)
+        owner_url,
+        poolclass=NullPool,
+        connect_args=app_connect_args(
+            config, connection_name(process_id, "audit-owner")
+        ),
     )
     await check_purge_privilege(owner_engine, owner=True)
     return owner_engine, create_session_factory(owner_engine)
@@ -748,7 +754,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # the schema owner's connection where one is configured, and neither
     # belongs on the pooled application engine built below.
     encrypted_json.configure(config.keyring)
-    engine = create_engine_from_config(config, poolclass=WaitTimedQueuePool)
+    engine = create_engine_from_config(
+        config, connection_name(process_id, "pool"), poolclass=WaitTimedQueuePool
+    )
     tenants_isolated = await _check_tenant_isolation(config, engine)
     await check_connection_budget(config, engine)
     session_factory = create_session_factory(engine)
@@ -763,7 +771,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     pool_watermark = install_pool_watermark(engine)
     install_hold_timer(engine)
     history_engine, history_sessions = await _audit_history_sessions(
-        config, engine, session_factory
+        config, process_id, engine, session_factory
     )
 
     # Its connection is held rather than borrowed, so it builds its own outside
@@ -775,11 +783,15 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # heartbeat through the driver, so SQLAlchemy's cursor events never fire
     # and the listeners would record nothing at all. That this connection is
     # alive is answered by the `message_listener` readiness check instead.
-    message_listener = MessageListener(lambda: create_unpooled_engine(config))
+    message_listener = MessageListener(
+        lambda: create_unpooled_engine(config, connection_name(process_id, "messages"))
+    )
     # The same arrangement for session activity and approval requests: their
     # tables announce each change with the row attached, and this pushes it on.
     session_activity_listener = AgentSessionActivityListener(
-        lambda: create_unpooled_engine(config)
+        lambda: create_unpooled_engine(
+            config, connection_name(process_id, "session-activity")
+        )
     )
     # Every `NOTIFY` this process sends from its own code, after the commits
     # they announce, one transaction per batch (`announcer.py`): the router's
@@ -789,7 +801,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # arrangement again, carrying "who should look" rather than a room's rows.
     signal_bus = SignalBus(
         session_factory,
-        lambda: create_unpooled_engine(config),
+        lambda: create_unpooled_engine(config, connection_name(process_id, "signals")),
         process_id=process_id,
         announcer=announcer,
     )
@@ -889,7 +901,10 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Listens for the `NOTIFY` that each insert into `agent_events` sends, and
     # wakes this process's streams for that agent, whichever process wrote it.
     agent_event_listener = AgentEventListener(
-        lambda: create_unpooled_engine(config), event_buffer
+        lambda: create_unpooled_engine(
+            config, connection_name(process_id, "agent-events")
+        ),
+        event_buffer,
     )
 
     # ── Product telemetry ────────────────────────────────────────────────────
@@ -1531,7 +1546,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # for this process to hear too, as the CLI does.
     purge_signals = SignalBus(
         session_factory,
-        lambda: create_unpooled_engine(config),
+        lambda: create_unpooled_engine(
+            config, connection_name(process_id, "purge-signals")
+        ),
         process_id=f"{process_id}-purge",
         announcer=announcer,
     )
@@ -1618,7 +1635,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                     for check in (decision_client.health_check(),)
                     if check is not None
                 ],
-                db_server_engine=lambda: create_unpooled_engine(config),
+                db_server_engine=lambda: create_unpooled_engine(
+                    config, connection_name(process_id, "health")
+                ),
             )
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             retention_task = asyncio.create_task(

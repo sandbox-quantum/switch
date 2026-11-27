@@ -136,7 +136,10 @@ export interface HarnessEnv {
   keepArtifacts: boolean;
   /** Where to record the credentials the server issues during the run; see `IssuedSecrets`. */
   secretsFile: string | null;
-  /** The server's JSON log, when the harness can read it; see `ServerLog`. */
+  /**
+   * The server's JSON log, when the harness can read it, or several separated
+   * by commas, one per replica; see `ServerLogWatch`.
+   */
   serverLog: string | null;
   /**
    * The gateway UI, served against `switch.apiUrl` (its `/gateway` requests
@@ -156,8 +159,29 @@ export interface HarnessEnv {
    * Scenarios that need one skip even in strict mode, and say why.
    */
   noMattermost: boolean;
+  /**
+   * Two switch-core replicas behind HAProxy that the harness may stop, pause,
+   * start again and take out of rotation (`Replicas`); `null` otherwise.
+   */
+  replicas: ReplicasEnv | null;
+  /**
+   * The stack runs one server, by design (`SWITCH_E2E_NO_REPLICAS=1`), so the
+   * replica fault scenarios skip even in strict mode, and say why.
+   */
+  noReplicas: boolean;
   provider: ProviderEnv;
   agentic: AgenticEnv;
+}
+
+export interface ReplicasEnv {
+  /** Where each replica's current pid is, as `<n>.pid`. */
+  pidDir: string;
+  /** Where each replica's log is, as `switch-core-<n>.log`. */
+  logDir: string;
+  /** HAProxy's runtime API, as `host:port`. */
+  haproxyAdmin: string;
+  /** The script that starts replica n: `scripts/replica.sh`. */
+  startScript: string;
 }
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -311,6 +335,24 @@ export function loadEnv(
     .filter(([, value]) => value === undefined)
     .map(([key]) => key);
   if (missing.length > 0) throw new MissingConfigError(missing);
+  const replicas = {
+    SWITCH_E2E_HAPROXY_ADMIN: get('SWITCH_E2E_HAPROXY_ADMIN'),
+    SWITCH_E2E_REPLICAS_DIR: get('SWITCH_E2E_REPLICAS_DIR'),
+    SWITCH_E2E_REPLICA_LOGS: get('SWITCH_E2E_REPLICA_LOGS'),
+  };
+  const replicasGiven = replicas.SWITCH_E2E_HAPROXY_ADMIN !== undefined;
+  const replicasMissing = replicasGiven
+    ? Object.entries(replicas)
+        .filter(([, value]) => value === undefined)
+        .map(([key]) => key)
+    : [];
+  if (replicasMissing.length > 0) throw new MissingConfigError(replicasMissing);
+  const noReplicas = get('SWITCH_E2E_NO_REPLICAS') === '1';
+  if (noReplicas && replicasGiven) {
+    throw new Error(
+      'SWITCH_E2E_NO_REPLICAS=1 says this stack runs one server, but SWITCH_E2E_HAPROXY_ADMIN is set too. Unset one.'
+    );
+  }
   const noMattermost = get('SWITCH_E2E_NO_MATTERMOST') === '1';
   if (noMattermost && mattermostGiven) {
     throw new Error(
@@ -341,6 +383,15 @@ export function loadEnv(
         }
       : null,
     noMattermost,
+    replicas: replicasGiven
+      ? {
+          pidDir: replicas.SWITCH_E2E_REPLICAS_DIR as string,
+          logDir: replicas.SWITCH_E2E_REPLICA_LOGS as string,
+          haproxyAdmin: replicas.SWITCH_E2E_HAPROXY_ADMIN as string,
+          startScript: path.join(PACKAGE_ROOT, 'scripts', 'replica.sh'),
+        }
+      : null,
+    noReplicas,
     provider: {
       agentRepoDir: get('SWITCH_E2E_AGENT_DIR') ?? null,
       manifestPath: get('SWITCH_E2E_MANIFEST') ?? null,

@@ -30,7 +30,8 @@ async def test_a_cancelled_query_does_not_poison_the_next_checkout(
     postgres_url: str,
 ) -> None:
     engine = create_engine_from_config(
-        _config_for(postgres_url, db_pool_size=1, db_max_overflow=0)
+        _config_for(postgres_url, db_pool_size=1, db_max_overflow=0),
+        "test-cancelled-checkout",
     )
     try:
         with anyio.move_on_after(0.2) as scope:
@@ -50,7 +51,8 @@ async def test_cancelling_one_request_does_not_fail_a_concurrent_one(
     # One pooled connection, so the concurrent request is handed exactly the
     # one the cancelled request was using.
     engine = create_engine_from_config(
-        _config_for(postgres_url, db_pool_size=1, db_max_overflow=0)
+        _config_for(postgres_url, db_pool_size=1, db_max_overflow=0),
+        "test-cancelled-checkout",
     )
     try:
         harness = build_harness(create_session_factory(engine))

@@ -104,7 +104,31 @@ def _with_dead_peer_detection(engine: AsyncEngine, config: SwitchConfig) -> Asyn
     return engine
 
 
-def app_connect_args(config: SwitchConfig) -> dict[str, object]:
+# Postgres keeps the first 63 bytes of an application name (NAMEDATALEN - 1).
+APPLICATION_NAME_BYTES = 63
+
+
+def connection_name(process_id: str, role: str) -> str:
+    """The name a connection carries in `pg_stat_activity`: the process it
+    belongs to, then what it is for (`pool`, or `signals` for the signal bus's
+    listening connection), so an operator can tell which replica holds which
+    connection and a test can cut one replica's listener and nothing else.
+
+    The process id ends in a suffix of its own (`new_process_id`), and the
+    role is kept whole too: a name too long gives up the end of the pod or
+    host name instead, so two processes from one pod stay told apart."""
+    name = f"{process_id} {role}"
+    if len(name.encode()) <= APPLICATION_NAME_BYTES:
+        return name
+    head, _, suffix = process_id.rpartition("-")
+    tail = f"-{suffix} {role}"
+    room = APPLICATION_NAME_BYTES - len(tail.encode())
+    if room < 1:
+        raise ValueError(f"No room for the process in a connection named {name!r}")
+    return f"{head.encode()[:room].decode(errors='ignore')}{tail}"
+
+
+def app_connect_args(config: SwitchConfig, application_name: str) -> dict[str, object]:
     """asyncpg connect args for the application engine.
 
     A superset of `config.db_connect_args`, which is also what Alembic builds
@@ -113,13 +137,16 @@ def app_connect_args(config: SwitchConfig) -> dict[str, object]:
     `idle_in_transaction_session_timeout`, since a migration can legitimately
     sit between two statements and being killed there is far worse than a
     request that hangs.
+
+    Every connection is named for the process it belongs to and what it is
+    for (`connection_name`).
     """
     connect_args = dict(config.db_connect_args)
+    server_settings = {"application_name": application_name}
     timeout = config.db_idle_in_transaction_session_timeout
     if timeout is not None:
-        connect_args["server_settings"] = {
-            "idle_in_transaction_session_timeout": timeout
-        }
+        server_settings["idle_in_transaction_session_timeout"] = timeout
+    connect_args["server_settings"] = server_settings
     return connect_args
 
 
@@ -145,9 +172,9 @@ def migration_connect_args(config: SwitchConfig) -> dict[str, object]:
 
 
 def create_engine_from_config(
-    config: SwitchConfig, **engine_kwargs: object
+    config: SwitchConfig, application_name: str, **engine_kwargs: object
 ) -> AsyncEngine:
-    connect_args = app_connect_args(config)
+    connect_args = app_connect_args(config, application_name)
     override_connect_args = engine_kwargs.pop("connect_args", {})
     if isinstance(override_connect_args, dict):
         connect_args.update(override_connect_args)
@@ -180,7 +207,7 @@ def _refuse_closed_connection(dbapi_connection: Any, _record: Any, _proxy: Any) 
         raise DisconnectionError("pooled connection was already closed")
 
 
-def create_unpooled_engine(config: SwitchConfig) -> AsyncEngine:
+def create_unpooled_engine(config: SwitchConfig, application_name: str) -> AsyncEngine:
     """An engine for a connection that is held rather than borrowed.
 
     A `LISTEN` lives on one connection for the process's life. Every pool
@@ -199,7 +226,7 @@ def create_unpooled_engine(config: SwitchConfig) -> AsyncEngine:
         create_async_engine(
             config.database_url,
             poolclass=NullPool,
-            connect_args=app_connect_args(config),
+            connect_args=app_connect_args(config, application_name),
         ),
         config,
     )

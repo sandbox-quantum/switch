@@ -37,6 +37,8 @@ afterwards. Needs Docker, `uv`, `jq`, and your local stack stopped:
 ```bash
 just e2e-fast                       # from the repo root
 just e2e-fast --keep                # leave the stack running afterwards
+just e2e-fast --replicas 2          # two switch-core replicas behind HAProxy
+just e2e-fast --replicas 2 -- -t replica-   # only the replica fault scenarios
 just e2e-fast -- -t mattermost      # arguments after -- go to vitest
 ```
 
@@ -125,7 +127,9 @@ in `environments`, and its `requires` are configured. Otherwise it shows as
 unreachable server **fails** the run instead, so a job that ran nothing cannot
 go green. The one exception is an environment that deploys no Mattermost on
 purpose and says so with `SWITCH_E2E_NO_MATTERMOST=1`: its Mattermost
-scenarios skip even under strict mode, and the reason names the setting.
+scenarios skip even under strict mode, and the reason names the setting. A
+stack of one server says so with `SWITCH_E2E_NO_REPLICAS=1` (the stack script
+sets it), and the replica fault scenarios skip the same way.
 
 A scenario that changes server-global state (a feature flag, say) lists only
 `ephemeral`. One that writes anything never lists `prod`.
@@ -151,6 +155,61 @@ passed or not. A teardown that leaves something behind fails the scenario.
 
 If `mattermost-roundtrip` passes and a provider-lane scenario fails, the fault
 is in the agent session, not in Switch, the bridge or the harness.
+
+Eleven more run last, and only on `just e2e-fast --replicas 2`: the replica
+fault scenarios. Five fault the replica that holds the Mattermost bridge
+(`src/fast/replica-faults.ts`):
+
+- `replica-bridge-holder-killed` (`SIGKILL`, a crash) and
+  `replica-bridge-holder-stopped` (`SIGTERM`, a deploy). The other replica
+  must hold the bridge within a bound derived from the product's own timers,
+  and every message must cross the hand-over once.
+- `replica-bridge-holder-paused` (`SIGSTOP` past its lease, then `SIGCONT`).
+  The paused replica must stop its work, and drop what its sockets buffered,
+  once it runs again.
+- `replica-bridge-holder-paused-briefly`: the holder is paused past its lease,
+  so the other takes the bridge; the other is then paused for less than its
+  lease, and the first resumed meanwhile. The rejoining replica, which the
+  bridge hashes to, must not take it while the paused holder's lease holds,
+  and must get it back once that holder runs again.
+- `replica-bridge-holder-drained`: the holder is taken out of HAProxy's
+  rotation. It keeps the bridge, and both directions work through the other.
+
+Two hold a client's connection (`src/fast/replica-connections.ts`):
+
+- `replica-agent-connection-holder-killed`: an agent's socket claims a room,
+  and its holder is killed. The survivor must read the agent offline within
+  the lease and one lease watch, and live again once it reconnects.
+- `replica-controller-socket-holder-paused`: an enrolled controller's socket
+  is held by a replica that is paused, and the controller opens its
+  connection again through the other. Once resumed, the old holder must
+  evict its socket as `taken_over`, with nothing after, and an attach with
+  the old connection must be refused. The lane turns on `agent_management`
+  for this.
+
+Four cut one replica's listening connection, just after its heartbeat and
+again each time it reconnects, while the other replica makes a change
+(`src/fast/replica-bus-faults.ts`). Each also checks the listener is back
+within its first reconnect backoff once the cuts stop:
+
+- `replica-membership-revoked-while-deaf` and
+  `replica-controller-revoked-while-deaf`: an agent is taken out of a room, or
+  a controller revoked. The agent's post, or the controller's token, through
+  the deaf replica must be refused within a held row's TTL.
+- `replica-disconnect-while-deaf`: an agent's connection closes on the other
+  replica. The deaf one must read the agent offline once its listener
+  reconnects, not at the periodic re-check.
+- `replica-wakeups-lost-while-deaf`: the bridge's holder has its wake-ups cut
+  while an agent posts, five times, spaced across more than a room re-check.
+  Each post must reach Mattermost once, within the first backoff.
+
+They act through `src/clients/replicas.ts`, which stops, pauses, starts again
+(`scripts/replica.sh`) and takes out of HAProxy's rotation a replica, cuts its
+listener (`properties/history/listeners.py`), and undoes every fault after the
+scenario, passed or not. `SwitchClient.at` sends requests straight to one
+replica's port. Who holds what is read from the database by
+`properties/history/ownership.py`, which also reports the timers every wait is
+derived from. A full run of the eleven takes about fifteen minutes.
 
 ### Browser lane
 
@@ -211,6 +270,8 @@ beside this file. Never commit one. `just e2e-fast` sets all of them itself.
 | `MATTERMOST_TEAM` | for Mattermost scenarios | Team **slug** (e.g. `switch`), not its display name. |
 | `SWITCH_E2E_STRICT` | no | `1` turns every "cannot run" into a failure. CI sets it. |
 | `SWITCH_E2E_NO_MATTERMOST` | no | `1` declares that the environment deploys no Mattermost, so its Mattermost scenarios skip even under strict mode. Refused alongside `MATTERMOST_*`. |
+| `SWITCH_E2E_HAPROXY_ADMIN` | for replica fault scenarios | HAProxy's runtime API in front of two replicas, as `host:port`. With it, `SWITCH_E2E_REPLICAS_DIR` (each replica's `<n>.pid`) and `SWITCH_E2E_REPLICA_LOGS` (each one's `switch-core-<n>.log`) are required too. `just e2e-fast --replicas 2` sets all three. |
+| `SWITCH_E2E_NO_REPLICAS` | no | `1` declares that the stack runs one server, so the replica fault scenarios skip even under strict mode. Refused alongside `SWITCH_E2E_HAPROXY_ADMIN`. |
 | `SWITCH_E2E_KEEP` | no | `1` leaves agents, rooms and channels behind for inspection. |
 | `SWITCH_E2E_SERVER_LOG` | no | The server's log, written with `LOG_FORMAT=json`. When set, a scenario fails if the server logged an error while it ran. The stack script sets it. |
 | `SWITCH_E2E_SECRETS_FILE` | no | File to append each credential the server issues during the run to (agent keys, gateway sessions), for CI's scan of the output. The stack script sets it. |
@@ -470,6 +531,11 @@ on: an event loop that catches one bad event, say. Two checks catch that.
     error is reported as coming from this scenario's request, another request,
     or background work. That holds wherever the error lands, so a late one
     still names the scenario that caused it.
+
+  - A scenario that causes an error on purpose lists it in
+    `expectedServerErrors`: a replica paused past its lease logs that it
+    stopped its work. Those are logged as expected, and any other error still
+    fails the scenario.
 
   The stack script starts switch-core with `LOG_FORMAT=json` and sets the
   variable. Against a deployed environment the log is in its log backend, so

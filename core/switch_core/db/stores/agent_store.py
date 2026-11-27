@@ -175,7 +175,10 @@ class AgentStore:
         `ClientStore.delete` owns both, and `delete_agent` calls it in this
         same transaction.
         """
-        agent = await session.get(Agent, agent_id)
+        # Locked first, for the reason `ClientStore.delete` locks the client:
+        # a room membership being added waits on it, so none lands between
+        # clearing `room_agents` and deleting the row.
+        agent = await session.get(Agent, agent_id, with_for_update=True)
         if not agent:
             return
         owned_skills = select(Skill.id).where(

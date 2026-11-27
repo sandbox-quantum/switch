@@ -155,7 +155,7 @@ async def test_the_command_reports_errors_as_json_and_exits_non_zero(
 
     monkeypatch.setattr(
         "switch_core.cloud_machine_admin.create_engine_from_config",
-        lambda config: _Engine(),
+        lambda config, process_id: _Engine(),
     )
     monkeypatch.setattr(
         "switch_core.cloud_machine_admin.create_session_factory", lambda engine: None
