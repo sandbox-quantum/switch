@@ -47,6 +47,8 @@ def _config() -> Any:
         agent_auth_cache_ttl_seconds = 1
         agent_auth_cache_max_entries = 16
         agent_open_limit = 8
+        request_body_max_bytes = 32 * 1024 * 1024
+        attachment_upload_max_bytes = 256 * 1024 * 1024
         keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
         oauth_issuer_url = None
         oauth_audience = None
