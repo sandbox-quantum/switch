@@ -120,7 +120,9 @@ class TestGoogleChatConfigurationAndCredentials:
             "https://oauth2.googleapis.com:443/token",
             "https://oauth2.googleapis.com/token?query=1",
             "http://oauth2.googleapis.com/token",
-            "https://accounts.google.com/o/oauth2/token",
+            "http://accounts.google.com/o/oauth2/token",
+            "https://accounts.google.com/o/oauth2/token?x=1",
+            "https://accounts.google.com/token",
             "not-a-url",
             "",
             42,
@@ -138,17 +140,25 @@ class TestGoogleChatConfigurationAndCredentials:
             ):
                 _make_config(service_account_json=bad_sa)
 
-    def test_google_token_uri_accepted(self) -> None:
+    @pytest.mark.parametrize(
+        "token_uri",
+        [
+            "https://oauth2.googleapis.com/token",
+            # Older keys name Google's previous endpoint.
+            "https://accounts.google.com/o/oauth2/token",
+        ],
+    )
+    def test_google_token_uri_accepted(self, token_uri: str) -> None:
         sa = json.dumps(
             {
                 "type": "service_account",
                 "client_email": TEST_CLIENT_EMAIL,
                 "private_key": _TEST_PEM_KEY,
-                "token_uri": "https://oauth2.googleapis.com/token",
+                "token_uri": token_uri,
             }
         )
         _make_config(service_account_json=sa)
-        validate_token_uri("https://oauth2.googleapis.com/token")
+        validate_token_uri(token_uri)
 
     def test_auth_manager_validates_token_uri(self) -> None:
         for bad_uri in [

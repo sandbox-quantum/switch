@@ -74,8 +74,9 @@ version of their own to them without also giving them a release of their own.
   or skipped.
 
 #### Security
-- **A Google Chat service account's `token_uri` must be
-  `https://oauth2.googleapis.com/token`.** Any other value in the uploaded
+- **A Google Chat service account's `token_uri` must be Google's:
+  `https://oauth2.googleapis.com/token`, or
+  `https://accounts.google.com/o/oauth2/token` in older keys.** Any other value in the uploaded
   JSON is refused when the bridge is saved, instead of Switch posting a signed
   assertion to it. The token request goes through the outbound address guard,
   and a refusal names only the status and Google's error code, not the

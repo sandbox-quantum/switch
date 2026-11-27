@@ -20,6 +20,10 @@ from switch_core.outbound import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token"
+# Keys Google issued before it moved the endpoint still name this one, which it
+# serves too.
+LEGACY_TOKEN_URI = "https://accounts.google.com/o/oauth2/token"
+ALLOWED_TOKEN_URIS = (DEFAULT_TOKEN_URI, LEGACY_TOKEN_URI)
 DEFAULT_SERVICE_ACCOUNT_SCOPES = (
     "https://www.googleapis.com/auth/chat.bot https://www.googleapis.com/auth/pubsub"
 )
@@ -35,11 +39,11 @@ _OAUTH_ERROR_CODE_RE = re.compile(r"^[a-z_]{1,64}$")
 
 
 # A service account's JSON names its own token endpoint, and the uploaded
-# file is the tenant's to write. Google issues every key with this one, so any
-# other value is refused rather than POSTed a signed assertion.
+# file is the tenant's to write. Google issues every key with one of these, so
+# any other value is refused rather than POSTed a signed assertion.
 def validate_token_uri(token_uri: str) -> None:
     """Refuse any token endpoint but Google's own."""
-    if token_uri != DEFAULT_TOKEN_URI:
+    if token_uri not in ALLOWED_TOKEN_URIS:
         raise BridgeCredentialError(
             f"Service account token_uri must be {DEFAULT_TOKEN_URI}."
         )
