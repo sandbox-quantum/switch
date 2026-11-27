@@ -54,7 +54,12 @@ from switch_core.bridges.agent.protocol.controller_presence import (
 )
 from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_LAPSED, TAKEN_OVER
 from switch_core.config import ControllerRelease
-from switch_core.db.audit import AuditAction, record_audit_event, request_actor
+from switch_core.db.audit import (
+    AuditAction,
+    escalation_details,
+    record_audit_event,
+    request_actor,
+)
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
     CONTROLLER_KEY_TYPE,
@@ -1267,7 +1272,7 @@ class ManagementService:
         agent_name: str,
         change: str,
     ) -> None:
-        _, acting_agent_id = request_actor()
+        actor_user_id, acting_agent_id = request_actor()
         await record_audit_event(
             session,
             tenant_id=tenant_id,
@@ -1278,7 +1283,11 @@ class ManagementService:
             details={
                 "agent_name": agent_name,
                 "change": change,
-                "acting_agent_id": acting_agent_id,
+                **escalation_details(
+                    owner_id=owner_id,
+                    actor_user_id=actor_user_id,
+                    acting_agent_id=acting_agent_id,
+                ),
             },
         )
 

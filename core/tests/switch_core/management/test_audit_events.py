@@ -113,5 +113,11 @@ async def test_auto_approve_on_create_and_on_update_is_recorded(
         (careful_id, "updated"),
     ]
     assert all(e.actor_user_id == owner.id for e in events)
+    assert all(
+        e.details
+        and e.details["by_owner"] is True
+        and e.details["acting_agent_id"] is None
+        for e in events
+    )
     registered = await _events(harness.session_factory, AuditAction.AGENT_REGISTERED)
     assert {e.target_id for e in registered} == {bypass.json()["agent_id"], careful_id}
