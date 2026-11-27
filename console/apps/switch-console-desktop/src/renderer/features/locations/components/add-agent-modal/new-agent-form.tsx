@@ -54,6 +54,7 @@ import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
 import { isAgentNameTaken } from './agent-name-taken';
 import { AgentTypePicker } from './agent-type-picker';
+import { cloudMachineElsewhere } from './cloud-machine-elsewhere';
 import { AgentIdentityFields, AgentSettingsSection } from './configure-agent-panel';
 import { LaunchProfileConfig } from './launch-profile-config';
 import { LocalDirectorySelector } from './local-directory-selector';
@@ -428,12 +429,16 @@ export const NewAgentForm = observer(function NewAgentForm({
   });
   const machine = isCloudRun || isMachineRun ? undefined : machineQuery.data;
   const managedRun = isMachineRun || machine?.management === true;
+  // A limit, not a failure: said under Switch Cloud in the neutral style, with no retry.
+  const cloudElsewhere = isCloudRun ? cloudMachineElsewhere(cloudMachineQuery.error) : null;
   const machineReason = isCloudRun
-    ? cloudMachineQuery.error
-      ? failureText(cloudMachineQuery.error, 'Your cloud machine could not be started.')
-      : cloudMachineQuery.data
-        ? cloudStartingText(cloudMachineQuery.data)
-        : null
+    ? cloudElsewhere
+      ? cloudElsewhere.line
+      : cloudMachineQuery.error
+        ? failureText(cloudMachineQuery.error, 'Your cloud machine could not be started.')
+        : cloudMachineQuery.data
+          ? cloudStartingText(cloudMachineQuery.data)
+          : null
     : askForMachines && machinesQuery.isPending
       ? 'Checking whether this server runs managed agents…'
       : askForMachines && machinesQuery.error
@@ -790,6 +795,13 @@ export const NewAgentForm = observer(function NewAgentForm({
           selected={{ icon: runLocationIcon, label: runLocationLabel }}
           entries={runLocationEntries}
         >
+          {cloudElsewhere && (
+            <RunLocationLine icon="cloud" status>
+              {cloudElsewhere.line}
+              <br />
+              {cloudElsewhere.helper}
+            </RunLocationLine>
+          )}
           {cloudFallback && !isCloudRun && (
             <RunLocationLine icon="cloud" status>
               {cloudFallback}
@@ -896,7 +908,7 @@ export const NewAgentForm = observer(function NewAgentForm({
           />
         )}
 
-        {isCloudRun && machineReason && (
+        {isCloudRun && machineReason && !cloudElsewhere && (
           <RunLocationLine icon="cloud" status>
             {machineReason}
           </RunLocationLine>

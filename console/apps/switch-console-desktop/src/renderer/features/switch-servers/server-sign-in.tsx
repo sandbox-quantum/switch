@@ -6,6 +6,7 @@ import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
+import { cloudMachineElsewhere } from '@renderer/features/locations/components/add-agent-modal/cloud-machine-elsewhere';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -101,6 +102,9 @@ function warmCloudMachine(serverId: string): void {
     const flags = await rpc.featureFlags.current(serverId);
     if (!flags.success || !flags.data.flags['hosted_agents']) return;
     rpc.switchServers.ensureCloudMachine(serverId).catch((cause: unknown) => {
+      // Not a failure: the box serves another workspace, and the new-agent form says so
+      // when Switch Cloud is picked here.
+      if (cloudMachineElsewhere(cause)) return;
       toast({
         title: 'Your cloud machine did not start',
         description: failureText(cause, 'Switch could not start your cloud machine.'),

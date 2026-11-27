@@ -4509,9 +4509,37 @@ export async function cloudMachineLifecycle(
 }
 
 /**
+ * The person's cloud machine already serves another workspace, and a box serves
+ * one workspace for now (`box_one_workspace`). `workspaceName` is that
+ * workspace's name, sent only while the person is a member of it.
+ */
+export class CloudMachineInOtherWorkspaceError extends Error {
+  constructor(
+    message: string,
+    readonly workspaceName: string | null
+  ) {
+    super(message);
+    this.name = 'CloudMachineInOtherWorkspaceError';
+  }
+}
+
+/** The `workspace_name` beside a `box_one_workspace` refusal, or null without one. */
+function otherWorkspaceName(body: string | undefined): string | null {
+  if (!body) return null;
+  try {
+    const parsed = JSON.parse(body) as { workspace_name?: unknown };
+    const name = typeof parsed.workspace_name === 'string' ? parsed.workspace_name.trim() : '';
+    return name.length > 0 ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Claim and start the signed-in user's cloud machine so it is warm before an
  * agent needs it. Idempotent on the server. A refusal (409 none free, 503 not
- * offered) is raised with the server's own explanation.
+ * offered) is raised with the server's own explanation; one for a machine that
+ * already serves another workspace as {@link CloudMachineInOtherWorkspaceError}.
  */
 export async function ensureCloudMachine(server: SwitchServer) {
   let response: Response;
@@ -4521,6 +4549,12 @@ export async function ensureCloudMachine(server: SwitchServer) {
       method: 'POST',
     });
   } catch (error) {
+    if (error instanceof GatewayError && error.code === 'box_one_workspace') {
+      throw new CloudMachineInOtherWorkspaceError(
+        error.detail ?? 'Your cloud machine already serves another workspace.',
+        otherWorkspaceName(error.body)
+      );
+    }
     if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
     throw error;
   }

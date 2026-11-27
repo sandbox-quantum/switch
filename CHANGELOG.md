@@ -5259,6 +5259,11 @@ version of their own to them without also giving them a release of their own.
 
 #### Changed
 
+- **A cloud agent in a second workspace is refused up front.** For now each
+  person's cloud box serves one workspace. Picking Switch Cloud in another
+  workspace says where the box is set up and points to This computer or
+  another machine.
+
 - **The usage-data identifier changes every 30 days and is deleted when you
   stop sharing.** Usage data is tagged with a random identifier that is now
   replaced every 30 days; turning sharing off stops sending at once, including
