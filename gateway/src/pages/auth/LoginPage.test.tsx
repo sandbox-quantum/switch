@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import LoginPage, { suggestedWorkspaceName } from "./LoginPage";
+import { clearPendingInvite, storePendingInvite } from "../../data/sessionState";
+import LoginPage, { PRIVACY_POLICY_URL, suggestedWorkspaceName } from "./LoginPage";
 
 const api = vi.hoisted(() => ({
   fetchAuthConfig: vi.fn(),
@@ -50,7 +51,7 @@ function type(label: string | RegExp, value: string) {
 /** Opens sign-up and fills in the first card: name and email. */
 async function startSignUp() {
   fireEvent.click(await screen.findByRole("button", { name: "Sign up" }));
-  expect(await screen.findByRole("heading", { name: "Sign up for Switch" })).toBeTruthy();
+  expect(await screen.findByRole("heading", { name: "Sign up for Switch Rooms" })).toBeTruthy();
   type("First name", "Ada");
   type("Last name", "Lovelace");
   type("Email", "ada@example.com");
@@ -63,7 +64,7 @@ describe("LoginPage", () => {
     api.fetchAuthConfig.mockResolvedValue(config(false));
     auth.login.mockResolvedValue(undefined);
     render(<LoginPage />);
-    expect(screen.getByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sign in to Switch Rooms" })).toBeTruthy();
     type("Email", "ada@example.com");
     expect(screen.queryByLabelText("Password")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Continue with email" }));
@@ -146,7 +147,7 @@ describe("LoginPage", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Sign up" }));
     expect(screen.getByText(/Already have an account\?/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
-    expect(screen.getByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sign in to Switch Rooms" })).toBeTruthy();
     expect(screen.queryByLabelText("First name")).toBeNull();
   });
 
@@ -215,7 +216,7 @@ describe("LoginPage", () => {
     fireEvent.click(within(footer).getByRole("button", { name: "license" }));
     expect(await screen.findByText(/The terms\./)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Back to sign up" }));
-    expect(await screen.findByRole("heading", { name: "Sign up for Switch" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign up for Switch Rooms" })).toBeTruthy();
   });
 
   describe("under open sign-up, where each new account makes its own workspace", () => {
@@ -254,6 +255,23 @@ describe("LoginPage", () => {
       expect(auth.signUp).not.toHaveBeenCalled();
     });
 
+    it("skips naming a workspace for someone signing up to accept an invitation", async () => {
+      storePendingInvite("invite-token");
+      try {
+        auth.signUp.mockResolvedValue(undefined);
+        api.fetchAuthConfig.mockResolvedValue(config(true, { signup_mode: "open" }));
+        render(<LoginPage />);
+        await startSignUp();
+        type("Password", "a long password");
+        fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+        await waitFor(() => expect(auth.signUp).toHaveBeenCalled());
+        expect(screen.queryByLabelText(/Workspace name/)).toBeNull();
+        expect(api.createTenant).not.toHaveBeenCalled();
+      } finally {
+        clearPendingInvite();
+      }
+    });
+
     it("goes back to the password with what was typed kept", async () => {
       await fillAccount();
       fireEvent.click(screen.getByRole("button", { name: "Back" }));
@@ -278,6 +296,15 @@ describe("LoginPage", () => {
       expect(api.signUp).toHaveBeenCalledTimes(1);
       expect(api.createTenant).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("links the privacy policy under sign-in and sign-up", async () => {
+    api.fetchAuthConfig.mockResolvedValue(config(true));
+    render(<LoginPage />);
+    const link = await screen.findByRole("link", { name: "Privacy Policy" });
+    expect(link.getAttribute("href")).toBe(PRIVACY_POLICY_URL);
+    fireEvent.click(await screen.findByRole("button", { name: "Sign up" }));
+    expect(screen.getByRole("link", { name: "Privacy Policy" })).toBeTruthy();
   });
 
   it("suggests a workspace name from the first name, or a plain one with none", () => {

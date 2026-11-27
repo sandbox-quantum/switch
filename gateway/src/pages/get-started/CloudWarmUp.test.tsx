@@ -129,6 +129,13 @@ describe("CloudWarmUp", () => {
     expect(onboarding.ensureCloudMachine).not.toHaveBeenCalled();
   });
 
+  it("claims back a device released while it had no agents", async () => {
+    const retained = { machine_id: "m1", desired_state: "retained" };
+    onboarding.fetchHostedMachines.mockResolvedValue({ available: true, machines: [retained] });
+    await renderWarmUp();
+    await waitFor(() => expect(onboarding.ensureCloudMachine).toHaveBeenCalledTimes(1));
+  });
+
   it("leaves the device of someone who already has agents as it is", async () => {
     onboarding.fetchHostedMachines.mockResolvedValue({
       available: true,

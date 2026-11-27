@@ -354,6 +354,152 @@ describe('what reaches the provider', () => {
   });
 });
 
+describe('Codex on a ChatGPT sign-in', () => {
+  const CHATGPT = 'https://chatgpt.com';
+  const RESPONSES = '/backend-api/codex/responses';
+
+  /** A sign-in whose access token renews: `refused` is the token the backend no longer takes. */
+  function chatgptRoute() {
+    const state = { access: 'ACCESS-1', refreshes: 0 };
+    const route: GatewayRoute = {
+      provider: 'chatgpt',
+      upstream: CHATGPT,
+      credential: async () => ({
+        header: 'authorization',
+        value: `Bearer ${state.access}`,
+        extra: { 'chatgpt-account-id': 'acct-REAL' },
+      }),
+      rejected: async (value) => {
+        if (value !== `Bearer ${state.access}`) return;
+        state.refreshes += 1;
+        state.access = `ACCESS-${state.refreshes + 1}`;
+      },
+    };
+    return { route, state };
+  }
+
+  it('forwards Codex’s call to the ChatGPT backend with the real token and the login’s account', async () => {
+    const { route } = chatgptRoute();
+    const token = gateway.mint('agent-c', route);
+    const answer = await call(gateway.endpoint, RESPONSES, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: 'text/event-stream',
+        originator: 'codex_exec',
+        'session-id': 's-1',
+        'x-client-request-id': 'r-1',
+        'x-codex-window-id': 'w-1',
+        'x-openai-internal-codex-responses-lite': 'true',
+        // The agent can't pick another account, organisation or credential.
+        'chatgpt-account-id': 'acct-OTHER',
+        'openai-organization': 'org-OTHER',
+        cookie: 'c=1',
+      },
+      body: '{"model":"m","input":[]}',
+    });
+    expect(answer.status).toBe(200);
+    expect(chosen.map(String)).toEqual([`${CHATGPT}${RESPONSES}`]);
+    const seen = upstream.seen[0]!;
+    expect(seen.body).toBe('{"model":"m","input":[]}');
+    expect(seen.headers).toMatchObject({
+      authorization: 'Bearer ACCESS-1',
+      'chatgpt-account-id': 'acct-REAL',
+      accept: 'text/event-stream',
+      originator: 'codex_exec',
+      'session-id': 's-1',
+      'x-client-request-id': 'r-1',
+      'x-codex-window-id': 'w-1',
+      'x-openai-internal-codex-responses-lite': 'true',
+    });
+    expect(seen.headers['openai-organization']).toBeUndefined();
+    expect(seen.headers.cookie).toBeUndefined();
+    expect(JSON.stringify(seen.headers)).not.toContain(token);
+  });
+
+  it('renews a refused token once and sends the same call again, never the old token twice', async () => {
+    const { route, state } = chatgptRoute();
+    upstream.respond = (res) => {
+      const auth = upstream.seen.at(-1)!.headers.authorization;
+      res.writeHead(auth === `Bearer ${state.access}` && state.refreshes > 0 ? 200 : 401, {
+        'content-type': 'application/json',
+      });
+      res.end(auth === 'Bearer ACCESS-1' ? '{"error":"expired"}' : '{"ok":true}');
+    };
+    const token = gateway.mint('agent-c', route);
+    const answer = await call(gateway.endpoint, RESPONSES, {
+      headers: { authorization: `Bearer ${token}` },
+      body: '{"model":"m","input":["held"]}',
+    });
+    expect(answer.status).toBe(200);
+    expect(answer.body).toBe('{"ok":true}');
+    expect(state.refreshes).toBe(1);
+    expect(upstream.seen.map((seen) => seen.headers.authorization)).toEqual([
+      'Bearer ACCESS-1',
+      'Bearer ACCESS-2',
+    ]);
+    expect(upstream.seen.map((seen) => seen.body)).toEqual([
+      '{"model":"m","input":["held"]}',
+      '{"model":"m","input":["held"]}',
+    ]);
+  });
+
+  it('passes a second refusal back as it came, and says so when the sign-in can’t be renewed', async () => {
+    const { route } = chatgptRoute();
+    upstream.respond = (res) => {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end('{"error":"still refused"}');
+    };
+    const token = gateway.mint('agent-c', route);
+    const twice = await call(gateway.endpoint, RESPONSES, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(twice.status).toBe(401);
+    expect(twice.body).toBe('{"error":"still refused"}');
+    expect(upstream.seen).toHaveLength(2);
+    gateway.update('agent-c', {
+      ...route,
+      rejected: async () => {
+        throw new Error('rt-SECRET refused');
+      },
+    });
+    const failed = await call(gateway.endpoint, RESPONSES, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(failed.status).toBe(502);
+    expect(log.lines.join('\n')).not.toContain('SECRET');
+  });
+
+  it('holds a renewable call’s body to the size limit too', async () => {
+    await gateway.close();
+    gateway = makeGateway({ limits: { maxBodyBytes: 64 } });
+    await gateway.start();
+    gateway.setReady();
+    const token = gateway.mint('agent-c', chatgptRoute().route);
+    const answer = await call(gateway.endpoint, RESPONSES, {
+      headers: { authorization: `Bearer ${token}`, 'transfer-encoding': 'chunked' },
+      body: 'x'.repeat(200),
+    });
+    expect(answer.status).toBe(413);
+    expect(upstream.seen).toHaveLength(0);
+  });
+
+  it('forwards only Codex’s own backend routes', async () => {
+    const token = gateway.mint('agent-c', chatgptRoute().route);
+    for (const path of ['/backend-api/conversation', '/backend-api/codex/models', '/v1/responses'])
+      expect(
+        (await call(gateway.endpoint, path, { headers: { authorization: `Bearer ${token}` } }))
+          .status
+      ).toBe(403);
+    expect(
+      (
+        await call(gateway.endpoint, '/backend-api/codex/responses/compact', {
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).status
+    ).toBe(200);
+  });
+});
+
 describe('a token in the base URL', () => {
   it('serves a CLI that sends no credential (Vertex with its own auth skipped), stripping the token', async () => {
     const token = gateway.mint('agent-v', vertexRoute());

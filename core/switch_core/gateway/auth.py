@@ -1326,14 +1326,25 @@ async def rebind_if_left(
     )
 
 
+ONE_ORGANIZATION_EACH = (
+    "You already have an organization. Each person can create one; "
+    "to work with another team, ask its admin for an invitation."
+)
+
+
 def workspace_creation_refusal(
     config: SwitchConfig,
     *,
     is_operator: bool,
     workspaces_created: int,
     new_organization: bool,
+    administers_organization: bool,
 ) -> str | None:
     """Why this caller may not create a workspace, or None if they may.
+
+    Each person runs at most one organization of their own: someone already
+    an `org_admin` (`administers_organization`) may not create another, and
+    joins others by invitation.
 
     Operators always may. Otherwise every mode allows
     `gateway_max_workspaces_per_user` creations over a person's lifetime —
@@ -1351,6 +1362,8 @@ def workspace_creation_refusal(
             "Creating organizations is turned off here. Ask a "
             "workspace admin for an invitation."
         )
+    if new_organization and administers_organization:
+        return ONE_ORGANIZATION_EACH
     limit = config.gateway_max_workspaces_per_user
     if limit == 0:
         return "Workspace creation is disabled on this deployment"
@@ -1360,6 +1373,11 @@ def workspace_creation_refusal(
             f"this deployment allows {limit}"
         )
     return None
+
+
+def administers_an_organization(tenants: list[TenantMembershipResponse]) -> bool:
+    """Whether any of these memberships makes their holder an `org_admin`."""
+    return any(t.organization_role == ORGANIZATION_ADMIN_ROLE for t in tenants)
 
 
 def describe_session_state(
@@ -1407,6 +1425,7 @@ def describe_session_state(
             is_operator=is_operator,
             workspaces_created=user.workspaces_created,
             new_organization=new_organization,
+            administers_organization=administers_an_organization(tenants),
         )
 
     return SessionStateResponse(

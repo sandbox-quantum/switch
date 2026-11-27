@@ -42,7 +42,9 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
     SignedIn,
+    administers_an_organization,
     every_workspace_of,
+    list_tenant_memberships,
     set_session_cookie,
     workspace_creation_refusal,
 )
@@ -164,6 +166,7 @@ async def lock_workspace_allowance(
     config: SwitchConfig,
     *,
     new_organization: bool,
+    administers_organization: bool,
 ) -> User:
     """Lock the caller's row and raise 403 unless they may create one more
     workspace. Returns the locked row, for the caller to count the creation on.
@@ -214,6 +217,7 @@ async def lock_workspace_allowance(
         is_operator=False,
         workspaces_created=user.workspaces_created,
         new_organization=new_organization,
+        administers_organization=administers_organization,
     )
     if refusal is not None:
         raise HTTPException(status_code=403, detail=refusal)
@@ -255,7 +259,13 @@ async def create_organization_for(
         await session.commit()
     else:
         user = allowance = await lock_workspace_allowance(
-            session, caller.id, config, new_organization=True
+            session,
+            caller.id,
+            config,
+            new_organization=True,
+            administers_organization=administers_an_organization(
+                await list_tenant_memberships(session_factory, user_store, caller.id)
+            ),
         )
     try:
         organization, tenant = await create_organization(

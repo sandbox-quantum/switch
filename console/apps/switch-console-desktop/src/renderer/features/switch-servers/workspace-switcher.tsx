@@ -20,11 +20,7 @@ import { observer } from 'mobx-react-lite';
 import { Fragment, useEffect, useState } from 'react';
 import { ChatsOfflineNote } from '@renderer/features/chats/components/chats-offline-note';
 import type { CreateTarget } from '@renderer/features/workspaces/create-workspace-modal';
-import {
-  addWorkspaceThrough,
-  type CreationAnswer,
-  switcherSections,
-} from '@renderer/features/workspaces/organization-groups';
+import { switcherSections } from '@renderer/features/workspaces/organization-groups';
 import {
   InvitedBadge,
   joinableWorkspacesKey,
@@ -345,19 +341,13 @@ const NO_OFFERS: { invitations: PendingInvitation[]; joinable: JoinableWorkspace
   joinable: [],
 };
 
-/**
- * What the switcher offers to create on a server.
- *
- * `answer` is the server's own, for the workspace it was asked about; null
- * until it has answered, or where it could not be asked.
- */
+/** What the switcher offers to create on a server. */
 type Creation = {
   canCreate: boolean;
   organizations: boolean;
-  answer: CreationAnswer | null;
 };
 
-const NO_CREATION: Creation = { canCreate: false, organizations: false, answer: null };
+const NO_CREATION: Creation = { canCreate: false, organizations: false };
 
 function AvailableServerWorkspaceGroup({ server, query }: { server: SwitchServer; query: string }) {
   const invitations = usePendingInvitations(server.id);
@@ -378,16 +368,8 @@ function AvailableServerWorkspaceGroup({ server, query }: { server: SwitchServer
     staleTime: 60_000,
   });
   const creation: Creation = answer.data
-    ? {
-        canCreate: answer.data.canCreate,
-        organizations: answer.data.organizations,
-        answer: answer.data,
-      }
-    : {
-        canCreate: true,
-        organizations: onServer.some((w) => w.organizationId !== null),
-        answer: null,
-      };
+    ? { canCreate: answer.data.canCreate, organizations: answer.data.organizations }
+    : { canCreate: true, organizations: onServer.some((w) => w.organizationId !== null) };
   return (
     <ServerWorkspaceGroupBody
       server={server}
@@ -530,47 +512,27 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
               No workspace yet — this server has not finished being set up.
             </div>
           ) : (
-            sections.map((group) => {
-              const through = whole ? addWorkspaceThrough(group, all, creation.answer) : null;
-              return (
-                <Fragment key={group.organizationId ?? 'none'}>
-                  {headed && (
-                    <div
-                      data-org-heading
-                      className="truncate px-[9px] pt-1.5 pb-0.5 text-[11px] font-medium text-[var(--fg-dim)]"
-                    >
-                      {group.name ?? 'Other workspaces'}
-                    </div>
-                  )}
-                  {group.workspaces.map((workspace) => (
-                    <WorkspaceMenuItem
-                      key={workspace.id}
-                      workspace={workspace}
-                      server={server}
-                      onServerCount={all.length}
-                      dormant={false}
-                    />
-                  ))}
-                  {through && (
-                    <DropdownMenuItem
-                      onClick={() =>
-                        create({
-                          kind: 'organization-workspace',
-                          through: through.id,
-                          organizationName: group.name,
-                        })
-                      }
-                      className={cn(ACTION_ROW, 'text-[var(--fg-dim)]')}
-                    >
-                      <Plus className="size-4" />
-                      {headed || group.name === null
-                        ? 'Add workspace'
-                        : `Add workspace to ${group.name}`}
-                    </DropdownMenuItem>
-                  )}
-                </Fragment>
-              );
-            })
+            sections.map((group) => (
+              <Fragment key={group.organizationId ?? 'none'}>
+                {headed && (
+                  <div
+                    data-org-heading
+                    className="truncate px-[9px] pt-1.5 pb-0.5 text-[11px] font-medium text-[var(--fg-dim)]"
+                  >
+                    {group.name ?? 'Other workspaces'}
+                  </div>
+                )}
+                {group.workspaces.map((workspace) => (
+                  <WorkspaceMenuItem
+                    key={workspace.id}
+                    workspace={workspace}
+                    server={server}
+                    onServerCount={all.length}
+                    dormant={false}
+                  />
+                ))}
+              </Fragment>
+            ))
           )}
           {invitationsFailed && (
             <div className="px-2 py-1.5 text-xs text-foreground-muted">
@@ -592,7 +554,9 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
           {shownJoinable.map((offer) => (
             <JoinableWorkspaceMenuItem key={offer.tenantId} offer={offer} server={server} />
           ))}
-          {whole && creation.canCreate && (
+          {/* One organization each: creating is offered only to someone in no
+              workspace on this server yet. */}
+          {whole && noMembership && creation.canCreate && (
             <DropdownMenuItem
               onClick={() =>
                 create({ kind: creation.organizations ? 'organization' : 'workspace' })

@@ -32,6 +32,7 @@ export function GiveMachineLogin({
       providerName={providerDisplayName(provider) ?? provider}
       kinds={providerLoginKinds(provider, true)}
       thisComputer
+      browser={null}
       queryKey={[MANAGED_AGENTS_KEY, serverId]}
       give={async (login) =>
         (

@@ -609,13 +609,13 @@ describe('ProviderStatuses with logins given to the machine', () => {
       !(login.provider === 'codex' && login.kind === 'auth-json');
     const codexSignIn = JSON.stringify({ tokens: { access_token: 'given-codex-sign-in' } });
 
-    it("refuses Codex's 'This computer's sign-in' at once, saying why and what to give instead", async () => {
+    it('refuses a Codex sign-in file holding no ChatGPT sign-in at once, saying why and what to give instead', async () => {
       const runtime = new FakeRuntime();
       runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
       answer = sealedAnswer(codexSignIn, 2, 'auth-json', 'codex');
       const statuses = buildBox(runtime, undefined, gatewayOnly);
       const message =
-        "This cloud machine can't use Codex's 'This computer's sign-in'. Give it an OpenAI API key instead.";
+        'This cloud machine uses a Codex sign-in file only when it holds a ChatGPT sign-in (from `codex login`). Sign Codex in with the browser, or give it an OpenAI API key.';
       expect(await statuses.check('codex', { verify: true })).toMatchObject({
         auth: 'missing',
         auth_source: 'sealed',
@@ -666,7 +666,9 @@ describe('ProviderStatuses with logins given to the machine', () => {
       const statuses = buildBox(runtime, undefined, gatewayOnly, log);
       const status = await statuses.check('codex', { verify: true });
       const problem = statuses.loginProblem('codex');
-      expect(problem?.message).toContain("Codex's 'This computer's sign-in'");
+      expect(problem?.message).toContain(
+        'a Codex sign-in file only when it holds a ChatGPT sign-in'
+      );
       expect(JSON.stringify(status)).not.toContain(marker);
       expect(JSON.stringify(problem)).not.toContain(marker);
       expect(lines.join('\n')).not.toContain(marker);
@@ -695,7 +697,7 @@ describe('ProviderStatuses with logins given to the machine', () => {
         /can't use Vertex AI in this login's region/
       );
       expect(unusableLoginMessage({ provider: 'codex', kind: 'auth-json' })).toMatch(
-        /OpenAI API key instead/
+        /give it an OpenAI API key/
       );
     });
   });

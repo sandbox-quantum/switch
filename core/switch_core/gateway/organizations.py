@@ -715,7 +715,11 @@ async def create_organization_workspace(
         None
         if user.role == "admin"
         else await lock_workspace_allowance(
-            session, user.id, config, new_organization=False
+            session,
+            user.id,
+            config,
+            new_organization=False,
+            administers_organization=True,
         )
     )
     if allowance is None:

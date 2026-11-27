@@ -153,6 +153,7 @@ describe("AIProvidersPage", () => {
 
     await waitFor(() => fireEvent.click(within(providerRow("Codex")).getByRole("button", { name: /Give login/ })));
     const form = screen.getByRole("group", { name: "" });
+    fireEvent.click(within(form).getByLabelText("API key", { selector: "button" }));
     fireEvent.change(within(form).getByLabelText("API key", { selector: "input" }), {
       target: { value: "sk-not-real" },
     });
@@ -163,6 +164,62 @@ describe("AIProvidersPage", () => {
     const sealed = (given?.body as { sealed: Record<string, string> }).sealed;
     expect(sealed.alg).toBe("X25519-HKDF-SHA256-A256GCM");
     expect(JSON.stringify(sealed)).not.toContain("sk-not-real");
+  });
+
+  it("signs Claude Code in with a browser first, on the device itself", async () => {
+    const url = "https://claude.ai/oauth/authorize?code=true";
+    const open = { id: "op8", state: "claimed", result: null, progress: { message: "", sign_in: { url, needs_code: true } } };
+    const calls = answer({
+      "GET /management/controllers": [200, [device("laptop", [report("claude", { auth: "missing" })], { public_key: await sealingKey() })]],
+      "GET /management/providers": [200, PROVIDERS],
+      "GET /hosted-machines": [200, { available: false, machines: [] }],
+      "POST /management/controllers/laptop/provider-logins/claude/browser": [200, { operation: { id: "op8" } }],
+      "GET /management/operations": [
+        [200, [{ ...open, state: "pending", progress: null }]],
+        [200, [open]],
+        [200, [open]],
+        [200, [{ id: "op8", state: "succeeded", result: { outcome: "succeeded" }, progress: null }]],
+      ],
+      "POST /management/operations/op8/sign-in-code": [200, { ok: true }],
+    });
+    renderPage();
+
+    await waitFor(() => fireEvent.click(within(providerRow("Claude Code")).getByRole("button", { name: /Give login/ })));
+    const form = screen.getByRole("group", { name: "" });
+    expect(within(form).getByLabelText("Sign in with browser").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(within(form).getByRole("button", { name: "Start sign-in" }));
+
+    const page = await screen.findByRole("link", { name: /Open sign-in page/ }, { timeout: 5000 });
+    expect(page.getAttribute("href")).toBe(url);
+    fireEvent.change(screen.getByLabelText("Sign-in code"), { target: { value: "abc#def" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send code" }));
+    expect(await screen.findByText("Signed in: Claude Code signs in on laptop.", {}, { timeout: 8000 })).toBeTruthy();
+    expect(calls.find((call) => call.path.endsWith("/sign-in-code"))?.body).toEqual({ code: "abc#def" });
+  });
+
+  it("offers a browser sign-in on a Switch Cloud device for Claude Code and Codex only", async () => {
+    answer({
+      "GET /management/controllers": [
+        200,
+        [
+          device("cloud-1", [report("claude", { auth: "missing" }), report("codex", { auth: "missing" })], {
+            kind: "ec2",
+            public_key: await sealingKey(),
+          }),
+        ],
+      ],
+      "GET /management/providers": [200, PROVIDERS],
+      "GET /hosted-machines": [200, { available: true, machines: [] }],
+    });
+    renderPage();
+    await waitFor(() => fireEvent.click(within(providerRow("Claude Code")).getByRole("button", { name: /Give login/ })));
+    expect(screen.getByLabelText("Sign in with browser").getAttribute("aria-pressed")).toBe("true");
+    cleanup();
+
+    renderPage();
+    await waitFor(() => fireEvent.click(within(providerRow("Codex")).getByRole("button", { name: /Give login/ })));
+    expect(screen.getByLabelText("Sign in with browser").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByLabelText("API key")).toBeTruthy();
   });
 
   it("offers no login where the device keeps no key to seal one to, or is offline", async () => {

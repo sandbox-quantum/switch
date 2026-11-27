@@ -1,7 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleAlert, CircleCheck, KeyRound, TriangleAlert, Upload } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import type { MachineLoginInput } from '../contracts/machine-logins';
+import type {
+  BrowserSignInHost,
+  BrowserSignInState,
+  MachineLoginInput,
+} from '../contracts/machine-logins';
 import { type LoginKind, type LoginKindOption, loginHint } from '../model/provider-catalogue';
 import { signInFileCredential } from '../model/seal-login';
 import { VERTEX_DEFAULT_REGION } from '../model/vertex-login';
@@ -10,6 +14,7 @@ import { Input } from '../primitives/input';
 import { SegmentedControl } from '../primitives/segmented-control';
 import { Spinner } from '../primitives/spinner';
 import { Textarea } from '../primitives/textarea';
+import { BrowserSignInPanel } from './browser-sign-in';
 
 /** Where an operation sent to a machine stands: still being worked on, done, or why not. */
 export type OperationOutcome =
@@ -36,6 +41,7 @@ export function GiveMachineLogin({
   providerName,
   kinds,
   thisComputer,
+  browser,
   queryKey,
   give,
   outcome: readOutcome,
@@ -49,6 +55,8 @@ export function GiveMachineLogin({
   kinds: LoginKindOption[];
   /** The app runs on a computer whose own Google sign-in it can send (Console), not in a browser. */
   thisComputer: boolean;
+  /** How the app runs a browser sign-in on the machine, when `kinds` offers one; else null. */
+  browser: BrowserSignInHost | null;
   queryKey: readonly unknown[];
   /** Seals and sends the login; answers the operation the machine takes it up with. */
   give: (login: MachineLoginInput) => Promise<string>;
@@ -67,10 +75,14 @@ export function GiveMachineLogin({
   const fileInput = useRef<HTMLInputElement>(null);
   const [operationId, setOperationId] = useState<string | null>(null);
   const announced = useRef<string | null>(null);
+  const [signInId, setSignInId] = useState<string | null>(null);
   const name = providerName;
+  if (kinds.some((each) => each.value === 'browser') && !browser)
+    throw new Error('A browser sign-in is offered without a way to run it.');
 
   const giving = useMutation({
     mutationFn: () => {
+      if (kind === 'browser') throw new Error('A browser sign-in is started, not given.');
       const login: MachineLoginInput =
         kind === 'vertex'
           ? {
@@ -101,17 +113,34 @@ export function GiveMachineLogin({
     refetchInterval: (query) => (query.state.data?.state === 'pending' ? 1500 : false),
   });
 
-  const result = outcome.data;
-  const succeeded = result?.state === 'succeeded';
+  const starting = useMutation({
+    mutationFn: () => browser!.start(),
+    onSuccess: (id) => setSignInId(id),
+  });
+  const signIn = useQuery({
+    queryKey: [...queryKey, 'browser-sign-in', signInId],
+    queryFn: () => browser!.read(signInId!),
+    enabled: signInId !== null,
+    refetchInterval: (query) => (ended(query.state.data) ? false : 1500),
+  });
+  const signInState: BrowserSignInState =
+    signInId === null ? { state: 'starting' } : (signIn.data ?? { state: 'starting' });
+  const signingIn = starting.isPending || (signInId !== null && !ended(signIn.data));
+
+  const result = kind === 'browser' ? undefined : outcome.data;
+  const succeeded =
+    kind === 'browser' ? signIn.data?.state === 'succeeded' : result?.state === 'succeeded';
+  const settledId = kind === 'browser' ? signInId : operationId;
   // The machine now reports the provider ready: show it without waiting for the next poll.
   useEffect(() => {
-    if (!succeeded || announced.current === operationId) return;
-    announced.current = operationId;
+    if (!succeeded || announced.current === settledId) return;
+    announced.current = settledId;
     void queryClient.invalidateQueries({ queryKey: [...queryKey, 'machines'] });
-  }, [succeeded, operationId, queryClient, queryKey]);
+  }, [succeeded, settledId, queryClient, queryKey]);
   const waiting =
     giving.isPending || (operationId !== null && (!result || result.state === 'pending'));
-  const needsCredential = kind === 'vertex' ? vertexSource === 'key' : kind !== 'this-computer';
+  const needsCredential =
+    kind === 'vertex' ? vertexSource === 'key' : kind !== 'this-computer' && kind !== 'browser';
   const ready =
     (!needsCredential || credential.trim() !== '') &&
     (kind !== 'vertex' || (project.trim() !== '' && region.trim() !== ''));
@@ -145,7 +174,7 @@ export function GiveMachineLogin({
       <div className="flex items-center gap-2">
         <KeyRound className="size-4 text-foreground-muted" />
         <span>
-          Give {machineName} a {name} login
+          Give {machineName} a login for {name}
         </span>
       </div>
       {kinds.length > 1 && (
@@ -157,6 +186,8 @@ export function GiveMachineLogin({
             setPickedFile(null);
             setPickError(null);
             giving.reset();
+            starting.reset();
+            setSignInId(null);
           }}
           options={kinds}
           ariaLabel={`${name} login`}
@@ -274,16 +305,36 @@ export function GiveMachineLogin({
           {pickedFile && <span className="text-xs text-foreground-muted">Read {pickedFile}</span>}
         </div>
       )}
-      {kind !== 'this-computer' && kind !== 'vertex' && kind !== 'auth-json' && (
-        <Input
-          type="password"
-          autoComplete="off"
-          aria-label={kind === 'setup-token' ? 'Setup token' : 'API key'}
-          value={credential}
-          onChange={(event) => setCredential(event.target.value)}
-          disabled={waiting}
+      {kind === 'browser' && (starting.isPending || signInId !== null) && (
+        <BrowserSignInPanel
+          key={signInId ?? 'starting'}
+          machineName={machineName}
+          provider={provider}
+          providerName={name}
+          state={signInState}
+          sendCode={(code) => browser!.sendCode(signInId!, code)}
+          failureText={failureText}
         />
       )}
+      {kind === 'browser' && starting.error && (
+        <p className="flex items-start gap-2 text-xs" role="alert">
+          <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+          {failureText(starting.error, `The sign-in could not be started on ${machineName}.`)}
+        </p>
+      )}
+      {kind !== 'this-computer' &&
+        kind !== 'vertex' &&
+        kind !== 'auth-json' &&
+        kind !== 'browser' && (
+          <Input
+            type="password"
+            autoComplete="off"
+            aria-label={kind === 'setup-token' ? 'Setup token' : 'API key'}
+            value={credential}
+            onChange={(event) => setCredential(event.target.value)}
+            disabled={waiting}
+          />
+        )}
       {waiting && operationId !== null && (
         <p className="flex items-center gap-2 text-xs text-foreground-muted" role="status">
           <Spinner className="size-3.5" />
@@ -309,9 +360,20 @@ export function GiveMachineLogin({
       )}
       <div className="flex justify-end gap-2">
         <Button variant="ghost" size="sm" onClick={onClose}>
-          {result?.state === 'succeeded' ? 'Done' : 'Cancel'}
+          {succeeded ? 'Done' : 'Cancel'}
         </Button>
-        {result?.state !== 'succeeded' && (
+        {kind === 'browser' && !succeeded && !signingIn && (
+          <Button
+            size="sm"
+            onClick={() => {
+              setSignInId(null);
+              starting.mutate();
+            }}
+          >
+            {signInId === null && !starting.error ? 'Start sign-in' : 'Start again'}
+          </Button>
+        )}
+        {kind !== 'browser' && !succeeded && (
           <Button
             size="sm"
             disabled={waiting || !ready}
@@ -326,4 +388,8 @@ export function GiveMachineLogin({
       </div>
     </div>
   );
+}
+
+function ended(state: BrowserSignInState | undefined): boolean {
+  return state?.state === 'succeeded' || state?.state === 'failed';
 }

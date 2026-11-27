@@ -6,7 +6,13 @@
  */
 
 /** A way a machine can be given a provider's login. */
-export type LoginKind = 'setup-token' | 'api-key' | 'auth-json' | 'this-computer' | 'vertex';
+export type LoginKind =
+  | 'browser'
+  | 'setup-token'
+  | 'api-key'
+  | 'auth-json'
+  | 'this-computer'
+  | 'vertex';
 export type LoginKindOption = { value: LoginKind; label: string };
 
 type LoginWay = 'setup-token' | 'api-key' | 'vertex' | 'sign-in-file';
@@ -51,6 +57,44 @@ export function providerLoginKinds(provider: string, thisComputer: boolean): Log
   });
 }
 
+/** The providers a machine's controller signs in through a browser. */
+const BROWSER_SIGN_IN = new Set(['claude', 'codex', 'cursor', 'antigravity', 'opencode']);
+/**
+ * Those a Switch Cloud device signs in through a browser. Its agents' CLIs
+ * never hold the real login: the provider gateway does, and of these sign-ins
+ * it fronts Claude Code's setup token and Codex's ChatGPT sign-in, which it
+ * renews itself. OpenCode keeps its ChatGPT sign-in in a file of its own the
+ * gateway doesn't front, and Cursor and Antigravity keep theirs inside the CLI.
+ */
+const CLOUD_BROWSER_SIGN_IN = new Set(['claude', 'codex']);
+
+/** What a browser sign-in asks of the person, by provider, once the machine shows its page. */
+const BROWSER_HINTS: Record<string, string> = {
+  claude:
+    'Sign in with your Claude account on a page that opens in a new tab, then paste back the code it shows.',
+  codex:
+    'Sign in with your ChatGPT account on a page that opens in a new tab, and type in the code shown here.',
+  opencode:
+    'Sign in with your ChatGPT account on a page that opens in a new tab, and type in the code shown here. OpenCode then uses your ChatGPT subscription.',
+  cursor:
+    'Sign in with your Cursor account on a page that opens in a new tab; the machine notices by itself. The sign-in stays on the machine; sign out of Cursor there to remove it.',
+  antigravity:
+    'Sign in with your Google account on a page that opens in a new tab, then paste back the code the page shows. The sign-in stays on the machine; sign out of Antigravity there to remove it.',
+};
+
+/** What to paste back into a browser sign-in waiting for the code its page shows. */
+export function browserCodePrompt(provider: string): string {
+  return provider === 'antigravity'
+    ? 'Once you have signed in, paste the code the page shows, or the full address of the page you landed on:'
+    : 'Paste the code the page shows once you have signed in:';
+}
+
+/** Signing in through a browser, offered first where a machine can: null where it can't. */
+export function browserSignInKind(provider: string, cloud: boolean): LoginKindOption | null {
+  if (!(cloud ? CLOUD_BROWSER_SIGN_IN : BROWSER_SIGN_IN).has(provider)) return null;
+  return { value: 'browser', label: 'Sign in with browser' };
+}
+
 /** What to give for a login of `kind`, for the provider called `name`. */
 export function loginHint(
   provider: string,
@@ -62,6 +106,11 @@ export function loginHint(
     return vertexFrom === 'key'
       ? `${name} signs in to Google Vertex AI with a service account key. Make one for a service account that can use only Vertex AI (roles/aiplatform.user), and paste its JSON or pick its file.`
       : `${name} signs in to Google Vertex AI as you, with the sign-in \`gcloud auth application-default login\` made on this computer.`;
+  if (kind === 'browser')
+    return (
+      BROWSER_HINTS[provider] ??
+      `Sign in with your ${name} account on a page that opens in a new tab.`
+    );
   if (kind === 'setup-token')
     return 'Run `claude setup-token` on any computer signed in to Claude, and paste the token it prints.';
   if (kind === 'auth-json')

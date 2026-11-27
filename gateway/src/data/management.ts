@@ -3,7 +3,9 @@
 // /gateway/management, except the provider list and advanced-configuration fields, which are always
 // served; every failure comes back as {"error": {"code", "message", "retryable"}}.
 
+import type { BrowserSignInState } from "@switch-console/chat-ui/contracts/machine-logins";
 import type { CloudMachine as CloudMachineContract } from "@switch-console/chat-ui/contracts/switch-servers";
+import { browserSignInState } from "@switch-console/chat-ui/model/browser-sign-in";
 import { gatewayFetch } from "./gatewayFetch";
 
 const BASE = "/gateway/management";
@@ -199,6 +201,11 @@ export interface Operation {
   state: "pending" | "claimed" | "succeeded" | "failed" | "cancelled" | "expired";
   lease_expires_at: string | null;
   result: Record<string, unknown> | null;
+  /** The device's latest progress report while it works on it; absent from older servers. */
+  progress?: {
+    message: string;
+    sign_in?: { url: string; user_code?: string; needs_code: boolean };
+  } | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -385,6 +392,36 @@ export async function operationOutcome(
     state: "failed",
     message: error?.message ?? (found.state === "expired" ? words.expired : words.failed),
   };
+}
+
+/** Starts signing `provider` in on the device through a browser; answers the operation it runs as. */
+export async function startBrowserSignIn(controllerId: string, provider: string): Promise<string> {
+  const answer = await request<{ operation: Operation }>(
+    `/controllers/${encodeURIComponent(controllerId)}/provider-logins/${encodeURIComponent(provider)}/browser`,
+    { method: "POST" },
+  );
+  return answer.operation.id;
+}
+
+/** Where a browser sign-in on the device stands, by its operation's id. */
+export async function browserSignIn(
+  controllerId: string,
+  operationId: string,
+  words: { expired: string; cancelled: string; failed: string },
+): Promise<BrowserSignInState> {
+  const listed = await request<Operation[]>(`/operations?controller_id=${encodeURIComponent(controllerId)}`);
+  return browserSignInState(
+    listed.find((operation) => operation.id === operationId),
+    words,
+  );
+}
+
+/** Sends a browser sign-in the code its page showed. */
+export async function sendSignInCode(operationId: string, code: string): Promise<void> {
+  await request<{ ok: boolean }>(`/operations/${encodeURIComponent(operationId)}/sign-in-code`, {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
 }
 
 /** What a device is, as people tell them apart. */

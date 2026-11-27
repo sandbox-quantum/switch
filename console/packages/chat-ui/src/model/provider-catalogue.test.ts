@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  browserCodePrompt,
+  browserSignInKind,
   loginHint,
   machineProviderOptions,
   providerLoginKinds,
@@ -84,5 +86,29 @@ describe('providerReportSettled', () => {
   it('is not settled while either time is unknown', () => {
     expect(providerReportSettled(null, '2026-11-26T10:05:00Z')).toBe(false);
     expect(providerReportSettled(connected, null)).toBe(false);
+  });
+});
+
+describe('browserSignInKind', () => {
+  it('signs each provider in on a machine of your own, and only Claude Code and Codex on a cloud device', () => {
+    expect(browserSignInKind('claude', false)).toEqual({
+      value: 'browser',
+      label: 'Sign in with browser',
+    });
+    for (const provider of ['claude', 'codex', 'cursor', 'antigravity', 'opencode'])
+      expect(browserSignInKind(provider, false)?.value).toBe('browser');
+    for (const provider of ['claude', 'codex'])
+      expect(browserSignInKind(provider, true)?.value).toBe('browser');
+    for (const provider of ['cursor', 'antigravity', 'opencode', 'pi'])
+      expect(browserSignInKind(provider, true)).toBeNull();
+    expect(browserSignInKind('pi', false)).toBeNull();
+  });
+
+  it('says what each browser sign-in asks, and what to paste back', () => {
+    expect(loginHint('opencode', 'OpenCode', 'browser', 'key')).toContain('ChatGPT');
+    expect(loginHint('cursor', 'Cursor', 'browser', 'key')).toContain('notices by itself');
+    expect(loginHint('antigravity', 'Antigravity', 'browser', 'key')).toContain('Google');
+    expect(browserCodePrompt('antigravity')).toContain('full address');
+    expect(browserCodePrompt('claude')).not.toContain('address');
   });
 });

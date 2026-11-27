@@ -5243,6 +5243,11 @@ class AgentControllerOperation(TenantScoped, Base):
         DateTime(timezone=True), nullable=True
     )
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # The controller's latest progress report while it holds the operation.
+    progress: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # What the owner sent the running operation (`{"code": ...}`), until the
+    # controller takes it; then only `{"taken_at": ...}`.
+    input: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_by: Mapped[str] = mapped_column(
         Text, ForeignKey("users.id"), nullable=False
     )

@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import type { OpenAgentStream } from '@switch-console/agent-providers';
+import {
+  type OpenAgentStream,
+  type SealingKeyPair,
+  sealProviderLogin,
+} from '@switch-console/agent-providers';
 import {
   BoxValve,
   boxCap,
@@ -12,7 +16,7 @@ import {
   type ValveEvent,
 } from '@switch-console/agent-providers/box';
 import type { AgentHub } from '../agent-hub';
-import type { ControllerClient } from '../api';
+import { ControllerApiError, type ControllerClient } from '../api';
 import type { FrontLogin } from '../controller';
 import type { HostTickets } from '../host-tickets';
 import type { HubSocket } from '../hub-socket';
@@ -26,12 +30,13 @@ import {
   startAgent,
 } from '../reconcile';
 import type { AgentRuntime } from '../runtime';
-import type { Assignment } from '../schemas';
+import type { Assignment, OperationResult, Provider } from '../schemas';
 import type { GivenLogin } from '../sealed-logins';
 import { noSessionMidTurn, type ProviderStatuses, type StatusCollector } from '../status';
 import { LeftoverWatch } from './agent-removal';
 import { AgentsDisk } from './agents-disk';
 import { readBoxMemory } from './box-memory';
+import { ChatgptTokenCache, ChatgptTokens, LoginReplaced, type SaveLogin } from './chatgpt-tokens';
 import { valveLimits } from './controller-reserve';
 import {
   type GatewayDeps,
@@ -39,7 +44,12 @@ import {
   gatewayProbe,
   resolveGateway,
 } from './gateway-agents';
-import { gatewayPlanFor, VertexTokenCache } from './gateway-logins';
+import {
+  BOX_BROWSER_SIGN_IN,
+  gatewayPlanFor,
+  type LoginCaches,
+  VertexTokenCache,
+} from './gateway-logins';
 import { boxHubValve } from './hub-valve';
 import type { LauncherLink, LinkState } from './launcher-link';
 import type { LauncherMeasure } from './launcher-measure';
@@ -165,9 +175,9 @@ export type BoxContext = {
  * (a malformed Vertex AI login) counts as frontable here, so the usual sign-in
  * check meets it and says what is wrong, as before.
  */
-export function frontable(login: GivenLogin, gateway: Pick<GatewayDeps, 'vertex'>): boolean {
+export function frontable(login: GivenLogin, gateway: LoginCaches): boolean {
   try {
-    return gatewayPlanFor(login, gateway.vertex) !== null;
+    return gatewayPlanFor(login, gateway) !== null;
   } catch {
     return true;
   }
@@ -188,6 +198,8 @@ export class BoxController {
   private readonly boxLimit: number | null;
   private rest: AgentRest | null = null;
   private gateway: GatewayDeps | null = null;
+  /** Keeps a renewed sign-in with Switch; null until set, or where no sealing key is kept. */
+  private saveLogin: SaveLogin | null = null;
   private agentsDisk: AgentsDisk | null = null;
   private liveStatus: LiveStatusWriter | null = null;
   private hubSocket: HubSocket | null = null;
@@ -397,6 +409,10 @@ export class BoxController {
     this.gateway = {
       gateway: new ProviderGateway({ log: this.log }),
       vertex: new VertexTokenCache(),
+      // The saver is read as each sign-in is first used, after the sealing key is known.
+      chatgpt: new ChatgptTokenCache(
+        (login) => new ChatgptTokens(login, { save: this.saveLogin, log: this.log })
+      ),
     };
     await this.gateway.gateway.start();
     this.log.info('Provider gateway listening for this machine’s agents', {
@@ -409,6 +425,40 @@ export class BoxController {
       const fronting = this.gateway;
       split.setProbeEnv?.(async (_provider, login) => gatewayProbe(randomUUID(), login, fronting));
     }
+  }
+
+  /**
+   * How a sign-in the gateway renews (Codex's ChatGPT tokens, which rotate) is
+   * kept with Switch: sealed again to this machine's key, in place of the
+   * revision it came from. Null for a controller that keeps no sealing key;
+   * a renewal is then held in memory only.
+   */
+  setLoginSaver(
+    saver: {
+      client: Pick<ControllerClient, 'replaceSealedLogin'>;
+      keys: SealingKeyPair;
+      controllerId: string;
+    } | null
+  ): void {
+    this.saveLogin = saver
+      ? async (provider, replaces, credential) => {
+          const sealed = sealProviderLogin({
+            publicKey: saver.keys.publicKey,
+            controllerId: saver.controllerId,
+            provider,
+            login: { kind: 'auth-json', credential },
+          });
+          try {
+            return String(
+              await saver.client.replaceSealedLogin(provider as Provider, Number(replaces), sealed)
+            );
+          } catch (error) {
+            if (error instanceof ControllerApiError && [404, 409].includes(error.status))
+              throw new LoginReplaced();
+            throw error;
+          }
+        }
+      : null;
   }
 
   /** The gateway, for an agent's credentials; null when it is off. */
@@ -438,6 +488,21 @@ export class BoxController {
         }
       }
       return fronted;
+    };
+  }
+
+  /**
+   * Why the box refuses a browser sign-in for `provider`, or null when it runs
+   * one: the login it ends with must go through the provider gateway.
+   */
+  browserSignInRefusal(provider: string): OperationResult | null {
+    if (BOX_BROWSER_SIGN_IN.includes(provider)) return null;
+    return {
+      outcome: 'failed',
+      error: {
+        code: 'operation_unsupported',
+        message: `Switch Cloud signs only Claude Code and Codex in through a browser. Give ${provider} an API key instead.`,
+      },
     };
   }
 

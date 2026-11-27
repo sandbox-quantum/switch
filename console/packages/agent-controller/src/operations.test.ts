@@ -67,6 +67,7 @@ function deps(overrides: Partial<OperationDeps> = {}) {
       return claudeStatus;
     },
     takeUpLogin: async () => ({ status: claudeStatus, problem: null }),
+    signInWithBrowser: async () => ({ outcome: 'succeeded' }),
     restartController: () => null,
     log: silentLogger,
     ...overrides,
@@ -152,6 +153,32 @@ describe('executeOperation', () => {
     });
   });
 
+  it('signs Claude Code, Codex, Cursor, Antigravity and OpenCode in through a browser, and no other provider', async () => {
+    const started: string[] = [];
+    const { deps: d } = deps({
+      signInWithBrowser: async (operationId, provider) => {
+        started.push(`${operationId}:${provider}`);
+        return { outcome: 'succeeded', output: { provider: claudeStatus } };
+      },
+    });
+    const login = (provider: string) =>
+      operation({
+        kind: 'provider.login',
+        agent_id: null,
+        params: { provider, method: 'browser' },
+      });
+    expect(await executeOperation(login('claude'), d)).toEqual({
+      outcome: 'succeeded',
+      output: { provider: claudeStatus },
+    });
+    for (const provider of ['cursor', 'antigravity', 'opencode'])
+      expect(await executeOperation(login(provider), d)).toMatchObject({ outcome: 'succeeded' });
+    expect(await executeOperation(login('pi'), d)).toMatchObject({
+      error: { code: 'operation_unsupported' },
+    });
+    expect(started).toEqual(['op-1:claude', 'op-1:cursor', 'op-1:antigravity', 'op-1:opencode']);
+  });
+
   it('answers any other kind with operation_unsupported', async () => {
     const { deps: d } = deps();
     for (const kind of ['agent.start', 'session.send', 'something.new'])
@@ -163,6 +190,34 @@ describe('executeOperation', () => {
 });
 
 describe('processPendingOperations', () => {
+  it('runs a browser sign-in beside the operations after it, not before them', async () => {
+    let finishSignIn: (result: OperationResult) => void = () => {};
+    const browser = operation({
+      id: 'op-browser',
+      kind: 'provider.login',
+      agent_id: null,
+      params: { provider: 'codex', method: 'browser' },
+    });
+    const { deps: d, results } = deps({
+      client: {
+        pendingOperations: async () => [browser, operation({ id: 'op-2' })],
+        claimOperation: async (id) => (id === 'op-browser' ? browser : operation({ id })),
+        operationResult: async (id, result) => {
+          results.set(id, result);
+        },
+      },
+      signInWithBrowser: () =>
+        new Promise((resolve) => {
+          finishSignIn = resolve;
+        }),
+    });
+    expect(await processPendingOperations(d)).toBe(2);
+    expect([...results.keys()]).toEqual(['op-2']);
+    finishSignIn({ outcome: 'succeeded' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(results.get('op-browser')).toEqual({ outcome: 'succeeded' });
+  });
+
   it('claims, runs and reports each pending operation, skipping ones lost to others', async () => {
     const { deps: d, results } = deps({
       client: {

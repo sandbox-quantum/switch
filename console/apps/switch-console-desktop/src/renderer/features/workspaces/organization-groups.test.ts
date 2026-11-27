@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { OrganizationRole, Workspace } from '@shared/core/workspaces/workspaces';
-import { addWorkspaceThrough, groupByOrganization, switcherSections } from './organization-groups';
+import { groupByOrganization, switcherSections } from './organization-groups';
 
 function workspace(
   id: string,
@@ -79,49 +79,5 @@ describe('switcherSections', () => {
     expect(sections).toHaveLength(1);
     expect(sections[0]!.organizationId).toBeNull();
     expect(sections[0]!.workspaces.map((w) => w.id)).toEqual(['a', 'b', 'c']);
-    expect(addWorkspaceThrough(sections[0]!, sections[0]!.workspaces, null)).toBeNull();
-  });
-});
-
-describe('addWorkspaceThrough', () => {
-  it('offers it to an org admin, through one of the organization’s workspaces', () => {
-    const all = [workspace('a', ACME_ADMIN), workspace('b', GLOBEX_MEMBER)];
-    const [acme, globex] = groupByOrganization(all);
-
-    expect(addWorkspaceThrough(acme!, all, null)?.id).toBe('a');
-    expect(addWorkspaceThrough(globex!, all, null)).toBeNull();
-  });
-
-  it('does not ask through a workspace the account has lost', () => {
-    const all = [workspace('a', ACME_ADMIN, { role: null }), workspace('b', ACME_ADMIN)];
-    const [acme] = groupByOrganization(all);
-
-    expect(addWorkspaceThrough(acme!, all, null)?.id).toBe('b');
-  });
-
-  it('takes a refusal given for an organization the account runs as holding everywhere', () => {
-    const otherAdmin = { id: 'o-3', name: 'Initech', role: 'org_admin' } as const;
-    const all = [workspace('a', ACME_ADMIN), workspace('c', otherAdmin)];
-    const [, initech] = groupByOrganization(all);
-
-    expect(
-      addWorkspaceThrough(initech!, all, { canAddWorkspace: false, workspaceId: 'a' })
-    ).toBeNull();
-  });
-
-  it('ignores a refusal given for an organization the account does not run', () => {
-    const all = [workspace('a', ACME_ADMIN), workspace('b', GLOBEX_MEMBER)];
-    const [acme] = groupByOrganization(all);
-
-    expect(addWorkspaceThrough(acme!, all, { canAddWorkspace: false, workspaceId: 'b' })?.id).toBe(
-      'a'
-    );
-  });
-
-  it('offers nothing on a server from before organizations', () => {
-    const all = [workspace('a', null, { role: 'admin' })];
-    const [group] = groupByOrganization(all);
-
-    expect(addWorkspaceThrough(group!, all, null)).toBeNull();
   });
 });

@@ -320,10 +320,11 @@ export type ReconcileDeps = {
   givenLogin: (provider: Provider) => Promise<GivenLogin | null>;
   /**
    * Box mode, with a provider gateway: the CLI environment for an agent's
-   * gateway-backed login (a local base URL and its opaque token), or null when
-   * the login isn't one. Absent, logins go in the environment as they are.
+   * gateway-backed login (a local base URL and its opaque token), and for
+   * Codex the configuration pointing it there, or null when the login isn't
+   * one. Absent, logins go in the environment as they are.
    */
-  gatewayEnv?: (agentId: string, login: GivenLogin) => Promise<Record<string, string> | null>;
+  gatewayEnv?: (agentId: string, login: GivenLogin) => Promise<GatewayCli | null>;
   /** The agent is no longer assigned here: the relay stops accepting its token. */
   forgetAgent: (agentId: string) => void;
   binaryPath: (provider: Provider) => Promise<string | null>;
@@ -388,10 +389,16 @@ export async function startAgent(
       // Box mode, through the provider gateway: the CLI gets its base URL and
       // token, never the login. With the gateway on, a login it can't front
       // isn't used at all: no login goes in the environment.
-      const loginEnv = deps.gatewayEnv
+      const cli = deps.gatewayEnv
         ? await deps.gatewayEnv(agentId, login)
-        : providerLoginEnvironment(deps.runtime.agentStateRoot(agentId), login);
-      if (loginEnv) template.start.input.env = { ...template.start.input.env, ...loginEnv };
+        : {
+            env: providerLoginEnvironment(deps.runtime.agentStateRoot(agentId), login),
+            codexConfig: null,
+          };
+      if (cli) template.start.input.env = { ...template.start.input.env, ...cli.env };
+      // Before the agent's own configuration, so these keys stay at the top level.
+      if (cli?.codexConfig && template.execution)
+        template.execution.codexConfig = `${cli.codexConfig}${template.execution.codexConfig}`;
     }
     const observation = await deps.runtime.observe(agentId);
     const replaceIdentity =
@@ -653,3 +660,6 @@ export async function reconcile(
  * tells a login change, a withdrawn login and a moved relay apart.
  */
 export type CredentialChange = false | 'login' | 'withdrawn' | 'relay' | boolean;
+
+/** What a gateway-backed login gives an agent's CLI: its environment, and Codex's configuration (TOML). */
+export type GatewayCli = { env: Record<string, string>; codexConfig: string | null };

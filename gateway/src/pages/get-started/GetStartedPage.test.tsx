@@ -28,6 +28,7 @@ vi.mock("@switch-console/chat-ui/components/meet-buddy-intro", () => ({
 
 const device = vi.hoisted(() => ({
   snapshot: null as CloudSnapshot | null,
+  error: null as string | null,
   listeners: new Set<() => void>(),
   refresh: vi.fn(),
 }));
@@ -43,7 +44,7 @@ vi.mock("./useCloudDevice", async (importOriginal) => {
         },
         () => device.snapshot,
       ),
-      error: null,
+      error: device.error,
       refresh: device.refresh,
     }),
   };
@@ -53,6 +54,9 @@ const management = vi.hoisted(() => ({
   fetchControllers: vi.fn(),
   cloudMachineLifecycle: vi.fn(),
   fetchProviders: vi.fn(),
+  startBrowserSignIn: vi.fn(),
+  browserSignIn: vi.fn(),
+  sendSignInCode: vi.fn(),
 }));
 
 /** What the server lists by default, in its order. */
@@ -188,12 +192,14 @@ function renderPage() {
 async function pickClaudeWithToken(token: string) {
   fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }));
   fireEvent.click(screen.getByRole("button", { name: /Claude/, pressed: false }));
+  fireEvent.click(screen.getByLabelText("Setup token"));
   fireEvent.change(screen.getByPlaceholderText("Setup token"), { target: { value: token } });
   fireEvent.click(screen.getByRole("button", { name: "Start with Claude Code" }));
 }
 
 beforeEach(() => {
   device.snapshot = snapshot();
+  device.error = null;
   management.fetchControllers.mockResolvedValue([]);
   management.fetchProviders.mockResolvedValue(SERVER_PROVIDERS);
   onboarding.welcomeChat.mockResolvedValue("r1");
@@ -252,6 +258,66 @@ describe("GetStartedPage", () => {
       agentName: buddy.name,
       firstName: "Ada",
     });
+  });
+
+  it("signs Claude Code in with a browser on Switch Cloud once it has started", async () => {
+    device.snapshot = snapshot({ machine: machine({ state: "provisioning" }), controller: null });
+    management.startBrowserSignIn.mockResolvedValue("op-b");
+    management.browserSignIn.mockResolvedValue({ state: "starting" });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }));
+    fireEvent.click(screen.getByRole("button", { name: /Claude/, pressed: false }));
+    expect(screen.getByLabelText("Sign in with browser").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Start with Claude Code" }));
+
+    expect(await screen.findByText(/Waiting for Switch Cloud to start…/)).toBeTruthy();
+    expect(management.startBrowserSignIn).not.toHaveBeenCalled();
+
+    setDevice(snapshot());
+    await waitFor(() => expect(management.startBrowserSignIn).toHaveBeenCalledWith("c1", "claude"));
+    expect(screen.queryByText(/Waiting for Switch Cloud to start…/)).toBeNull();
+  });
+
+  it("offers no browser sign-in on Switch Cloud for any provider but Claude Code and Codex", async () => {
+    device.snapshot = snapshot({ controller: reporting(["codex", "opencode", "cursor", "antigravity"]) });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Codex/, pressed: false }));
+    expect(screen.getByLabelText("Sign in with browser").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Choose another provider" }));
+    for (const name of [/OpenCode/, /Cursor CLI/, /Antigravity/]) {
+      fireEvent.click(await screen.findByRole("button", { name, pressed: false }));
+      expect(screen.queryByLabelText("Sign in with browser")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Choose another provider" }));
+    }
+  });
+
+  it("says nothing is starting while Switch Cloud sleeps or an administrator stopped it", async () => {
+    device.snapshot = snapshot({ machine: machine({ state: "stopped", sleeping: true }), controller: null });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }));
+    expect(
+      (screen.getByRole("button", { name: /Cursor CLI/, pressed: false }) as HTMLButtonElement).textContent,
+    ).toMatch(/Available once Switch Cloud has started/);
+    expect(screen.queryByText("Switch Cloud is starting…")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    setDevice(snapshot({ machine: machine({ state: "stopped", stopped_by_admin: true }), controller: null }));
+    expect(await screen.findByText(/A Switch administrator stopped Switch Cloud/)).toBeTruthy();
+    expect(screen.queryByText("Switch Cloud is starting…")).toBeNull();
+  });
+
+  it("shows why Switch Cloud could not be had, not spinners", async () => {
+    device.snapshot = null;
+    device.error = "This server does not support cloud agents.";
+    renderPage();
+    expect(await screen.findByText("This server does not support cloud agents.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Set up AI provider" }));
+    expect(await screen.findByText("This server does not support cloud agents.")).toBeTruthy();
+    expect(screen.queryByText(/Checking Switch Cloud|Switch Cloud is starting/)).toBeNull();
+    expect(
+      (screen.getByRole("button", { name: /Cursor CLI/, pressed: false }) as HTMLButtonElement).textContent,
+    ).toMatch(/Available once Switch Cloud has started/);
   });
 
   it("goes back to the providers with the device's reason when the login does not work", async () => {
@@ -382,12 +448,14 @@ describe("GetStartedPage", () => {
     const card = (name: RegExp) =>
       screen.getByRole("button", { name, pressed: false }) as HTMLButtonElement;
     await screen.findByRole("button", { name: /Antigravity/, pressed: false });
-    // Before the device reports: what every cloud device installs can be picked.
+    // Before the device reports: what every cloud device installs can be picked,
+    // and the rest wait for it to start, said once for the page.
+    expect(screen.getByText("Switch Cloud is starting…")).toBeTruthy();
     expect(card(/Claude Code/).disabled).toBe(false);
     expect(card(/Codex/).disabled).toBe(false);
     for (const name of [/OpenCode/, /Antigravity/, /Cursor CLI/]) {
       expect(card(name).disabled).toBe(true);
-      expect(card(name).textContent).toMatch(/Checking Switch Cloud/);
+      expect(card(name).textContent).toMatch(/Available once Switch Cloud has started/);
     }
 
     setDevice(
@@ -405,6 +473,7 @@ describe("GetStartedPage", () => {
     );
     await waitFor(() => expect(card(/Codex/).textContent).toMatch(/Not installed on Switch Cloud/));
     expect(card(/Codex/).disabled).toBe(true);
+    expect(screen.queryByText("Switch Cloud is starting…")).toBeNull();
     // Not checked yet: it waits for the device's check rather than being left out.
     expect(card(/Cursor CLI/).textContent).toMatch(/Checking Switch Cloud/);
     expect(card(/Cursor CLI/).disabled).toBe(true);
@@ -442,6 +511,7 @@ describe("GetStartedPage", () => {
       screen.getByText("Your Switch Cloud starts with no AI logins. Pick an AI provider to power switch-buddy and sign in to it:"),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Sign in to Claude Code" }));
+    fireEvent.click(screen.getByLabelText("Setup token"));
 
     expect(document.activeElement).toBe(screen.getByPlaceholderText("Setup token"));
     expect(screen.getByText(/claude setup-token/)).toBeTruthy();
@@ -649,6 +719,7 @@ describe("GetStartedPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Set up AI provider" }));
     fireEvent.click(screen.getByRole("button", { name: /Claude/, pressed: false }));
+    fireEvent.click(screen.getByLabelText("Setup token"));
     fireEvent.change(screen.getByPlaceholderText("Setup token"), { target: { value: "sk-ant-oat" } });
     fireEvent.click(screen.getByRole("button", { name: "Start with Claude Code" }));
 
@@ -685,6 +756,7 @@ describe("GetStartedPage", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }, { timeout: 6000 }));
     fireEvent.click(screen.getByRole("button", { name: /Claude/, pressed: false }));
+    fireEvent.click(screen.getByLabelText("Setup token"));
     fireEvent.change(screen.getByPlaceholderText("Setup token"), { target: { value: "sk-ant-oat" } });
     fireEvent.click(screen.getByRole("button", { name: "Start with Claude Code" }));
 
@@ -708,5 +780,50 @@ describe("GetStartedPage", () => {
         }),
       { timeout: 6000 }
     );
+  }, 15000);
+
+  it("signs Claude Code in with a browser on a device of your own", async () => {
+    device.snapshot = snapshot({ available: false, machine: null, controller: null });
+    const localController = controller("missing");
+    setControllers([localController]);
+    const url = "https://claude.ai/oauth/authorize?code=true";
+    management.startBrowserSignIn.mockResolvedValue("op-b");
+    management.browserSignIn
+      .mockResolvedValueOnce({ state: "open", url, userCode: null, needsCode: true })
+      .mockResolvedValue({ state: "succeeded" });
+    management.sendSignInCode.mockResolvedValue(undefined);
+    onboarding.createBuddy.mockResolvedValue({ agentId: "a1", name: buddy.name });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }, { timeout: 6000 }));
+    fireEvent.click(screen.getByRole("button", { name: /Claude/, pressed: false }));
+    expect(screen.getByLabelText("Sign in with browser").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByPlaceholderText("Setup token")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Start with Claude Code" }));
+
+    await waitFor(() => expect(management.startBrowserSignIn).toHaveBeenCalledWith("c1", "claude"));
+    const page = await screen.findByRole("link", { name: /Open sign-in page/ }, { timeout: 4000 });
+    expect(page.getAttribute("href")).toBe(url);
+    fireEvent.change(screen.getByLabelText("Sign-in code"), { target: { value: "abc#def" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send code" }));
+    await waitFor(() => expect(management.sendSignInCode).toHaveBeenCalledWith("op-b", "abc#def"));
+
+    const signedIn = { ...localController, status: { providers: [{ provider: "claude", installed: true, auth: "ok", auth_source: "sealed" }] } } as Controller;
+    setControllers([signedIn]);
+    await waitFor(() => expect(onboarding.createBuddy).toHaveBeenCalled(), { timeout: 8000 });
+    expect(onboarding.giveMachineLogin).not.toHaveBeenCalled();
+  }, 20000);
+
+  it("goes back to the providers with the device's reason when the browser sign-in fails", async () => {
+    device.snapshot = snapshot({ available: false, machine: null, controller: null });
+    setControllers([controller("missing")]);
+    management.startBrowserSignIn.mockResolvedValue("op-b");
+    management.browserSignIn.mockResolvedValue({ state: "failed", message: "That code wasn't accepted." });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }, { timeout: 6000 }));
+    fireEvent.click(screen.getByRole("button", { name: /Claude/, pressed: false }));
+    fireEvent.click(screen.getByRole("button", { name: "Start with Claude Code" }));
+    expect(await screen.findByText("That code wasn't accepted.", {}, { timeout: 4000 })).toBeTruthy();
+    expect(screen.getByText(/Pick an AI provider to power switch-buddy/)).toBeTruthy();
   }, 15000);
 });

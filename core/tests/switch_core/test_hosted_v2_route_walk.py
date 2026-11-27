@@ -48,6 +48,11 @@ NEW_ROUTES = {
     ),
     (
         "agent_bridge",
+        "PUT",
+        "/v1/management/controllers/{controller_id}/provider-credentials/{provider}",
+    ),
+    (
+        "agent_bridge",
         "POST",
         "/v1/management/controllers/{controller_id}/agents/{agent_id}/restart-notice",
     ),
@@ -74,6 +79,19 @@ NEW_ROUTES = {
     ("gateway", "POST", "/shared-cloud/users/{user_keyed_id}/pause"),
     ("gateway", "POST", "/shared-cloud/users/{user_keyed_id}/resume"),
     ("gateway", "PUT", "/tenants/{tenant_id}/hosted-people/{user_id}"),
+}
+# Routes upstream lacks that are not v2's: the browser sign-in on a machine,
+# from the onboarding work built on this branch. A person's own machine signs
+# in through a browser with v2 off too, so these carry no gate. They move into
+# the upstream fixture once main serves them.
+NOT_V2_ROUTES = {
+    ("agent_bridge", "PUT", "/v1/management/operations/{operation_id}/provider-login"),
+    (
+        "gateway",
+        "POST",
+        "/management/controllers/{controller_id}/provider-logins/{provider}/browser",
+    ),
+    ("gateway", "POST", "/management/operations/{operation_id}/sign-in-code"),
 }
 
 
@@ -136,13 +154,16 @@ def _new_routes() -> list[tuple[str, str, str, Any]]:
 
 def test_every_route_upstream_lacks_carries_the_switchs_gate() -> None:
     new = _new_routes()
-    assert {(name, method, path) for name, method, path, _ in new} == NEW_ROUTES
-    ungated = [
+    assert {(name, method, path) for name, method, path, _ in new} == (
+        NEW_ROUTES | NOT_V2_ROUTES
+    )
+    gated = {
         (name, method, path)
         for name, method, path, route in new
-        if not _gated(getattr(route, "dependant", None))
-    ]
-    assert ungated == []
+        if _gated(getattr(route, "dependant", None))
+    }
+    assert NEW_ROUTES - gated == set()
+    assert NOT_V2_ROUTES & gated == set()
 
 
 def test_nothing_upstream_serves_is_gone() -> None:

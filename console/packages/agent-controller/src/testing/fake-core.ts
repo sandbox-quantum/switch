@@ -106,6 +106,10 @@ export class FakeCore {
   readonly statusReports: StatusReport[] = [];
   readonly operations = new Map<string, Operation & { state: string }>();
   readonly results = new Map<string, OperationResult>();
+  /** Each operation's progress reports, in order. */
+  readonly progress = new Map<string, unknown[]>();
+  /** A code its owner sent an operation, handed over once on its next progress. */
+  readonly signInCodes = new Map<string, string>();
   readonly opens: Record<string, AgentCursor>[] = [];
   readonly beats: Record<string, number>[] = [];
   /** The machine's name and description, as `PATCH .../controllers/{id}` changes them. */
@@ -511,9 +515,27 @@ export class FakeCore {
         this.results.set(entry.id, result);
         entry.state = result.outcome;
       }
+      if (operation[2] === 'progress') {
+        if (entry.state === 'cancelled') return this.refuse(res, 410, 'cancelled');
+        this.progress.set(entry.id, [...(this.progress.get(entry.id) ?? []), body]);
+        const code = this.signInCodes.get(entry.id);
+        if (code !== undefined) {
+          this.signInCodes.delete(entry.id);
+          return this.json(res, 200, { input: { code } });
+        }
+      }
       res.writeHead(204);
       res.end();
       return;
+    }
+    const kept = url.pathname.match(/^\/v1\/management\/operations\/([^/]+)\/provider-login$/);
+    if (method === 'PUT' && kept) {
+      const entry = this.operations.get(decodeURIComponent(kept[1]!));
+      if (!entry || entry.state !== 'claimed') return this.refuse(res, 409, 'validation_error');
+      const provider = String(entry.params.provider);
+      const revision = (this.sealedLogins.get(provider)?.revision ?? 0) + 1;
+      this.sealedLogins.set(provider, { revision, sealed: (body as { sealed: unknown }).sealed });
+      return this.json(res, 200, { provider, revision });
     }
 
     // Acting as an agent: the agent comes from the header, and must be bound here.

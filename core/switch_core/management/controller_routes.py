@@ -96,6 +96,10 @@ from switch_core.management.schemas import (
     TokenRequest,
     wire_time,
 )
+from switch_core.management.sealed_logins import (
+    PutSealedLoginRequest,
+    ReplaceSealedLoginRequest,
+)
 from switch_core.management.service import ManagementService
 from switch_core.management.wake_replay import resume_cursors_after_wake
 
@@ -293,6 +297,25 @@ async def get_sealed_login(
     return JSONResponse(
         await management.own_sealed_login(session, principal, provider),
         headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.put(
+    "/v1/management/controllers/{controller_id}/provider-credentials/{provider}",
+    dependencies=[Depends(require_hosted_v2_here)],
+)
+async def replace_sealed_login(
+    provider: str,
+    body: ReplaceSealedLoginRequest,
+    principal: PathController,
+    management: Management,
+    session: Session,
+) -> dict[str, Any]:
+    """Keep a login this box's controller renewed itself, sealed to its own
+    key, in place of the revision it came from; 409 when Switch holds
+    another revision by then."""
+    return await management.replace_own_sealed_login(
+        session, principal, provider, body.sealed, body.replaces
     )
 
 
@@ -630,8 +653,32 @@ async def operation_progress(
     session: Session,
     body: ProgressRequest | None = None,
 ) -> Response:
-    await management.renew_operation(session, principal, operation_id)
-    return Response(status_code=204)
+    """Renews the lease and records the report. 204, or 200 `{input}` with
+    what the owner sent the operation since, handed over once."""
+    given = await management.renew_operation(
+        session,
+        principal,
+        operation_id,
+        body.model_dump(exclude_none=True) if body is not None else None,
+    )
+    if given is None:
+        return Response(status_code=204)
+    return JSONResponse({"input": given}, headers={"Cache-Control": "no-store"})
+
+
+@router.put("/v1/management/operations/{operation_id}/provider-login")
+async def keep_browser_login(
+    operation_id: str,
+    body: PutSealedLoginRequest,
+    principal: Principal,
+    management: Management,
+    session: Session,
+) -> dict[str, Any]:
+    """Keep the login a browser sign-in this controller holds ended with,
+    sealed to its own key, as one its owner gave it."""
+    return await management.keep_browser_login(
+        session, principal, operation_id, body.sealed
+    )
 
 
 @router.post("/v1/management/operations/{operation_id}/result", status_code=204)

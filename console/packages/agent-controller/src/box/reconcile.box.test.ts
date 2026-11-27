@@ -980,7 +980,13 @@ describe('a login fronted by the provider gateway', () => {
       ...deps(),
       gatewayEnv: async (agentId, login) =>
         agentId === 'agent-1' && login.kind === 'api-key'
-          ? { ANTHROPIC_BASE_URL: 'http://127.0.0.1:41000', ANTHROPIC_API_KEY: 'swpg_opaque' }
+          ? {
+              env: {
+                ANTHROPIC_BASE_URL: 'http://127.0.0.1:41000',
+                ANTHROPIC_API_KEY: 'swpg_opaque',
+              },
+              codexConfig: null,
+            }
           : null,
     });
     const launched = runtime.launches()[0]!;
@@ -991,6 +997,29 @@ describe('a login fronted by the provider gateway', () => {
     expect(JSON.stringify(launched.template)).not.toContain('REAL');
     // Still in a process of its own, as any given login.
     expect(launched.options.isolation).toBe('isolated');
+  });
+
+  it('points Codex at the gateway in its configuration, ahead of the agent’s own', async () => {
+    givenLogin = {
+      status: 'connected',
+      provider: 'codex',
+      revision: '1',
+      kind: 'auth-json',
+      credential: '{"tokens":{"access_token":"REAL"}}',
+    };
+    const config =
+      'model_provider = "switch_gateway"\nmodel_providers.switch_gateway = { name = "Switch provider gateway", base_url = "http://127.0.0.1:41000/backend-api/codex", env_key = "OPENAI_API_KEY", wire_api = "responses" }\n';
+    await reconcile(assignment(agent({}, { provider: 'codex' })), {
+      ...deps(),
+      gatewayEnv: async () => ({
+        env: { OPENAI_API_KEY: 'swpg_opaque', CODEX_API_KEY: '' },
+        codexConfig: config,
+      }),
+    });
+    const launched = runtime.launches()[0]!;
+    expect(launched.template.start.input.env).toMatchObject({ OPENAI_API_KEY: 'swpg_opaque' });
+    expect(launched.template.execution!.codexConfig.startsWith(config)).toBe(true);
+    expect(JSON.stringify(launched.template)).not.toContain('REAL');
   });
 
   it('with the gateway on, a login it can’t front isn’t put in the environment at all', async () => {

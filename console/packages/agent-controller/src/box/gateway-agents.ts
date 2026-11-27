@@ -1,13 +1,14 @@
-import type { CredentialChange } from '../reconcile';
+import type { ProviderReadiness } from '@switch-console/agent-providers';
+import type { CredentialChange, GatewayCli } from '../reconcile';
 import type { GatewayRecord } from '../runtime';
 import type { GivenLogin } from '../sealed-logins';
-import { gatewayPlanFor, type VertexTokenCache } from './gateway-logins';
+import { ChatgptRefreshRefused } from './chatgpt-tokens';
+import { gatewayPlanFor, type LoginCaches } from './gateway-logins';
 import type { ProviderGateway } from './provider-gateway';
 
 /** The provider gateway and what it needs, when the controller runs one. */
-export type GatewayDeps = {
+export type GatewayDeps = LoginCaches & {
   gateway: ProviderGateway;
-  vertex: VertexTokenCache;
   /** Logins already said to be refused, so each is said once (`agent:provider:revision`). */
   refusedSaid?: Set<string>;
 };
@@ -44,7 +45,7 @@ export function resolveGateway(
   change?: CredentialChange;
   refused?: boolean;
 } {
-  const plan = login ? gatewayPlanFor(login, deps.vertex) : null;
+  const plan = login ? gatewayPlanFor(login, deps) : null;
   if (login && plan) {
     const same = saved !== null && saved.provider === login.provider && saved.kind === login.kind;
     if (same) {
@@ -61,7 +62,10 @@ export function resolveGateway(
   }
   if (saved) {
     deps.gateway.forget(agentId);
-    if (!login) deps.vertex.forget(saved.provider);
+    if (!login) {
+      deps.vertex.forget(saved.provider);
+      deps.chatgpt.forget(saved.provider);
+    }
     // A login it can't front is refused, so the agent is left with none.
     return {
       fileLogin: null,
@@ -75,15 +79,20 @@ export function resolveGateway(
     : { fileLogin: null, record: null };
 }
 
-/** The CLI environment for an agent's gateway-backed login, or null when it isn't one. */
+/** The CLI's environment (and Codex's configuration) for an agent's gateway-backed login, or null when it isn't one. */
 export function gatewayEnvironment(
   login: GivenLogin,
   record: GatewayRecord | null | undefined,
   deps: GatewayDeps
-): Record<string, string> | null {
+): GatewayCli | null {
   if (!record || record.provider !== login.provider || record.kind !== login.kind) return null;
-  const plan = gatewayPlanFor(login, deps.vertex);
-  return plan ? plan.env(deps.gateway.endpoint, record.token) : null;
+  const plan = gatewayPlanFor(login, deps);
+  if (!plan) return null;
+  const endpoint = deps.gateway.endpoint;
+  return {
+    env: plan.env(endpoint, record.token),
+    codexConfig: plan.codexConfig ? plan.codexConfig(endpoint) : null,
+  };
 }
 
 /**
@@ -92,14 +101,23 @@ export function gatewayEnvironment(
  * way a real agent does, through the gateway, and never holds the login. The
  * token works for two minutes and five calls at most; call `done` when the
  * probe ends, and it stops at once. Null when the gateway can't front the login.
+ *
+ * Codex is the exception: it reaches the gateway only through configuration,
+ * which a probe can't carry, so its CLI would only say it isn't signed in.
+ * The gateway answers for it instead (`readiness`): a ChatGPT sign-in is
+ * signed in when the gateway holds a live access token for it, renewing it
+ * if it must, exactly as an agent's first call would.
  */
-export function gatewayProbe(
+export async function gatewayProbe(
   probeId: string,
   login: GivenLogin,
   deps: GatewayDeps
-): { env: Record<string, string>; done: () => void } | null {
-  const plan = gatewayPlanFor(login, deps.vertex);
+): Promise<
+  { env: Record<string, string>; done: () => void } | { readiness: ProviderReadiness } | null
+> {
+  const plan = gatewayPlanFor(login, deps);
   if (!plan) return null;
+  if (plan.codexConfig) return { readiness: await gatewayReadiness(plan.route.credential) };
   const token = deps.gateway.mintProbe(probeId, plan.route);
   let ended = false;
   return {
@@ -110,4 +128,24 @@ export function gatewayProbe(
       deps.gateway.forgetProbe(probeId);
     },
   };
+}
+
+async function gatewayReadiness(credential: () => Promise<unknown>): Promise<ProviderReadiness> {
+  try {
+    await credential();
+    return {
+      status: 'authenticated',
+      message: 'Signed in, through the provider gateway.',
+      models: [],
+    };
+  } catch (error) {
+    if (error instanceof ChatgptRefreshRefused)
+      return { status: 'unauthenticated', message: error.message, models: [] };
+    return {
+      status: 'unknown',
+      message:
+        error instanceof Error ? error.message : 'The provider gateway could not check this login.',
+      models: [],
+    };
+  }
 }

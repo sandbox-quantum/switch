@@ -5,8 +5,8 @@ import {
   type MachineProvidersHost,
   MachineProvidersTable,
 } from "@switch-console/chat-ui/components/machine-providers";
-import type { MachineLoginInput } from "@switch-console/chat-ui/contracts/machine-logins";
-import { providerLoginKinds } from "@switch-console/chat-ui/model/provider-catalogue";
+import type { BrowserSignInHost, MachineLoginInput } from "@switch-console/chat-ui/contracts/machine-logins";
+import { browserSignInKind, providerLoginKinds } from "@switch-console/chat-ui/model/provider-catalogue";
 import { failureText } from "@switch-console/chat-ui/model/failures";
 import { SHARED_UI_CLASS } from "@switch-console/chat-ui/model/scope";
 import type { ProviderLogin } from "@switch-console/chat-ui/model/seal-login";
@@ -16,9 +16,12 @@ import { QueryClient, useQuery } from "@tanstack/react-query";
 import {
   type Controller,
   type ProviderStatus,
+  browserSignIn,
   createOperation,
   fetchControllers,
   operationOutcome,
+  sendSignInCode,
+  startBrowserSignIn,
 } from "../../data/management";
 import { absoluteTitle, formatRelative } from "../../theme/format";
 import { giveMachineLogin } from "../get-started/onboarding";
@@ -120,10 +123,26 @@ export function providerReport(report: ProviderStatus) {
   return { provider: report.provider, ready: problem === null, problem };
 }
 
+/** Runs a browser sign-in for `provider` on the device: started there, followed and finished here. */
+export function browserSignInHost(device: Controller, provider: string): BrowserSignInHost {
+  const name = deviceName(device);
+  return {
+    start: () => startBrowserSignIn(device.id, provider),
+    read: (operationId) =>
+      browserSignIn(device.id, operationId, {
+        expired: `${name} did not finish the sign-in in time. Start it again.`,
+        cancelled: "A newer sign-in replaced this one.",
+        failed: `${name} could not sign in.`,
+      }),
+    sendCode: sendSignInCode,
+  };
+}
+
 /**
- * Gives the device a login for `provider`, sealed in this browser for the
- * device alone, and says whether the provider signs in with it there. Nothing
- * for a provider this page cannot give a login.
+ * Gives the device a login for `provider`: signed in through a browser on
+ * the device itself where it can be (first), or sealed in this browser for
+ * the device alone; and says whether the provider signs in with it there.
+ * Nothing for a provider this page cannot give a login.
  */
 export function DeviceLoginForm({
   device,
@@ -136,16 +155,18 @@ export function DeviceLoginForm({
   providerName: string;
   onClose: () => void;
 }) {
-  const kinds = providerLoginKinds(provider, false);
-  if (kinds.length === 0) return null;
+  const browser = browserSignInKind(provider, device.kind === "ec2");
+  const pasted = providerLoginKinds(provider, false);
+  if (pasted.length === 0) return null;
   const name = deviceName(device);
   return (
     <GiveMachineLogin
       machineName={name}
       provider={provider}
       providerName={providerName}
-      kinds={kinds}
+      kinds={browser ? [browser, ...pasted] : pasted}
       thisComputer={false}
+      browser={browser ? browserSignInHost(device, provider) : null}
       queryKey={PROVIDERS_KEY}
       give={(login) => giveMachineLogin(device, provider, providerLogin(login))}
       outcome={(operationId) =>

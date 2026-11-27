@@ -497,8 +497,34 @@ class _V1StatusReport(StatusReport):
     agents: list[_V1AgentStatus]  # type: ignore[assignment]
 
 
+class BrowserSignInProgress(_ControllerBody):
+    """Where a browser sign-in stands on the machine: the page to open, the
+    code to type there when the provider shows one (a device code), and
+    whether the CLI waits for a code pasted back from the page."""
+
+    url: str = Field(max_length=2048, pattern=r"^https://[^\s]+$")
+    user_code: str | None = Field(default=None, max_length=64)
+    needs_code: StrictBool
+
+
 class ProgressRequest(_ControllerBody):
-    message: str
+    message: str = Field(max_length=500)
+    sign_in: BrowserSignInProgress | None = None
+
+
+# What a sign-in page shows to paste back: printable ASCII on one line.
+SIGN_IN_CODE_PATTERN = r"^[\x21-\x7e]{1,2048}$"
+
+
+# Not strict, as the onboarding's new bodies are not: a field it does not know
+# is ignored rather than refused, so adding it raises no gateway-api revision.
+class SignInCodeRequest(BaseModel):
+    code: str = Field(pattern=SIGN_IN_CODE_PATTERN)
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def _trimmed(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
 
 class OperationFailure(_ControllerBody):
@@ -761,6 +787,7 @@ def operation_view(operation: AgentControllerOperation) -> dict[str, Any]:
         "state": operation.state,
         "lease_expires_at": wire_time_or_none(operation.lease_expires_at),
         "result": operation.result,
+        "progress": operation.progress,
         "created_by": operation.created_by,
         "created_at": wire_time(operation.created_at),
         "updated_at": wire_time(operation.updated_at),

@@ -1,12 +1,8 @@
 import AccountCircleOutlined from "@mui/icons-material/AccountCircleOutlined";
-import AddOutlined from "@mui/icons-material/AddOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
 import {
   Alert,
   Box,
-  Dialog,
-  DialogContent,
-  DialogTitle,
   Divider,
   Menu,
   MenuItem,
@@ -19,7 +15,6 @@ import { useState } from "react";
 import { Link as RouterLink, useLocation } from "react-router";
 import type { MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
-import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
 import { type RailItem as RailItemDefinition, railFor } from "../routes/routeTable";
 import ThemeModeToggle from "./ThemeModeToggle";
 import { useWebChats } from "../pages/chats/WebChatHost";
@@ -121,9 +116,8 @@ export function accountInitials(user: { name: string; email: string } | null): s
 
 const NavRailContent = observer(function NavRailContent() {
   const location = useLocation();
-  const { user, session, isOperator, capabilities, logout, logoutEverywhere } = useAuth();
+  const { user, isOperator, capabilities, logout, logoutEverywhere } = useAuth();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
   // What the menu last failed to do: signing out.
   const [menuError, setMenuError] = useState<string | null>(null);
   const webChats = useWebChats();
@@ -301,18 +295,6 @@ const NavRailContent = observer(function NavRailContent() {
           <AccountCircleOutlined sx={{ fontSize: 16 }} />
           Your account
         </MenuItem>
-        {session?.can_create_workspace && (
-          <MenuItem
-            onClick={() => {
-              setAnchor(null);
-              setCreateOpen(true);
-            }}
-            sx={{ gap: 1 }}
-          >
-            <AddOutlined sx={{ fontSize: 16 }} />
-            Create organization
-          </MenuItem>
-        )}
         <Divider sx={{ my: 0.5 }} />
         <Box
           sx={{
@@ -339,13 +321,6 @@ const NavRailContent = observer(function NavRailContent() {
           Sign out of all devices
         </MenuItem>
       </Menu>
-
-      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="xs" fullWidth>
-        <DialogTitle>Create an organization</DialogTitle>
-        <DialogContent sx={{ pt: "8px !important" }}>
-          <CreateWorkspaceForm landing="/" onCancel={() => setCreateOpen(false)} />
-        </DialogContent>
-      </Dialog>
 
       <Snackbar
         open={menuError !== null}

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-quer
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { BrowserSignInState } from '../contracts/machine-logins';
 import { GiveMachineLogin, type OperationOutcome } from './give-machine-login';
 import {
   type MachineProviderRow,
@@ -176,6 +177,7 @@ describe('GiveMachineLogin', () => {
         { value: 'vertex', label: 'Vertex AI' },
       ],
       thisComputer: false,
+      browser: null,
       queryKey: KEY,
       give: vi.fn(async () => 'op-9'),
       outcome: vi.fn(async (): Promise<OperationOutcome> => ({ state: 'succeeded' })),
@@ -278,6 +280,154 @@ describe('GiveMachineLogin', () => {
       source: 'typed',
       kind: 'auth-json',
       credential: auth,
+    });
+  });
+
+  describe('signing in through a browser', () => {
+    const browserKinds = [
+      { value: 'browser' as const, label: 'Sign in with browser' },
+      { value: 'setup-token' as const, label: 'Setup token' },
+    ];
+    const URL = 'https://claude.ai/oauth/authorize?code=true';
+
+    it('starts it first, opens the page, sends the code pasted, and says it signed in', async () => {
+      const states: BrowserSignInState[] = [
+        { state: 'starting' },
+        { state: 'open', url: URL, userCode: null, needsCode: true },
+      ];
+      let after: BrowserSignInState = { state: 'open', url: URL, userCode: null, needsCode: true };
+      const browser = {
+        start: vi.fn(async () => 'op-browser'),
+        read: vi.fn(async () => states.shift() ?? after),
+        sendCode: vi.fn(async () => {
+          after = { state: 'succeeded' };
+        }),
+      };
+      const read = renderWith(<GiveMachineLogin {...form({ kinds: browserKinds, browser })} />);
+      expect(screen.queryByLabelText('Setup token', { selector: 'input' })).toBeNull();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Start sign-in' }));
+      expect(await screen.findByText('Starting sign-in on laptop…')).toBeInTheDocument();
+      const page = await screen.findByRole(
+        'link',
+        { name: /Open sign-in page/ },
+        { timeout: 5000 }
+      );
+      expect(page).toHaveAttribute('href', URL);
+      expect(page).toHaveAttribute('target', '_blank');
+      expect(page).toHaveAttribute('rel', 'noopener noreferrer');
+
+      await userEvent.type(screen.getByLabelText('Sign-in code'), ' abc#def ');
+      await userEvent.click(screen.getByRole('button', { name: 'Send code' }));
+      expect(browser.sendCode).toHaveBeenCalledWith('op-browser', 'abc#def');
+      expect(
+        await screen.findByText('Signed in: Claude signs in on laptop.', {}, { timeout: 5000 })
+      ).toBeInTheDocument();
+      await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+      expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument();
+    });
+
+    it('shows a device code to copy, and offers to start again when it fails', async () => {
+      const browser = {
+        start: vi.fn(async () => 'op-codex'),
+        read: vi
+          .fn<() => Promise<BrowserSignInState>>()
+          .mockResolvedValueOnce({
+            state: 'open',
+            url: 'https://auth.openai.com/codex/device',
+            userCode: 'ABCD-12345',
+            needsCode: false,
+          })
+          .mockResolvedValue({ state: 'failed', message: 'The device code expired.' }),
+        sendCode: vi.fn(async () => {}),
+      };
+      renderWith(
+        <GiveMachineLogin
+          {...form({
+            provider: 'codex',
+            providerName: 'Codex',
+            kinds: [{ value: 'browser', label: 'Sign in with browser' }],
+            browser,
+          })}
+        />
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Start sign-in' }));
+      expect(await screen.findByText('ABCD-12345')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Sign-in code')).toBeNull();
+      expect(
+        await screen.findByText('The device code expired.', {}, { timeout: 5000 })
+      ).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Start again' }));
+      expect(browser.start).toHaveBeenCalledTimes(2);
+    });
+
+    it('waits on a Cursor sign-in with nothing to type, and asks Antigravity for the code or address', async () => {
+      const open = (url: string, needsCode: boolean): BrowserSignInState => ({
+        state: 'open',
+        url,
+        userCode: null,
+        needsCode,
+      });
+      const cursor = {
+        start: vi.fn(async () => 'op-cursor'),
+        read: vi.fn(async () => open('https://cursor.com/loginDeepControl?uuid=u', false)),
+        sendCode: vi.fn(async () => {}),
+      };
+      const only = [{ value: 'browser' as const, label: 'Sign in with browser' }];
+      renderWith(
+        <GiveMachineLogin
+          {...form({ provider: 'cursor', providerName: 'Cursor', kinds: only, browser: cursor })}
+        />
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Start sign-in' }));
+      expect(
+        await screen.findByText('Waiting for you to finish signing in on the page…')
+      ).toBeInTheDocument();
+      expect(screen.queryByLabelText('Sign-in code')).toBeNull();
+      cleanup();
+
+      const agy = {
+        start: vi.fn(async () => 'op-agy'),
+        read: vi.fn(async () => open('https://accounts.google.com/o/oauth2/auth?x=1', true)),
+        sendCode: vi.fn(async () => {}),
+      };
+      renderWith(
+        <GiveMachineLogin
+          {...form({
+            provider: 'antigravity',
+            providerName: 'Antigravity',
+            kinds: only,
+            browser: agy,
+          })}
+        />
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Start sign-in' }));
+      expect(await screen.findByText(/full address of the page you landed on/)).toBeInTheDocument();
+      await userEvent.type(
+        screen.getByLabelText('Sign-in code'),
+        'https://antigravity.google/oauth-callback?code=4/x&state=s'
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Send code' }));
+      expect(agy.sendCode).toHaveBeenCalledWith(
+        'op-agy',
+        'https://antigravity.google/oauth-callback?code=4/x&state=s'
+      );
+    });
+
+    it('says why it could not be started', async () => {
+      const browser = {
+        start: vi.fn(async () => {
+          throw new Error('This device has no key to keep a login with yet.');
+        }),
+        read: vi.fn(),
+        sendCode: vi.fn(),
+      };
+      renderWith(<GiveMachineLogin {...form({ kinds: browserKinds, browser })} />);
+      await userEvent.click(screen.getByRole('button', { name: 'Start sign-in' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'The sign-in could not be started on laptop.'
+      );
+      expect(screen.getByRole('button', { name: 'Start again' })).toBeInTheDocument();
     });
   });
 });

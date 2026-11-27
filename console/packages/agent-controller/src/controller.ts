@@ -12,6 +12,11 @@ import {
   type OpenWebSocket,
 } from './api';
 import type { BoxController, BoxControllerDeps } from './box/controller-box';
+import {
+  BROWSER_SIGN_IN_PROGRESS_MS,
+  BROWSER_SIGN_IN_TIMEOUT_MS,
+  signInWithBrowser,
+} from './browser-login';
 import { ConfigurationError } from './errors';
 import { HubSocket } from './hub-socket';
 import { errorMessage, type Logger } from './log';
@@ -574,6 +579,7 @@ export async function runController(
     void registerSealingKey(client, keys, log).then((registered) => {
       if (!registered) providers.disableGiven();
     });
+  boxed?.setLoginSaver(keys ? { client, keys, controllerId: identity.controllerId } : null);
   const offered = providersFor(deps.box);
   const providers = new ProviderStatuses({
     providers: offered,
@@ -705,6 +711,13 @@ export async function runController(
     });
   };
 
+  const takeUpLogin = async (provider: Provider) => {
+    const status = await providers.check(provider, { verify: true });
+    await reporter?.sendNow();
+    void reconcileLocally();
+    return { status, problem: providers.loginProblem(provider) };
+  };
+
   let operationsQueued = false;
   const runOperations = (): Promise<void> => {
     if (operationsQueued) return Promise.resolve();
@@ -744,12 +757,20 @@ export async function runController(
             void reconcileLocally();
             return status;
           },
-          takeUpLogin: async (provider) => {
-            const status = await providers.check(provider, { verify: true });
-            await reporter?.sendNow();
-            void reconcileLocally();
-            return { status, problem: providers.loginProblem(provider) };
-          },
+          takeUpLogin,
+          signInWithBrowser: async (operationId, provider) =>
+            boxed?.browserSignInRefusal(provider) ??
+            signInWithBrowser(operationId, provider, {
+              client,
+              keys,
+              controllerId: identity.controllerId,
+              binaryPath: (name) => providers.binaryPath(name),
+              takeUpLogin: (name) => queue.run(() => takeUpLogin(name)),
+              signal: stop.signal,
+              timeoutMs: BROWSER_SIGN_IN_TIMEOUT_MS,
+              progressEveryMs: BROWSER_SIGN_IN_PROGRESS_MS,
+              log,
+            }),
           restartController: () => {
             if (!deps.supervised)
               return {
