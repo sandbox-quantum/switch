@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
@@ -323,16 +324,31 @@ def load_hosted_settings(
         )
         if getattr(settings, name) is not None
     ]
-    if holds and Path(path).stat().st_mode & 0o077:
+    if holds and not _readable_by_core_only(Path(path).stat()):
         # Box provisioning and the operator bearer: a file holding the
         # provisioner's or the operator's bearer is Core's alone. Only checked
         # when it holds one, so an existing config isn't refused for a
         # credential it doesn't carry.
         raise ValueError(
             "HOSTED_CONTROLLER_CONFIG_PATH holds the provisioner's or the operator's "
-            "credential, so it must be readable by Core's user only (0400 or 0600)."
+            "credential, so it must be readable by Core's user only (0400 or 0600, "
+            "or a mounted Secret readable by Core's group alone)."
         )
     return settings
+
+
+def _readable_by_core_only(st: os.stat_result) -> bool:
+    """Core's own file: 0400 or 0600. A Kubernetes Secret mounted with an
+    `fsGroup` is owned by root and group-readable by that group (0440, whatever
+    the volume's defaultMode), which the pod running Core as that group is the
+    only one to read; that counts as Core's too."""
+    if not st.st_mode & 0o077:
+        return True
+    return (
+        st.st_uid != os.getuid()
+        and st.st_mode & 0o777 == 0o440
+        and st.st_gid in {os.getgid(), *os.getgroups()}
+    )
 
 
 def log_operator_overlaps(

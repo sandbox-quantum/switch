@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -342,6 +343,66 @@ def test_a_shared_file_with_the_operator_bearer_is_refused(tmp_path: Path) -> No
     body = {**BASE_FILE, "operator_token": OPERATOR}
     with pytest.raises(ValueError, match="Core's user only"):
         load_hosted_settings(_write(tmp_path, body, 0o640))
+
+
+def _stat_as(path: str, **fields: int) -> os.stat_result:
+    st = os.stat(path)
+    values = list(st)
+    for name, value in fields.items():
+        values[
+            ["st_mode", "st_ino", "st_dev", "st_nlink", "st_uid", "st_gid"].index(name)
+        ] = value
+    return os.stat_result(values)
+
+
+def test_a_secret_mounted_for_cores_group_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Kubernetes Secret volume with an fsGroup: root's, 0440, Core's group."""
+    body = {**BASE_FILE, "operator_token": OPERATOR}
+    path = _write(tmp_path, body, 0o400)
+    mounted = _stat_as(
+        path, st_mode=0o100440, st_uid=os.getuid() + 1, st_gid=os.getgid()
+    )
+    monkeypatch.setattr(Path, "stat", lambda self, **_: mounted)
+    settings = load_hosted_settings(path)
+    assert settings is not None and settings.operator_token is not None
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"st_mode": 0o100440, "st_uid": -1, "st_gid": -1},  # another group's
+        {"st_mode": 0o100444, "st_uid": -1, "st_gid": 0},  # anyone's
+        {"st_mode": 0o100460, "st_uid": -1, "st_gid": 0},  # the group may write
+        {
+            "st_mode": 0o100440,
+            "st_uid": 0,
+            "st_gid": 0,
+        },  # Core's own file, group-readable
+    ],
+    ids=[
+        "another-group",
+        "world-readable",
+        "group-writable",
+        "own-file-group-readable",
+    ],
+)
+def test_a_mounted_secret_readable_beyond_cores_group_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fields: dict
+) -> None:
+    body = {**BASE_FILE, "operator_token": OPERATOR}
+    path = _write(tmp_path, body, 0o400)
+    me, mine = os.getuid(), os.getgid()
+    resolved = {
+        "st_mode": fields["st_mode"],
+        "st_uid": me if fields["st_uid"] == 0 else me + 1,
+        "st_gid": mine if fields["st_gid"] == 0 else mine + 12345,
+    }
+    stat = _stat_as(path, **resolved)
+    monkeypatch.setattr(Path, "stat", lambda self, **_: stat)
+    with pytest.raises(ValueError, match="Core's user only"):
+        load_hosted_settings(path)
 
 
 @pytest.mark.parametrize("mode", [0o400, 0o600])
