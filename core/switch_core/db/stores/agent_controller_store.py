@@ -332,10 +332,11 @@ class AgentControllerStore:
         provider: str,
         sealed: dict[str, Any],
         replaces: int,
+        sealed_by: str,
     ) -> SealedProviderLogin | None:
         """Store `sealed` under the next revision only while the login is still
-        at revision `replaces`, keeping who gave it; None when it isn't (another
-        login was given or it was withdrawn since)."""
+        at revision `replaces` and `sealed_by`'s, keeping who gave it; None when
+        it isn't (another login was given or it was withdrawn since)."""
         result = await session.execute(
             update(SealedProviderLogin)
             .where(
@@ -343,6 +344,7 @@ class AgentControllerStore:
                 SealedProviderLogin.controller_id == controller_id,
                 SealedProviderLogin.provider == provider,
                 SealedProviderLogin.revision == replaces,
+                SealedProviderLogin.sealed_by == sealed_by,
             )
             .values(
                 revision=SealedProviderLogin.revision + 1,

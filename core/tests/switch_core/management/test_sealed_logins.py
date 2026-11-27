@@ -12,8 +12,11 @@ import base64
 import os
 
 import pytest
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.db.models import TENANT_ZERO_ID, SealedProviderLogin
+from switch_core.db.session_scope import tenant_session
 from switch_core.management.sealed_logins import key_id
 from tests.switch_core.management.harness import (
     EnrolledController,
@@ -147,7 +150,12 @@ class TestSealedLogins:
         }
         assert fetched.status_code == 200, fetched.text
         assert fetched.headers["cache-control"] == "no-store"
-        assert fetched.json() == {"provider": "claude", "revision": 1, "sealed": sealed}
+        assert fetched.json() == {
+            "provider": "claude",
+            "revision": 1,
+            "sealed": sealed,
+            "sealed_by": owner.id,
+        }
         assert [operation["kind"] for operation in pending.json()["operations"]] == [
             "provider.login"
         ]
@@ -376,7 +384,12 @@ class TestRenewedLogins:
         assert "ciphertext" not in kept.json()
         # The owner gave another login meanwhile, or another renewal landed: refused.
         assert stale.status_code == 409, stale.text
-        assert fetched.json() == {"provider": "codex", "revision": 2, "sealed": renewed}
+        assert fetched.json() == {
+            "provider": "codex",
+            "revision": 2,
+            "sealed": renewed,
+            "sealed_by": owner.id,
+        }
         # Renewing asks the controller to do nothing: no operation is queued for it.
         assert [op["kind"] for op in pending.json()["operations"]] == ["provider.login"]
 
@@ -419,6 +432,47 @@ class TestRenewedLogins:
         assert foreign.status_code == 409, foreign.text
         assert withdrawn.status_code == 409, withdrawn.text
         assert fetched.status_code == 404, fetched.text
+
+    async def test_a_renewal_never_replaces_a_login_another_person_gave(
+        self, harness: Harness
+    ) -> None:
+        """Only the controller's owner gives it logins, so this can't happen
+        through the API; the row is changed underneath to show the renewal
+        itself refuses it."""
+        owner = await add_member(harness.session_factory, "ada")
+        other = await add_member(harness.session_factory, "bo")
+        key = _b64(32)
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await _register_key(client, controller, key)
+            await _on_box(harness, controller)
+            await client.put(
+                _logins_path(controller, "codex"),
+                json={"sealed": _sealed(key)},
+                cookies=cookies_for(owner),
+            )
+            async with tenant_session(
+                harness.session_factory, TENANT_ZERO_ID
+            ) as session:
+                await session.execute(
+                    update(SealedProviderLogin)
+                    .where(
+                        SealedProviderLogin.controller_id == controller.controller_id
+                    )
+                    .values(sealed_by=other.id)
+                )
+                await session.commit()
+            refused = await client.put(
+                _credentials_path(controller, "codex"),
+                json={"sealed": _sealed(key), "replaces": 1},
+                headers=controller.headers,
+            )
+            fetched = await client.get(
+                _credentials_path(controller, "codex"), headers=controller.headers
+            )
+        assert refused.status_code == 409, refused.text
+        assert fetched.json()["revision"] == 1
+        assert fetched.json()["sealed_by"] == other.id
 
     async def test_only_a_box_keeps_a_login_it_renewed(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")

@@ -51,7 +51,11 @@ Each item below is gated on box mode, with a test for box on and one showing box
   sign-ins.
 - A Codex ChatGPT sign-in (browser or a pasted sign-in file) is held by the gateway (`chatgpt-tokens.ts`), which
   renews the access token before it expires and once when the backend refuses it, one refresh at a time for every
-  agent, and keeps each rotation with Switch, sealed again, in place of the revision it came from. Codex reads its
+  agent, and keeps each rotation with Switch, sealed again, in place of the revision it came from. It is held per
+  person who gave the login (`sealed_by`), and the gateway fronts a login only for agents whose owner (`owner_id` in
+  the assignment) is that person; Switch keeps a rotation only over that person's own login. Every login and agent on
+  a box is its one owner's today (Core places agents and takes logins only on the caller's own controllers), so this
+  is a check, not a split that happens. Codex reads its
   base URL from configuration only, so a gateway-backed Codex login reaches its sessions as a `switch_gateway`
   provider in their configuration plus the agent's token in `OPENAI_API_KEY`; a split box's sign-in check of it is
   answered by the gateway, as Codex's own check can't carry that configuration.

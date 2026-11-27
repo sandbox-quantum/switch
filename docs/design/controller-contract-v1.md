@@ -81,6 +81,7 @@ type Assignment = {
 
 type AgentAssignment = {
   agent_id: string
+  owner_id: string                    // the agent's owner. Absent from servers that predate it
   revision: number                    // bumps on any change to this agent. Used for fencing
   desired_state: "running" | "stopped"
   definition: AgentDefinition
@@ -333,7 +334,7 @@ type ServiceResources =
 
 ```
 GET /v1/management/controllers/{id}/provider-credentials/{provider}
-  → 200 { provider: string, revision: int, sealed: SealedLogin }   // Cache-Control: no-store
+  → 200 { provider: string, revision: int, sealed: SealedLogin, sealed_by: string }   // Cache-Control: no-store; sealed_by: the user who gave it, absent from servers that predate it
   → 404 provider_login_missing
 PUT /v1/management/controllers/{id}/provider-credentials/{provider}  { sealed: SealedLogin, replaces: int }
   → 200 { provider, revision, key_id, updated_at }   // a box's controller only, hosted agents v2 on
@@ -354,7 +355,7 @@ type SealedLogin = {
 - **Browser sign-in.** The owner has the machine sign a provider in itself with `POST /gateway/management/controllers/{id}/provider-logins/{provider}/browser`, which answers `{ operation }`: `provider.login` `{ provider, method: "browser" }`. Starting another for the same provider there cancels the one running. The controller runs the provider's own sign-in (Claude Code: `claude setup-token`, under a terminal; Codex: `codex login --device-auth`, with a `CODEX_HOME` of its own; OpenCode: `opencode auth login` with its ChatGPT device-code method, under XDG folders of its own; Cursor: `agent login`; Antigravity: `agy acp --login`) and reports `progress` every couple of seconds with `sign_in` once the CLI printed its page. The owner opens `url` in a browser; for Codex and OpenCode they type `user_code` there, for Cursor they only sign in, for Claude Code and Antigravity they paste the code the page shows (for Antigravity, or the page's full address) back with `POST /gateway/management/operations/{op_id}/sign-in-code` `{ code }` (the owner's alone, printable ASCII on one line, once per sign-in, and only while `needs_code`), which the controller types in when its next `progress` answers with it. The CLI ends with a setup token (Claude Code) or an `auth.json` (Codex and OpenCode, read and then removed): the controller seals it to its own key, keeps it with `PUT /v1/management/operations/{op_id}/provider-login` (only while it holds that operation), and then takes it up exactly as a login given on demand, reporting the result the same way. So it outlives the controller and is withdrawn with `DELETE …/provider-logins/{provider}`. Cursor and Antigravity keep the login inside their own CLI (the system keychain, or a file in the user's profile without one), the only place they read such a sign-in from: the controller keeps nothing with Switch, checks the provider, and reports the result; the machine is signed in as if by hand, and is signed out there, not from Switch. The sign-in is ended after 10 minutes, when the operation is cancelled, and when the controller stops; a code the CLI refuses fails it at once with the CLI's words. A cloud device (`kind: "ec2"`) signs in only Claude Code and Codex this way; any other provider is refused (422) and takes a login given on demand instead. Its agents' CLIs never hold the real login: the provider gateway fronts it, and of these sign-ins it fronts Claude Code's setup token and Codex's ChatGPT sign-in.
 - The controller **prefers a local login** (`auth_source: "local"`). It uses a sealed one (`auth_source: "sealed"`) only for a provider it has no local login for, and only once the provider signs in with it. An agent using one gets it with its relay credentials, and is restarted when the login changes or is withdrawn.
 - On Switch EC2, the same sealed logins apply: no KMS is involved.
-- When a CLI refreshes and rotates a login on the machine, the controller doesn't upload it back. The one exception is a box's provider gateway, which renews a Codex ChatGPT sign-in itself (its refresh token rotates and is refused once used): it seals each rotation to its own key and keeps it with `PUT …/provider-credentials/{provider}` in place of the revision it came from, so the login outlives the box's controller. A login given or withdrawn since wins (409), and a renewal queues no operation.
+- When a CLI refreshes and rotates a login on the machine, the controller doesn't upload it back. The one exception is a box's provider gateway, which renews a Codex ChatGPT sign-in itself (its refresh token rotates and is refused once used): it seals each rotation to its own key and keeps it with `PUT …/provider-credentials/{provider}` in place of the revision it came from, so the login outlives the box's controller. A login given or withdrawn since wins (409), as does one another person gave, and a renewal queues no operation. The gateway fronts a login only for agents whose `owner_id` is its `sealed_by`.
 
 ---
 

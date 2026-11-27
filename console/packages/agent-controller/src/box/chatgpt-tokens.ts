@@ -209,6 +209,7 @@ export class ChatgptTokens {
    * A newer revision of it is what later saves replace.
    */
   adopt(login: GivenLogin): boolean {
+    if (login.owner !== this.login.owner) return false;
     const auth = parseChatgptSignIn(login.credential);
     const tokens = auth ? tokensOf(auth) : null;
     if (!tokens || !this.lineage.has(digest(tokens.refresh))) return false;
@@ -341,28 +342,36 @@ export class ChatgptTokens {
 }
 
 /**
- * One `ChatgptTokens` per provider's sign-in, shared by every agent on the
- * box, so their refreshes are one. A login Switch gives again after a save
- * (or a copy fetched before the save landed) keeps the tokens held; a new
- * sign-in replaces them.
+ * One `ChatgptTokens` per person's sign-in for a provider (keyed by the user
+ * who gave the login and the provider), shared by that person's agents on the
+ * box, so their refreshes are one; another person's agents never reach it.
+ * A login Switch gives again after a save (or a copy fetched before the save
+ * landed) keeps the tokens held; a new sign-in replaces them.
  */
 export class ChatgptTokenCache {
-  private readonly byProvider = new Map<string, ChatgptTokens>();
+  private readonly byOwner = new Map<string, ChatgptTokens>();
 
   constructor(private readonly make: (login: GivenLogin) => ChatgptTokens) {}
 
   for(login: GivenLogin): ChatgptTokens {
-    const held = this.byProvider.get(login.provider);
+    const key = cacheKey(login.owner, login.provider);
+    const held = this.byOwner.get(key);
     if (held?.adopt(login)) return held;
     held?.clear();
     const tokens = this.make(login);
-    this.byProvider.set(login.provider, tokens);
+    this.byOwner.set(key, tokens);
     return tokens;
   }
 
-  /** The login was withdrawn: its tokens go. */
-  forget(provider: string): void {
-    this.byProvider.get(provider)?.clear();
-    this.byProvider.delete(provider);
+  /** `owner`'s login was withdrawn: its tokens go. */
+  forget(owner: string | undefined, provider: string): void {
+    const key = cacheKey(owner, provider);
+    this.byOwner.get(key)?.clear();
+    this.byOwner.delete(key);
   }
+}
+
+/** A login from a server that names no owner keys as nobody's (`''`): a box's logins are then all its one owner's. */
+function cacheKey(owner: string | undefined, provider: string): string {
+  return JSON.stringify([owner ?? '', provider]);
 }

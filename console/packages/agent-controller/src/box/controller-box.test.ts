@@ -865,6 +865,48 @@ describe('runController on a split box with the provider gateway', () => {
   });
 });
 
+describe('runController with the provider gateway, for agents of two people', () => {
+  it('fronts a given login only for the agents of the person who gave it', async () => {
+    const keys = generateSealingKeyPair();
+    await secrets.set(SEALING_KEY, JSON.stringify(keys));
+    core.sealedLogins.set('claude', {
+      revision: 1,
+      sealed: sealProviderLogin({
+        publicKey: keys.publicKey,
+        controllerId: core.controllerId,
+        provider: 'claude',
+        login: { kind: 'api-key', credential: 'sk-ant-api03-REAL-1' },
+      }),
+      sealed_by: 'user-ada',
+    } as never);
+    runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+    runtime.loginReadiness = { status: 'authenticated', message: 'Signed in.', models: [] };
+    const errors: string[] = [];
+    const log = { ...silentLogger, error: (message: string) => void errors.push(message) };
+    const ada = agent(1, { owner_id: 'user-ada' });
+    const bo = agent(1, {
+      agent_id: 'agent-2',
+      owner_id: 'user-bo',
+      definition: { ...ada.definition, name: 'other' },
+    });
+    core.setAssignment({ revision: 1, agents: [ada, bo] });
+    running = runController({ ...boxDeps({ providerGateway: true }), log }, stop.signal);
+    await waitFor(
+      () => runtime.credentials.get('agent-1')?.gateway?.token.startsWith('swpg_') === true,
+      'Ada’s agent on the gateway'
+    );
+    await waitFor(
+      () => errors.some((message) => message.includes('another person')),
+      'Bo’s agent refused Ada’s login'
+    );
+    expect(runtime.credentials.get('agent-2')?.gateway).toBeUndefined();
+    expect(runtime.credentials.get('agent-2')?.providerLogin ?? null).toBeNull();
+    expect(JSON.stringify(runtime.launches('agent-2'))).not.toContain('REAL');
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+});
+
 describe('frontable', () => {
   it('takes as usable exactly the logins the gateway fronts', () => {
     const gateway = {

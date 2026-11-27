@@ -9,6 +9,7 @@ import { fakeAccessToken, fakeChatgptSignIn } from '../testing/chatgpt-sign-in';
 import { FakeRuntime } from '../testing/fake-runtime';
 import { ChatgptTokenCache, ChatgptTokens } from './chatgpt-tokens';
 import {
+  foreignLogin,
   type GatewayDeps,
   gatewayEnvironment,
   gatewayProbe,
@@ -125,13 +126,34 @@ afterEach(async () => {
 });
 
 /** In box mode with the gateway on, as the box controller passes it (`BoxController.frontLogin`). */
-const ensure = (login: GivenLogin | null, gw: GatewayDeps = deps) =>
-  ensureRelayCredentials(AGENT, login, {
+const ensure = (
+  login: GivenLogin | null,
+  gw: GatewayDeps = deps,
+  agentId = AGENT,
+  owner?: string
+) =>
+  ensureRelayCredentials(agentId, login, {
     runtime,
     relay,
     log: silentLogger,
-    box: { front: (agentId, current, saved) => resolveGateway(agentId, current, saved, gw) },
+    box: { front: (id, current, saved) => resolveGateway(id, owner, current, saved, gw) },
   });
+
+/** Calls the ChatGPT backend through the gateway as Codex would; resolves with the status. */
+function callCodexAs(gw: GatewayDeps, token: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = request(`${gw.gateway.endpoint}/backend-api/codex/responses`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    });
+    req.on('response', (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode ?? 0));
+    });
+    req.on('error', reject);
+    req.end('{}');
+  });
+}
 
 describe('a gateway-backed login', () => {
   it('is never written to the credentials file: only the opaque token is', async () => {
@@ -273,6 +295,66 @@ describe('a renewed Codex ChatGPT sign-in', () => {
   });
 });
 
+describe('two people’s agents on one box', () => {
+  const ADA = 'user-ada';
+  const BO = 'user-bo';
+  const signIn = (owner: string, marker: string, revision: string): GivenLogin =>
+    given(revision, {
+      provider: 'codex',
+      kind: 'auth-json',
+      owner,
+      credential: fakeChatgptSignIn({
+        expMs: Date.now() + 3_600_000,
+        refresh: `rt-${marker}`,
+        marker,
+      }),
+    });
+  const adaLogin = signIn(ADA, 'ada', '1');
+  const boLogin = signIn(BO, 'bo', '5');
+  const tokenOf = (agentId: string) => runtime.credentials.get(agentId)!.gateway!.token;
+
+  it('each get their own token, and each call carries their own person’s bearer', async () => {
+    await ensure(adaLogin, deps, 'agent-ada', ADA);
+    await ensure(boLogin, deps, 'agent-bo', BO);
+    expect(tokenOf('agent-ada')).not.toBe(tokenOf('agent-bo'));
+    expect(deps.chatgpt.for(adaLogin)).not.toBe(deps.chatgpt.for(boLogin));
+    expect(await callCodexAs(deps, tokenOf('agent-ada'))).toBe(200);
+    expect(await callCodexAs(deps, tokenOf('agent-bo'))).toBe(200);
+    expect(seen.map((headers) => headers.authorization)).toEqual([
+      `Bearer ${JSON.parse(adaLogin.credential).tokens.access_token}`,
+      `Bearer ${JSON.parse(boLogin.credential).tokens.access_token}`,
+    ]);
+  });
+
+  it('never fronts one person’s sign-in for another’s agent, and leaves the owner’s alone', async () => {
+    await ensure(adaLogin, deps, 'agent-ada', ADA);
+    const adaTokens = deps.chatgpt.for(adaLogin);
+    // Bo's agent, never given a login of its own, is refused Ada's: no token at all.
+    expect(await ensure(adaLogin, deps, 'agent-bo', BO)).toBe('relay');
+    expect(runtime.credentials.get('agent-bo')!.gateway).toBeUndefined();
+    expect(deps.gateway.has('agent-bo')).toBe(false);
+    // Bo's agent holding a token for Bo's sign-in, then handed Ada's: its token stops working.
+    await ensure(boLogin, deps, 'agent-bo', BO);
+    const boToken = tokenOf('agent-bo');
+    expect(await ensure(adaLogin, deps, 'agent-bo', BO)).toBe('withdrawn');
+    expect(runtime.credentials.get('agent-bo')!.gateway).toBeUndefined();
+    expect(await callCodexAs(deps, boToken)).toBe(401);
+    // Ada's agent and sign-in carry on untouched.
+    expect(deps.chatgpt.for(adaLogin)).toBe(adaTokens);
+    expect(await callCodexAs(deps, tokenOf('agent-ada'))).toBe(200);
+    expect(seen.map((headers) => headers.authorization)).toEqual([
+      `Bearer ${JSON.parse(adaLogin.credential).tokens.access_token}`,
+    ]);
+  });
+
+  it('only tells owners apart when the server names both', () => {
+    expect(foreignLogin(BO, adaLogin)).toBe(true);
+    expect(foreignLogin(ADA, adaLogin)).toBe(false);
+    expect(foreignLogin(undefined, adaLogin)).toBe(false);
+    expect(foreignLogin(BO, { ...adaLogin, owner: undefined })).toBe(false);
+  });
+});
+
 describe('a probe of a login', () => {
   it('runs through the gateway with a short-lived token, never the login, and stops when done', async () => {
     const probe = (await gatewayProbe('probe-1', given('1'), deps)) as {
@@ -369,13 +451,15 @@ describe('a withdrawn Vertex login', () => {
     });
     const vertexDeps: GatewayDeps = { gateway: gw, vertex, chatgpt: chatgptCache() };
     const login = given('1', { kind: 'vertex', credential: VERTEX });
-    const first = resolveGateway(AGENT, login, null, vertexDeps);
+    const first = resolveGateway(AGENT, undefined, login, null, vertexDeps);
     expect(made).toBe(1);
     // The same revision again reuses the cache.
-    resolveGateway(AGENT, login, first.record, vertexDeps);
+    resolveGateway(AGENT, undefined, login, first.record, vertexDeps);
     expect(made).toBe(1);
     // Withdrawn: the agent's route goes, and so do the cached tokens holding the opened login.
-    expect(resolveGateway(AGENT, null, first.record, vertexDeps).change).toBe('withdrawn');
+    expect(resolveGateway(AGENT, undefined, null, first.record, vertexDeps).change).toBe(
+      'withdrawn'
+    );
     vertex.for(login);
     expect(made).toBe(2);
   });

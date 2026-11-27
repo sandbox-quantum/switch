@@ -39,6 +39,7 @@ import { readBoxMemory } from './box-memory';
 import { ChatgptTokenCache, ChatgptTokens, LoginReplaced, type SaveLogin } from './chatgpt-tokens';
 import { valveLimits } from './controller-reserve';
 import {
+  foreignLogin,
   type GatewayDeps,
   gatewayEnvironment,
   gatewayProbe,
@@ -475,16 +476,25 @@ export class BoxController {
     if (!gateway) return undefined;
     const said = new Set<string>();
     return (agentId, login, saved) => {
-      const fronted = resolveGateway(agentId, login, saved, gateway);
+      const owner = this.ctx
+        .assignment()
+        ?.agents.find((entry) => entry.agent_id === agentId)?.owner_id;
+      const fronted = resolveGateway(agentId, owner, login, saved, gateway);
       if (fronted.refused && login) {
         const key = `${agentId}:${login.provider}:${login.revision}`;
         if (!said.has(key)) {
           said.add(key);
-          this.log.warn('A given login is not used: the provider gateway cannot front it', {
-            agentId,
-            provider: login.provider,
-            kind: login.kind,
-          });
+          if (foreignLogin(owner, login))
+            this.log.error(
+              'A given login is not used: it belongs to another person than the agent’s owner',
+              { agentId, provider: login.provider }
+            );
+          else
+            this.log.warn('A given login is not used: the provider gateway cannot front it', {
+              agentId,
+              provider: login.provider,
+              kind: login.kind,
+            });
         }
       }
       return fronted;

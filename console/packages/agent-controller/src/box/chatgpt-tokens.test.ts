@@ -316,8 +316,67 @@ describe('one sign-in for every agent', () => {
     const other = given(fakeChatgptSignIn({ expMs: NOW + 3_600_000, refresh: 'rt-other' }), '3');
     expect(cache.for(other)).not.toBe(held);
     expect(made()).toBe(2);
-    cache.forget('codex');
+    cache.forget(undefined, 'codex');
     cache.for(other);
     expect(made()).toBe(3);
+  });
+});
+
+describe('one sign-in per person', () => {
+  const ADA = 'user-ada';
+  const BO = 'user-bo';
+  const owned = (owner: string, credential: string, revision: string): GivenLogin => ({
+    ...given(credential, revision),
+    owner,
+  });
+
+  it('keeps each person’s apart, even for the same sign-in file, and forgets only theirs', () => {
+    const cache = new ChatgptTokenCache(
+      (login) => new ChatgptTokens(login, { save: null, log: recordingLog(), now: () => NOW })
+    );
+    const file = fakeChatgptSignIn({ expMs: NOW + 3_600_000, refresh: 'rt-1' });
+    const ada = cache.for(owned(ADA, file, '1'));
+    // The same tokens given by another person are never taken for Ada's.
+    const bo = cache.for(owned(BO, file, '1'));
+    expect(bo).not.toBe(ada);
+    expect(cache.for(owned(ADA, file, '2'))).toBe(ada);
+    expect(cache.for(owned(BO, file, '2'))).toBe(bo);
+    cache.forget(BO, 'codex');
+    expect(cache.for(owned(ADA, file, '2'))).toBe(ada);
+    expect(cache.for(owned(BO, file, '2'))).not.toBe(bo);
+  });
+
+  it('renews and keeps one person’s rotation as theirs only, never touching the other’s', async () => {
+    const endpoint = rotatingEndpoint();
+    const saves: { owner: string | undefined; replaces: string; credential: string }[] = [];
+    const cache = new ChatgptTokenCache(
+      (login) =>
+        new ChatgptTokens(login, {
+          save: async (_provider, replaces, credential) => {
+            saves.push({ owner: login.owner, replaces, credential });
+            return String(Number(replaces) + 1);
+          },
+          post: endpoint.post,
+          log: recordingLog(),
+          now: () => NOW,
+        })
+    );
+    const ada = cache.for(owned(ADA, fakeChatgptSignIn({ expMs: NOW - 1, refresh: 'rt-1' }), '4'));
+    const boFile = fakeChatgptSignIn({ expMs: NOW + 3_600_000, refresh: 'rt-bo', marker: 'bo' });
+    const bo = cache.for(owned(BO, boFile, '9'));
+    const boBefore = await bo.credential();
+    expect((await ada.credential()).value).toBe(
+      `Bearer ${fakeAccessToken(NOW + 3_600_000, 'fresh-2')}`
+    );
+    await ada.settled();
+    expect(endpoint.posts.map((post) => post.form.refresh_token)).toEqual(['rt-1']);
+    expect(saves).toHaveLength(1);
+    expect(saves[0]).toMatchObject({ owner: ADA, replaces: '4' });
+    expect(JSON.parse(saves[0]!.credential).tokens.refresh_token).toBe('rt-2');
+    // Bo's sign-in is as it was: not renewed, not saved, the same bearer.
+    expect(await bo.credential()).toEqual(boBefore);
+    expect(boBefore.value).toBe(`Bearer ${fakeAccessToken(NOW + 3_600_000, 'bo')}`);
+    await bo.settled();
+    expect(saves).toHaveLength(1);
   });
 });

@@ -36,6 +36,7 @@ export type GatewayDeps = LoginCaches & {
  */
 export function resolveGateway(
   agentId: string,
+  owner: string | undefined,
   login: GivenLogin | null,
   saved: GatewayRecord | null,
   deps: GatewayDeps
@@ -45,7 +46,7 @@ export function resolveGateway(
   change?: CredentialChange;
   refused?: boolean;
 } {
-  const plan = login ? gatewayPlanFor(login, deps) : null;
+  const plan = login && !foreignLogin(owner, login) ? gatewayPlanFor(login, deps) : null;
   if (login && plan) {
     const same = saved !== null && saved.provider === login.provider && saved.kind === login.kind;
     if (same) {
@@ -64,7 +65,7 @@ export function resolveGateway(
     deps.gateway.forget(agentId);
     if (!login) {
       deps.vertex.forget(saved.provider);
-      deps.chatgpt.forget(saved.provider);
+      deps.chatgpt.forget(owner, saved.provider);
     }
     // A login it can't front is refused, so the agent is left with none.
     return {
@@ -77,6 +78,16 @@ export function resolveGateway(
   return login
     ? { fileLogin: null, record: null, refused: true }
     : { fileLogin: null, record: null };
+}
+
+/**
+ * Whether `login` is another person's than the agent's `owner`: such a login
+ * is never fronted for the agent. Only told apart when the server names both,
+ * as a server older than either names neither (and a stored assignment from
+ * before them names no owner until it changes).
+ */
+export function foreignLogin(owner: string | undefined, login: GivenLogin): boolean {
+  return owner !== undefined && login.owner !== undefined && owner !== login.owner;
 }
 
 /** The CLI's environment (and Codex's configuration) for an agent's gateway-backed login, or null when it isn't one. */

@@ -743,6 +743,7 @@ def assignment_entry(
     stopped = workspace_archived or agent.suspended_at is not None
     return {
         "agent_id": row.agent_id,
+        "owner_id": row.owner_id,
         "revision": row.revision,
         "desired_state": "stopped" if stopped else row.desired_state,
         "definition": {

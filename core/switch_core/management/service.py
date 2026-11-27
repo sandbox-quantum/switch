@@ -1953,6 +1953,8 @@ class ManagementService:
             provider,
             sealed.model_dump(),
             replaces,
+            # A renewal only ever replaces the controller owner's own login.
+            controller.owner_id,
         )
         if row is None:
             raise ManagementError(
@@ -2053,6 +2055,9 @@ class ManagementService:
             "provider": row.provider,
             "revision": row.revision,
             "sealed": row.sealed,
+            # Whose login it is: a box's gateway fronts it only for that
+            # person's agents.
+            "sealed_by": row.sealed_by,
         }
 
     # ── Managed agents, owner side ────────────────────────────────────────────

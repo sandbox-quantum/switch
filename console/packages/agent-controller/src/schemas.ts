@@ -153,6 +153,8 @@ export const sealedLoginResponseSchema = z.object({
   provider: z.string(),
   revision: z.number().int().positive(),
   sealed: sealedLoginSchema,
+  /** The user who gave it. Absent from servers older than it. */
+  sealed_by: z.string().min(1).optional(),
 });
 export type SealedLoginResponse = z.infer<typeof sealedLoginResponseSchema>;
 
@@ -191,6 +193,8 @@ export type AgentDefinition = z.infer<typeof agentDefinitionSchema>;
 
 export const agentAssignmentSchema = z.object({
   agent_id: id,
+  /** The agent's owner. Absent from servers older than it. */
+  owner_id: z.string().min(1).optional(),
   revision,
   desired_state: receivedEnum(['running', 'stopped']),
   definition: agentDefinitionSchema,

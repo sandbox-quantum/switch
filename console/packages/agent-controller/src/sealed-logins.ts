@@ -11,8 +11,11 @@ import { errorMessage, type Logger } from './log';
 import type { Provider } from './schemas';
 import { SEALING_KEY, type SecretStore } from './secrets';
 
-/** A login Switch gave this machine for a provider, opened. */
-export type GivenLogin = Extract<HostedCredential, { status: 'connected' }>;
+/**
+ * A login Switch gave this machine for a provider, opened. `owner` is the
+ * user who gave it, from servers that say so.
+ */
+export type GivenLogin = Extract<HostedCredential, { status: 'connected' }> & { owner?: string };
 
 const keyPairSchema = z.strictObject({ publicKey: z.string(), privateKey: z.string() });
 
@@ -117,7 +120,9 @@ export class SealedLogins {
         throw new Error(
           `The ${provider} login given to this machine cannot be used: ${login.error?.issues[0]?.message ?? 'it is not a connected login'}`
         );
-      return { login: login.data };
+      return {
+        login: { ...login.data, ...(answer.sealed_by ? { owner: answer.sealed_by } : {}) },
+      };
     } catch (error) {
       return { problem: { code: 'internal', message: errorMessage(error) } };
     }
