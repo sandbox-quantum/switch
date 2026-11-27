@@ -15,6 +15,23 @@ const CHARACTERS = [
   { src: "/free-beta/blob-square.svg", box: [103.729, 82.512], at: [267, 136], art: [91.027, 61], turn: 15.02 },
 ] as const;
 
+// The sky fades into the card along an eased curve rather than a straight
+// ramp, so its top edge can't be seen.
+const FADE = `linear-gradient(to top, ${[
+  [100, 0],
+  [100, 25],
+  [96, 38],
+  [86, 50],
+  [70, 61],
+  [50, 72],
+  [30, 82],
+  [14, 90],
+  [4, 96],
+  [0, 100],
+]
+  .map(([mix, at]) => `color-mix(in oklch, var(--sw-card) ${mix}%, transparent) ${at}%`)
+  .join(", ")})`;
+
 const TEXT = { fontSize: "0.8125rem", lineHeight: "18px", color: "text.primary" };
 
 function Hero() {
@@ -42,8 +59,8 @@ function Hero() {
           left: 0,
           right: 0,
           bottom: 0,
-          height: 150,
-          background: "linear-gradient(to top, var(--sw-card) 0%, var(--sw-card) 50%, transparent 100%)",
+          height: 200,
+          background: FADE,
         }}
       />
       {CHARACTERS.map(({ src, box, at, art, turn }) => (
