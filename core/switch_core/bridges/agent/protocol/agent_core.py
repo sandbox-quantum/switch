@@ -86,7 +86,7 @@ from switch_core.bridges.collaboration.adapter import (
 from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.budgets import BudgetGuard
-from switch_core.chats import people_are_members
+from switch_core.chats import ROOM_KIND_KEY, people_are_members
 from switch_core.chats.service import ChatError
 from switch_core.clients.actor import AgentActor, SystemActor
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
@@ -403,6 +403,7 @@ def _describe_room(room: Room) -> RoomDescriptor:
         archived=room.archived_at is not None,
         frozen=room.frozen_at is not None,
         bridge_id=room.bridge_id,
+        room_kind=(getattr(room, "metadata_", None) or {}).get(ROOM_KIND_KEY),
     )
 
 
@@ -3319,6 +3320,8 @@ class AgentCore:
         from_room_id: str | None = None,
         *,
         include_owner: bool,
+        room_kind: str | None = None,
+        follow_ups_off: bool = False,
     ) -> RoomCreateResult:
         """Create a room. The caller agent's owner_id is used as the acting
         user for attachment authorization and as the new room's owner.
@@ -3430,6 +3433,8 @@ class AgentCore:
                 aliases=aliases,
                 acting_user_id=agent.owner_id,
                 acting_is_admin=owner_is_admin,
+                room_kind=room_kind,
+                follow_ups_off=follow_ups_off,
             )
             try:
                 result = await self.room_service.create_room(config)
@@ -5056,6 +5061,7 @@ class AgentCore:
             name=room.name,
             description=room.description,
             channel_url=await self._channel_web_url(room),
+            room_kind=(room.metadata_ or {}).get(ROOM_KIND_KEY),
             channel_type=room.channel_type,
             admin_mode=room.admin_mode,
             instructions=room.instructions,

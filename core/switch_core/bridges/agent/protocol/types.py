@@ -107,6 +107,8 @@ class RoomDescriptor(BaseModel):
     # Carried so a caller that already resolved the room does not have to read
     # it again to decide whether an outbound signal has anywhere to go.
     bridge_id: str | None = None
+    # The client app the room is for (`chats.ROOM_KIND_KEY`), or None.
+    room_kind: str | None = None
 
 
 # Whether an agent is up at all, outside any one room: `not_tracked` for an
@@ -224,6 +226,9 @@ class RoomDetailDescriptor(BaseModel):
     # An https link that opens the room's channel on its app, or None (no
     # channel, the bridge is down, or the app gives no web link).
     channel_url: str | None
+    # The client app the room is for (`chats.ROOM_KIND_KEY`), e.g. "reaqt";
+    # None for an ordinary room.
+    room_kind: str | None = None
     # The group this room belongs to (navigation layer), or null if standalone.
     # `group_path` is the human-readable ancestry, e.g. "Parent / Child".
     group_id: str | None

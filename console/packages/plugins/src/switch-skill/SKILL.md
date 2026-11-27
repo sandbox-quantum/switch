@@ -80,7 +80,7 @@ unfrozen; you see it the next time you read the room.
    covers the general workflow, and the room-onboarding text would duplicate
    it. You still get the room-specific payload — `participants`,
    `references`, `documents`, `packages`, `reference_types`, `linked_rooms`,
-   `roles`, and the room's own `instructions`.
+   `roles`, `room_kind`, and the room's own `instructions`.
    - **Read the room's `instructions`.** They are specific to this room and
      override the defaults here.
    - **Read each resource's `instructions`.** Every reference, document and
@@ -698,7 +698,7 @@ carrying a display name addresses no one.
   `user_names`, `instructions`, `group_name`, `aliases`, `reference_ids`,
   `package_ids`, `linked_rooms`, `join_event_listeners` (the subset of
   `agent_names` that should receive `room_join` and `room_leave` events — off
-  by default). You
+  by default), `room_kind` (see "Rooms for a client app" below). You
   are not a member unless your own name is in `agent_names`. Returns
   `{id, name, transport_room_id, caller_is_member, failed_attachments}`.
 - **`update_room`** — change an existing room, including its `aliases` map.
@@ -831,6 +831,20 @@ agents to coordinate."
 Add `include_owner=True` (internal-only, not `direct`) to put your owner in the
 room too; it appears in their Switch Console chats as a group chat, where they
 @-mention an agent to reach it.
+
+### Rooms for a client app
+
+Some rooms belong to a client app built on Switch rather than to a messaging
+app or Console. Their `room_kind` says which (a lowercase slug, such as the
+app's name); `connect_to_room` and `get_room_detail` report it, and it is null
+for an ordinary room. The app lists only rooms of its own kind, and those rooms
+stay out of Console's chat lists.
+
+When you are asked, in a room that has a `room_kind`, for a new room in that
+app, pass the same `room_kind` to `create_room`, with `internal_only=True` and
+`include_owner=True` so the person sees it. Such a room starts with follow-ups
+off: only a message that tags an agent reaches it. It appears in the app at
+once for the people in it.
 
 **Do not guess a `bridge_id`.** When the user asks you to create a room:
 

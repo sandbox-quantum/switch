@@ -56,6 +56,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.types import IntegrationProfile, TrustFeedback
+from switch_core.chats import require_room_kind
 from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
@@ -277,7 +278,9 @@ async def connect_to_room(
     Returns:
         {agent_id, room_id, name, description, participants, instructions,
          reference_types, references, documents, packages, linked_rooms,
-         roles, warning}.
+         roles, room_kind, warning}.
+        `room_kind` is the client app the room is for (e.g. "reaqt"), or null
+        for an ordinary room: pass it to `create_room` for a room in that app.
         `warning` is normally null. It is set when connecting took the room off
         another live session of this same agent — only one session of an agent
         may act in a room, so that session was disconnected from it to let this
@@ -419,6 +422,7 @@ async def connect_to_room(
         "packages": resources["packages"],
         "linked_rooms": linked_rooms,
         "roles": roles,
+        "room_kind": getattr(room, "room_kind", None),
         "warning": _eviction_warning(
             room.id, displaced_session_id, evicted_connection_id
         ),
@@ -991,6 +995,7 @@ async def create_room(
     join_event_listeners: list[str] | None = None,
     aliases: dict[str, str] | None = None,
     include_owner: bool = False,
+    room_kind: str | None = None,
 ) -> dict[str, Any]:
     """Create a new Switch room.
 
@@ -1077,6 +1082,14 @@ async def create_room(
             `internal_only=True`, no `bridge_id`, and a channel_type other
             than "direct". As in any group chat, their messages reach an
             agent they @-mention (or a follow-up to one).
+        room_kind: The client app the room is for, as a lowercase slug (for
+            example "reaqt"). A client app lists only the rooms of its own
+            kind, and a room of a kind is left out of the ordinary chat lists,
+            so set it when asked for a room in that app: usually the
+            `room_kind` of the room you were asked in (`connect_to_room`,
+            `get_room_detail`). Such a room starts with follow-ups off, so
+            only a message that tags an agent reaches it, as rooms the app
+            makes itself do. Omit for an ordinary room.
 
     Returns:
         `{"id", "name", "matrix_room_id", "caller_is_member",
@@ -1087,6 +1100,8 @@ async def create_room(
         errors like missing ids abort creation upfront).
     """
     refuse_hidden_characters(name)
+    if room_kind is not None:
+        room_kind = require_room_kind(room_kind)
     agent_id = get_agent_id()
     protocol = get_protocol()
     async with _refusals_reported("create_room"):
@@ -1112,6 +1127,8 @@ async def create_room(
             aliases=aliases,
             from_room_id=await connected_room(),
             include_owner=include_owner,
+            room_kind=room_kind,
+            follow_ups_off=room_kind is not None,
         )
     async with protocol.session_factory() as session:
         caller_is_member = agent_id in await protocol.room_store.get_agent_ids(
@@ -2840,7 +2857,8 @@ async def get_room_detail(room_id: str) -> dict[str, Any]:
         {id, name, description, channel_type, admin_mode, instructions,
         matrix_room_id, created_at, bridge_id, bridge_display_name,
         external_channel_id, channel_url (an https link that opens the room's
-        channel on its app, or null), group_id, group_name, group_path (the group's
+        channel on its app, or null), room_kind (the client app the room is
+        for, e.g. "reaqt", or null), group_id, group_name, group_path (the group's
         root-first ancestry, e.g. "Parent / Child"; null when standalone),
         agent_names, agent_statuses (keyed by agent name), connected_user_names,
         aliases (per-room agent aliases, keyed by agent name → alias),
