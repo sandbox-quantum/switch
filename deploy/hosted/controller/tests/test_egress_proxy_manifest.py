@@ -242,10 +242,10 @@ class Wrapper:
             tmp_path / "passwd",
             tmp_path / "live",
         )
-        self.src_deny = tmp_path / "denylists"
+        self.src_cat = tmp_path / "categories"
         self.src_boxes.mkdir()
         self.src_passwd.mkdir()
-        self.src_deny.mkdir()
+        self.src_cat.mkdir()
         (self.src_boxes / "_none.conf").write_text("# No box yet: nothing is allowed.\n")
         self.set_boxes(boxes)
         if passwd is not None:
@@ -263,7 +263,7 @@ class Wrapper:
             "SQUID_CONF": str(conf),
             "SQUID_SRC_BOXES": str(self.src_boxes),
             "SQUID_SRC_PASSWD": str(self.src_passwd),
-            "SQUID_SRC_DENYLISTS": str(self.src_deny),
+            "SQUID_SRC_CATEGORIES": str(self.src_cat),
             "SQUID_LIVE": str(self.live),
             "SQUID_BIN": str(squid),
             "SQUID_POLL_S": "0.1",
@@ -297,12 +297,12 @@ class Wrapper:
             if old.name != "_none.conf" and old.name not in boxes:
                 old.unlink()
 
-    def set_denylists(self, lists: dict[str, str]) -> None:
+    def set_categories(self, lists: dict[str, str]) -> None:
         for name, text in lists.items():
-            staged = self.src_deny.parent / f".{name}.tmp"
+            staged = self.src_cat.parent / f".{name}.tmp"
             staged.write_text(text)
-            os.replace(staged, self.src_deny / name)
-        for old in self.src_deny.iterdir():
+            os.replace(staged, self.src_cat / name)
+        for old in self.src_cat.iterdir():
             if old.name not in lists:
                 old.unlink()
 
@@ -626,55 +626,82 @@ def test_ipv6_forms_that_carry_an_ipv4_address_are_blocked(written: str) -> None
     assert _blocked(written)
 
 
-def test_deny_lists_go_first_each_tagged_with_its_reason(wrapper) -> None:  # type: ignore[no-untyped-def]
-    """Each list file becomes one acl, note and deny, ahead of every box's own rules, so no box's list can let
-    a listed host through, and the refusal is logged with the list's reason."""
+def _live_rules(w) -> list[str]:  # type: ignore[no-untyped-def]
+    lines = (w.live / "boxes.conf").read_text().splitlines()
+    return (
+        lines[: lines.index("http_access allow ada")] if "http_access allow ada" in lines else lines
+    )
+
+
+def test_categories_go_first_in_the_policys_order_each_tagged_with_its_policy(wrapper) -> None:  # type: ignore[no-untyped-def]
+    """Each list file becomes an acl and a note, `<policy>:<category>`, ahead of every box's own rules, in the
+    policy's order and then unnamed categories as block; a block a deny too. A request has one category: each list
+    excludes every earlier category's."""
     w = wrapper(GOOD, f"{HASH_ADA}\n")
-    assert "switch_box_login" not in (w.live / "boxes.conf").read_text()  # no list, no rule
-    w.set_denylists(
+    assert "switch_box_login" not in (w.live / "boxes.conf").read_text()  # no category, no rule
+    w.set_categories(
         {
             "malware.ips": "198.51.100.1\n",
             "ours.hosts": ".example.org\n",
             "ours.ips": "203.0.113.0/24\n",
+            "paste.hosts": ".paste.example\n",
+            "policy": "# first match wins\npaste watch\nours block\n",
         }
     )
-    w.until(lambda: "switch_deny_" in (w.live / "boxes.conf").read_text())
-    lines = (w.live / "boxes.conf").read_text().splitlines()
-    rules = lines[
-        : lines.index("http_access allow ada") if "http_access allow ada" in lines else None
-    ]
-    assert rules[:4] == [
+    w.until(lambda: "switch_cat_" in (w.live / "boxes.conf").read_text())
+    cat = w.live / "cat"
+    assert _live_rules(w)[:12] == [
         "acl switch_box_login proxy_auth REQUIRED",
-        f'acl switch_deny_1 dst "{w.src_deny}/malware.ips"',
-        "note switch_blocked malware switch_deny_1",
-        "http_access deny switch_box_login switch_deny_1",
+        f'acl switch_cat_1 dstdomain -n "{cat}/paste.hosts"',
+        "note switch_category watch:paste switch_cat_1",
+        f'acl switch_cat_2 dstdomain -n "{cat}/ours.hosts"',
+        "note switch_category block:ours switch_cat_2 !switch_cat_1",
+        "http_access deny switch_box_login switch_cat_2 !switch_cat_1",
+        f'acl switch_cat_3 dst "{cat}/ours.ips"',
+        "note switch_category block:ours switch_cat_3 !switch_cat_1",
+        "http_access deny switch_box_login switch_cat_3 !switch_cat_1",
+        f'acl switch_cat_4 dst "{cat}/malware.ips"',
+        "note switch_category block:malware switch_cat_4 !switch_cat_1 !switch_cat_2 !switch_cat_3",
+        "http_access deny switch_box_login switch_cat_4 !switch_cat_1 !switch_cat_2 !switch_cat_3",
     ]
-    assert f'acl switch_deny_2 dstdomain -n "{w.src_deny}/ours.hosts"' in rules
-    assert "note switch_blocked ours switch_deny_3" in rules
     assert w.live_boxes() == {"_none.conf", "ada.conf", "bob.conf"}
     assert "example.org" not in w.output()  # never a list's content
 
 
-def test_a_badly_named_deny_list_keeps_the_last_good_config(wrapper) -> None:  # type: ignore[no-untyped-def]
+def test_lists_are_read_into_squids_form(wrapper) -> None:  # type: ignore[no-untyped-def]
     w = wrapper(GOOD, f"{HASH_ADA}\n")
-    w.set_denylists({"malware.ips": "198.51.100.1\n"})
-    w.until(lambda: "switch_deny_1" in (w.live / "boxes.conf").read_text())
-    w.set_denylists({"malware.ips": "198.51.100.1\n", "Bad Reason.ips": "203.0.113.7\n"})
-    w.until(lambda: "isn't named <reason>[.watch].hosts or <reason>[.watch].ips" in w.output())
+    w.set_categories(
+        {
+            "feed.hosts": "# a feed\n0.0.0.0 bad.example\n*.evil.example ; dropped\nexact.example\n\n.dot.example\n",
+            "feed.ips": "203.0.113.0/24 ; SBL1\n",
+        }
+    )
+    w.until(lambda: (w.live / "cat" / "feed.ips").exists())
+    assert (w.live / "cat" / "feed.hosts").read_text().split() == [
+        "bad.example",
+        ".evil.example",
+        "exact.example",
+        ".dot.example",
+    ]
+    assert (w.live / "cat" / "feed.ips").read_text().split() == ["203.0.113.0/24"]
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"malware.ips": "198.51.100.1\n", "Bad Name.ips": "203.0.113.7\n"},
+        {"malware.ips": "198.51.100.1\n", "policy": "malware drop\n"},
+        {"malware.ips": "198.51.100.1\n", "policy": "nosuch block\n"},
+        {"malware.ips": "198.51.100.1\n", "policy": "malware block\nmalware watch\n"},
+    ],
+    ids=["bad-file-name", "bad-policy", "unlisted-category", "named-twice"],
+)
+def test_a_bad_category_file_or_policy_keeps_the_last_good_config(wrapper, files) -> None:  # type: ignore[no-untyped-def]
+    w = wrapper(GOOD, f"{HASH_ADA}\n")
+    w.set_categories({"malware.ips": "198.51.100.1\n"})
+    w.until(lambda: "switch_cat_1" in (w.live / "boxes.conf").read_text())
+    w.set_categories(files)
     w.until(lambda: "WARN box files failed squid -k parse" in w.output())
     live = (w.live / "boxes.conf").read_text()
-    assert "note switch_blocked malware switch_deny_1" in live and "203.0.113.7" not in live
-
-
-def test_a_watch_list_tags_without_refusing(wrapper) -> None:  # type: ignore[no-untyped-def]
-    """`<reason>.watch.*` is counted, never refused: a note and no deny."""
-    w = wrapper(GOOD, f"{HASH_ADA}\n")
-    w.set_denylists({"miners.watch.hosts": ".pool.example\n", "ours.ips": "203.0.113.0/24\n"})
-    w.until(lambda: "switch_deny_2" in (w.live / "boxes.conf").read_text())
-    live = (w.live / "boxes.conf").read_text().splitlines()
-    assert f'acl switch_deny_1 dstdomain -n "{w.src_deny}/miners.watch.hosts"' in live
-    assert "note switch_watched miners switch_deny_1" in live
-    assert not [
-        line for line in live if line.startswith("http_access") and line.endswith("switch_deny_1")
-    ]
-    assert "http_access deny switch_box_login switch_deny_2" in live
+    assert "note switch_category block:malware switch_cat_1" in live and "203.0.113.7" not in live
+    assert (w.live / "cat" / "malware.ips").read_text() == "198.51.100.1\n"

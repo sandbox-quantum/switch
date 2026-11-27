@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import secrets
 from collections.abc import AsyncIterator
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
@@ -52,16 +52,29 @@ HOST_MAX_LENGTH = 32
 MAX_HOSTS = 10
 MAX_BOXES = 2000
 COUNT = Field(ge=0, le=1 << 50)
-# Counts by the reason of a box cluster list: under `blocked`, the deny list that refused a request (counted in
-# `denied` too), and under `watched`, the watch list it matched (refused or not). squid takes at most 32 lists. Empty
-# from a reporter that doesn't count them.
-Reasons = Annotated[
+
+
+# Requests by the box cluster's host category, each with the policy squid applied to it: `block` (refused, counted
+# in `denied` too), `watch` (let through, alerted on) or `allow` (let through). squid takes at most 32 categories.
+# Empty from a reporter that doesn't count them.
+class CategoryCount(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requests: int = COUNT
+    policy: Literal["block", "watch", "allow"]
+
+
+Categories = Annotated[
     dict[
         Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")],
-        Annotated[int, Field(ge=0, le=1 << 50)],
+        CategoryCount,
     ],
     Field(max_length=32),
 ]
+
+
+def _total(categories: dict[str, CategoryCount], policy: str) -> int:
+    return sum(c.requests for c in categories.values() if c.policy == policy)
 
 
 class HostTotals(BaseModel):
@@ -72,8 +85,7 @@ class HostTotals(BaseModel):
     denied: int = COUNT
     bytes_up: int = COUNT
     bytes_down: int = COUNT
-    blocked: Reasons = Field(default_factory=dict)
-    watched: Reasons = Field(default_factory=dict)
+    categories: Categories = Field(default_factory=dict)
 
 
 class BoxNetwork(BaseModel):
@@ -84,8 +96,7 @@ class BoxNetwork(BaseModel):
     denied: int = COUNT
     bytes_up: int = COUNT
     bytes_down: int = COUNT
-    blocked: Reasons = Field(default_factory=dict)
-    watched: Reasons = Field(default_factory=dict)
+    categories: Categories = Field(default_factory=dict)
     # Every host the box reached in the window, the controller's login and
     # the agents' together; `hosts` names the busiest of them.
     distinct_hosts: int = COUNT
@@ -168,14 +179,14 @@ async def report(
                 "window_seconds": body.window_seconds,
                 "requests": box.requests,
                 "denied": box.denied,
-                "blocked": json.dumps(
-                    box.blocked, separators=(",", ":"), sort_keys=True
+                "categories": json.dumps(
+                    {name: c.model_dump() for name, c in box.categories.items()},
+                    separators=(",", ":"),
+                    sort_keys=True,
                 ),
-                "blocked_total": sum(box.blocked.values()),
-                "watched": json.dumps(
-                    box.watched, separators=(",", ":"), sort_keys=True
-                ),
-                "watched_total": sum(box.watched.values()),
+                # What the monitors sum: requests in block and in watch categories.
+                "blocked_total": _total(box.categories, "block"),
+                "watched_total": _total(box.categories, "watch"),
                 "bytes_up": box.bytes_up,
                 "bytes_down": box.bytes_down,
                 "distinct_hosts": box.distinct_hosts,

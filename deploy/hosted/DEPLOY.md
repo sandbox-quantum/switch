@@ -137,34 +137,44 @@ login is refused them, so every AI call goes through the controller's gateway. E
 `false` to go back to the per-box allow-lists (`egress-settings`' parts), which are still read and checked either
 way.
 
-**Deny lists (`squid-denylists`, optional).** Hosts and addresses no box may reach, whatever its own list or the open
-web allows, each list named by its reason. They are the operator's, not in these files: a ConfigMap
-`squid-denylists` in `egress-proxy`, one key per list file, `<reason>.hosts` (one host per line: `example.com` for
-that host, `.example.com` with its subdomains) and/or `<reason>.ips` (one address or range per line). A reason is
-lowercase letters, digits and dashes, at most 32 characters; at most 32 lists. For example:
+**Host categories (`squid-categories`, optional).** Lists of hosts and addresses by category, and a policy saying
+what each category gets: `block` (refused with a 403), `watch` (let through, and alerted on) or `allow` (let
+through). They are the operator's, not in these files: a ConfigMap `squid-categories` in `egress-proxy`, with one key
+per list file and one for the policy.
+
+- `<category>.hosts`: one host per line, `example.com` for that host, `*.example.com` or `.example.com` for it and its
+  subdomains. Hosts-file lines (`0.0.0.0 example.com`) and comments (`#` or `;`) are read too, so a feed can go in as
+  it is.
+- `<category>.ips`: one address or range per line, e.g. `203.0.113.7` or `198.51.100.0/24`.
+- `policy`: one `<category> <policy>` per line, in priority order. A request has one category, the first in this
+  order whose lists match it, so a category listed earlier carves its hosts out of every later one (`cdn allow`
+  above `threats block`). Categories the policy doesn't name come after, in name order, and are blocked.
+
+A category is lowercase letters, digits and dashes, at most 32 characters; at most 32 categories. For example:
 
 ```bash
-kubectl -n egress-proxy create configmap squid-denylists \
-  --from-literal=ours.hosts=$'.example.org\n' --from-literal=ours.ips=$'203.0.113.0/24\n' \
+kubectl -n egress-proxy create configmap squid-categories \
+  --from-literal=ours.hosts=$'*.example.org\n' --from-literal=ours.ips=$'203.0.113.0/24\n' \
+  --from-literal=paste.hosts=$'paste.example\n' --from-literal=policy=$'paste watch\nours block\n' \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-squid's reload wrapper turns each file into a rule checked after a box's login and before any box's own rules, and
-applies a change within seconds, after a clean `squid -k parse`, as it does box files; a badly named file or a list
-that fails the parse keeps the last good config, with a `squid-reload: WARN` line. A refused request gets a 403 and
-is tagged with its list's reason; the network reporter counts it per box (`blocked`, by reason, with the host's
-random id), and the monitor "a hosted box asked for a blocked host" alerts on any. No list, no rule.
+squid's reload wrapper turns the categories into rules checked after a box's login and before any box's own rules,
+so a box's own list never lets a blocked host through, and an allowed category never overrides a box's own refusal.
+It applies a change within seconds, after a clean `squid -k parse`, as it does box files; a badly named file, a
+policy line naming no listed category (or one twice, or another policy), or a list that fails the parse keeps the
+last good config, with a `squid-reload: WARN` line. Each request in a category is tagged with it and its policy; the
+network reporter counts them per box and per host's random id (`categories`, each with its `requests` and
+`policy`), Core logs them with `blocked_total` and `watched_total`, and the monitors "a hosted box asked for a
+blocked host" and "a hosted box reached a watched host" alert on any. No categories, no rules.
 
-A list named `<reason>.watch.hosts` or `<reason>.watch.ips` is a watch list: it refuses nothing, but every request it
-matches is counted per box under that reason (`watched`), and the monitor "a hosted box matched a watch list" alerts
-on any. Use one to see who reaches a host before deciding to block it; dropping `.watch` from its name makes it a
-deny list.
-
-Lists of one sentinel address each are how a DNS-level block becomes a counted one. Where the box cluster's VPC
-answers a blocked name with a fixed address instead (Route 53 Resolver DNS Firewall, with an override per list), a
-list `<reason>.ips` holding that address refuses the request and counts it per box under that reason. squid does
-every lookup for the boxes, so the block is tied to the box, and no hostname leaves squid's pod. Create the lists
-before turning such a block on: until then a blocked name just fails to connect, uncounted.
+Categories of one address each are how a DNS-level block becomes a counted one. Where the box cluster's VPC answers
+a blocked name with a fixed address per list instead (Route 53 Resolver DNS Firewall, with an override per list: the
+box-cluster Terraform outputs the matching categories and policy lines), a category `<list>.ips` holding that
+address refuses the request and counts it per box under that category. squid does every lookup for the boxes, so the
+block is tied to the box, and no hostname leaves squid's pod. Give those categories `block`: the answer goes nowhere,
+so the request fails whatever the policy says. Create them before turning the firewall on: until then a blocked name
+just fails to connect, uncounted.
 
 **How fast a box gets egress.** egress-lists reads the box map and settings every 3 s and rewrites squid's files
 when they change. squid's wrapper checks its mounted files every 2 s: logins apply at once (a removed box loses its

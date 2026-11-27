@@ -69,8 +69,12 @@ def _box(squid_id: str, **totals) -> dict:
         "box": squid_id,
         "requests": 3,
         "denied": 1,
-        "blocked": {"ours": 1, "malware": 2},
-        "watched": {"miners": 4},
+        "categories": {
+            "ours": {"requests": 1, "policy": "block"},
+            "malware": {"requests": 2, "policy": "block"},
+            "miners": {"requests": 4, "policy": "watch"},
+            "cdn": {"requests": 7, "policy": "allow"},
+        },
         "bytes_up": 1200,
         "bytes_down": 50_000,
         "distinct_hosts": 25,
@@ -131,10 +135,11 @@ async def test_one_line_per_box_names_its_machine_owner_and_busiest_hosts(
         assert details["box"] == squid_id
         assert event["target_type"] == "cloud_machine"
         assert details["distinct_hosts"] == 25 and details["other_hosts"] == 23
-        assert json.loads(details["blocked"]) == {"ours": 1, "malware": 2}
-        assert details["blocked_total"] == 3
-        assert json.loads(details["watched"]) == {"miners": 4}
-        assert details["watched_total"] == 4
+        assert json.loads(details["categories"])["miners"] == {
+            "requests": 4,
+            "policy": "watch",
+        }
+        assert (details["blocked_total"], details["watched_total"]) == (3, 4)
         assert [h["host"] for h in json.loads(details["hosts"])] == [
             "h-0000aaaa",
             "h-0000bbbb",

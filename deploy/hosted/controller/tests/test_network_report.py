@@ -29,9 +29,8 @@ def line(
     up: int = 100,
     down: int = 1000,
     tag: str = "-",
-    watch: str = "-",
 ) -> str:
-    return f"1795680000.123 {login} {status} {host} 443 {up} {down} {tag} {watch}"
+    return f"1795680000.123 {login} {status} {host} 443 {up} {down} {tag}"
 
 
 def test_a_line_names_its_box_by_either_login_and_counts_a_refusal() -> None:
@@ -154,43 +153,33 @@ def test_a_proxy_login_challenge_is_not_a_refusal() -> None:
     assert (challenge.denied, refused.denied, older.denied) == (0, 1, 1)
 
 
-def test_refusals_are_counted_by_the_reason_of_the_list_that_refused_them() -> None:
+def test_requests_are_counted_by_category_with_its_policy() -> None:
     agg = Aggregator()
     ids = HostIds()
-    agg.add_line(
-        line(f"box-{BOX}", "blocked.example", tag="ours", status="TCP_DENIED/403", up=0, down=0)
-    )
-    agg.add_line(
-        line(f"box-{BOX}", "bad.example", tag="malware", status="TCP_DENIED/403", up=0, down=0)
-    )
-    agg.add_line(
-        line(f"box-{BOX}", "bad.example", tag="malware", status="TCP_DENIED/403", up=0, down=0)
-    )
+    refused = {"status": "TCP_DENIED/403", "up": 0, "down": 0}
+    agg.add_line(line(f"box-{BOX}", "blocked.example", tag="block:ours", **refused))  # type: ignore[arg-type]
+    agg.add_line(line(f"box-{BOX}", "bad.example", tag="block:malware", **refused))  # type: ignore[arg-type]
+    agg.add_line(line(f"box-{BOX}", "bad.example", tag="block:malware", **refused))  # type: ignore[arg-type]
+    agg.add_line(line(f"box-{BOX}", "x.pool.example", tag="watch:miners"))
+    agg.add_line(line(f"box-{BOX}", "a.cdn.example", tag="allow:cdn"))
     agg.add_line(line(f"box-{BOX}", "github.com"))
-    agg.add_line(line(f"box-{BOX}", "odd.example", tag="Not_A_Reason"))
+    agg.add_line(line(f"box-{BOX}", "odd.example", tag="block:Not_A_Category"))
+    agg.add_line(line(f"box-{BOX}", "odd.example", tag="drop:ours"))
     [box] = report_body(agg.take(), 60, 0, ids)["boxes"]
-    assert (box["requests"], box["denied"]) == (5, 3)
-    assert box["blocked"] == {"ours": 1, "malware": 2}
+    assert (box["requests"], box["denied"]) == (8, 3)
+    assert box["categories"] == {
+        "ours": {"requests": 1, "policy": "block"},
+        "malware": {"requests": 2, "policy": "block"},
+        "miners": {"requests": 1, "policy": "watch"},
+        "cdn": {"requests": 1, "policy": "allow"},
+    }
     by_host = {h["host"]: h for h in box["hosts"]}
-    assert by_host[ids.of("bad.example:443")]["blocked"] == {"malware": 2}
-    assert by_host[ids.of("github.com:443")]["blocked"] == {}
+    assert by_host[ids.of("bad.example:443")]["categories"] == {
+        "malware": {"requests": 2, "policy": "block"}
+    }
+    assert by_host[ids.of("github.com:443")]["categories"] == {}
 
 
-def test_a_watched_request_is_counted_whether_or_not_it_was_refused() -> None:
-    agg = Aggregator()
-    ids = HostIds()
-    agg.add_line(line(f"box-{BOX}", "x.pool.example", watch="miners"))
-    agg.add_line(
-        line(f"box-{BOX}", "y.pool.example", status="TCP_DENIED/403", tag="ours", watch="miners")
-    )
-    agg.add_line(line(f"box-{BOX}", "github.com"))
-    [box] = report_body(agg.take(), 60, 0, ids)["boxes"]
-    assert (box["requests"], box["denied"]) == (3, 1)
-    assert box["watched"] == {"miners": 2} and box["blocked"] == {"ours": 1}
-    by_host = {h["host"]: h for h in box["hosts"]}
-    assert by_host[ids.of("x.pool.example:443")]["watched"] == {"miners": 1}
-    assert by_host[ids.of("github.com:443")]["watched"] == {}
-
-
-def test_a_line_without_the_watch_field_is_unreadable() -> None:
-    assert parse("1795680000.123 box-x TCP_TUNNEL/200 github.com 443 1 2 -") is None
+def test_a_line_with_another_field_count_is_unreadable() -> None:
+    assert parse("1795680000.123 box-x TCP_TUNNEL/200 github.com 443 1 2 - -") is None
+    assert parse("1795680000.123 box-x TCP_TUNNEL/200 github.com 443 1 2") is None
