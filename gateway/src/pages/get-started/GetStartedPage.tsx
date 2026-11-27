@@ -1,4 +1,5 @@
 import "@switch-console/chat-ui/theme.css";
+import { BrowserSignInPanel } from "@switch-console/chat-ui/components/browser-sign-in";
 import { BuddyFace } from "@switch-console/chat-ui/components/buddy-face";
 import { BuddyStartCard } from "@switch-console/chat-ui/components/buddy-start-card";
 import { MeetBuddyIntro } from "@switch-console/chat-ui/components/meet-buddy-intro";
@@ -14,8 +15,11 @@ import {
   SetupChecklist,
   type SetupStageState,
 } from "@switch-console/chat-ui/components/setup-checklist";
+import type { BrowserSignInState } from "@switch-console/chat-ui/contracts/machine-logins";
+import { failureText } from "@switch-console/chat-ui/model/failures";
 import {
   type LoginKindOption,
+  browserSignInKind,
   loginHint,
   machineProviderOptions,
   providerLoginKinds,
@@ -37,6 +41,7 @@ import {
   SelectValue,
 } from "@switch-console/chat-ui/primitives/select";
 import { Spinner } from "@switch-console/chat-ui/primitives/spinner";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { CircleAlert } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
@@ -47,8 +52,9 @@ import {
   type ProviderInfo,
   cloudMachineLifecycle,
   fetchProviders,
+  sendSignInCode,
 } from "../../data/management";
-import { providerReport } from "../ai-providers/DeviceProviders";
+import { browserSignInHost, providerReport, providersQueryClient } from "../ai-providers/DeviceProviders";
 import AddMachineDialog from "../machines/AddMachineDialog";
 import {
   CLOUD_DEVICE_PROVIDERS,
@@ -100,7 +106,10 @@ function loginProblem(controller: Controller | null, provider: string, name: str
 type Page =
   | { kind: "meet" }
   | { kind: "provider"; error: string | null }
-  | { kind: "setting-up"; provider: string; login: ProviderLogin | null };
+  | { kind: "setting-up"; provider: string; login: GivenLogin };
+
+/** What switch-buddy's provider is given: a login pasted or picked, a browser sign-in on the device, or nothing (it has one). */
+type GivenLogin = ProviderLogin | "browser" | null;
 
 /**
  * Getting started on Switch Cloud from the web: Console's first run, page for
@@ -487,7 +496,9 @@ function providerCards(
     ),
   );
   return options.map(({ id, name, ready, problem }) => {
-    const logins = providerLoginKinds(id, false);
+    const browser = browserSignInKind(id, cloud);
+    const pasted = providerLoginKinds(id, false);
+    const logins = browser ? [browser, ...pasted] : pasted;
     const card = { id, name, logins };
     if (ready) return { ...card, tag: `Signed in on ${deviceName}`, tone: "ready", disabled: false };
     if (problem === "not installed")
@@ -527,7 +538,7 @@ function ProviderPage({
   error: string | null;
   onBack: () => void;
   onSkip: () => void;
-  onStart: (provider: string, login: ProviderLogin | null) => void;
+  onStart: (provider: string, login: GivenLogin) => void;
 }) {
   const controller = localDevice?.snapshot?.selected ?? snapshot?.controller ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -662,7 +673,7 @@ function LoginForm({
   name: string;
   /** The logins it can be given here, the first picked at first. */
   kinds: LoginKindOption[];
-  onStart: (login: ProviderLogin) => void;
+  onStart: (login: ProviderLogin | "browser") => void;
 }) {
   const [kind, setKind] = useState(kinds[0]!.value);
   const shown = kinds.find((each) => each.value === kind) ?? kinds[0]!;
@@ -672,10 +683,13 @@ function LoginForm({
   const [file, setFile] = useState<{ name: string; text: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const picker = useRef<HTMLInputElement>(null);
+  const browser = shown.value === "browser";
   const vertex = shown.value === "vertex";
   const signInFile = shown.value === "auth-json";
   const typed = shown.value === "setup-token" || shown.value === "api-key" ? shown.value : null;
-  const ready = vertex
+  const ready = browser
+    ? true
+    : vertex
     ? file !== null && project.trim() !== "" && region.trim() !== ""
     : signInFile
       ? file !== null
@@ -683,6 +697,10 @@ function LoginForm({
 
   const start = () => {
     setError(null);
+    if (browser) {
+      onStart("browser");
+      return;
+    }
     try {
       onStart(
         vertex
@@ -748,7 +766,7 @@ function LoginForm({
           }
         />
       </p>
-      {vertex ? (
+      {browser ? null : vertex ? (
         <>
           <div className="flex gap-2">
             <label className="flex-1 space-y-1 text-xs text-foreground-muted">
@@ -789,7 +807,9 @@ function LoginForm({
         />
       )}
       <p className="text-xs text-foreground-muted">
-        It is encrypted here, in your browser, for your device alone: Switch only passes it on.
+        {browser
+          ? "Your device runs the sign-in once it is up; this page shows you where to sign in."
+          : "It is encrypted here, in your browser, for your device alone: Switch only passes it on."}
       </p>
       {error && <Alert>{error}</Alert>}
       <div>
@@ -829,7 +849,7 @@ function SettingUpPage({
   /** The provider's name as Switch lists it. */
   name: string;
   /** What was given; null to use the sign-in the device already has. */
-  login: ProviderLogin | null;
+  login: GivenLogin;
   person: { name: string | null; email: string | null };
   onRefused: (reason: string) => void;
   onCreated: (agent: { agentId: string; name: string }) => Promise<void>;
@@ -841,6 +861,8 @@ function SettingUpPage({
   const providerReady = signedIn(controller, provider);
   const deviceName = controller?.name ?? "Switch Cloud";
   const [operation, setOperation] = useState<string | null>(null);
+  const [signInId, setSignInId] = useState<string | null>(null);
+  const [signInState, setSignInState] = useState<BrowserSignInState>({ state: "starting" });
   const [given, setGiven] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -873,6 +895,21 @@ function SettingUpPage({
       return;
     }
     giving.current = true;
+    if (login === "browser") {
+      browserSignInHost(controller, provider)
+        .start()
+        .then((id) => {
+          setSignInId(id);
+          setGiven(true);
+        })
+        .catch((caught: unknown) =>
+          onRefused(message(caught, `${name} could not be signed in on ${deviceName}.`)),
+        )
+        .finally(() => {
+          giving.current = false;
+        });
+      return;
+    }
     giveMachineLogin(controller, provider, login)
       .then((id) => {
         setOperation(id);
@@ -906,6 +943,33 @@ function SettingUpPage({
       clearInterval(timer);
     };
   }, [operation, controller, onRefused, refresh]);
+
+  // Where the browser sign-in on the device stands, until it ends.
+  useEffect(() => {
+    if (signInId === null || !controller) return;
+    const host = browserSignInHost(controller, provider);
+    let stopped = false;
+    const timer = setInterval(() => {
+      void host.read(signInId).then(
+        (state) => {
+          if (stopped) return;
+          setSignInState(state);
+          if (state.state === "failed") {
+            setSignInId(null);
+            onRefused(state.message);
+          } else if (state.state === "succeeded") {
+            setSignInId(null);
+            refresh();
+          }
+        },
+        () => {},
+      );
+    }, 1500);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [signInId, controller, provider, onRefused, refresh]);
 
   // A login it took but cannot sign in with.
   const problem = given && operation === null ? loginProblem(controller, provider, name) : null;
@@ -985,6 +1049,18 @@ function SettingUpPage({
               : null
         }
       />
+      {signInId !== null && (
+        <QueryClientProvider client={providersQueryClient}>
+          <BrowserSignInPanel
+            machineName={deviceName}
+            provider={provider}
+            providerName={name}
+            state={signInState}
+            sendCode={(code) => sendSignInCode(signInId, code)}
+            failureText={failureText}
+          />
+        </QueryClientProvider>
+      )}
       {deviceError && <Alert>{deviceError}</Alert>}
       {error && <Alert>{error}</Alert>}
       {readError && !deviceError && !error && <Alert>{readError}</Alert>}

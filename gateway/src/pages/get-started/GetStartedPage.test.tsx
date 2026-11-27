@@ -53,6 +53,9 @@ const management = vi.hoisted(() => ({
   fetchControllers: vi.fn(),
   cloudMachineLifecycle: vi.fn(),
   fetchProviders: vi.fn(),
+  startBrowserSignIn: vi.fn(),
+  browserSignIn: vi.fn(),
+  sendSignInCode: vi.fn(),
 }));
 
 /** What the server lists by default, in its order. */
@@ -252,6 +255,14 @@ describe("GetStartedPage", () => {
       agentName: buddy.name,
       firstName: "Ada",
     });
+  });
+
+  it("offers no browser sign-in on Switch Cloud, whose controller has none", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }));
+    fireEvent.click(screen.getByRole("button", { name: /Claude/, pressed: false }));
+    expect(screen.queryByLabelText("Sign in with browser")).toBeNull();
+    expect(screen.getByPlaceholderText("Setup token")).toBeTruthy();
   });
 
   it("goes back to the providers with the device's reason when the login does not work", async () => {
@@ -649,6 +660,7 @@ describe("GetStartedPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Set up AI provider" }));
     fireEvent.click(screen.getByRole("button", { name: /Claude/, pressed: false }));
+    fireEvent.click(screen.getByLabelText("Setup token"));
     fireEvent.change(screen.getByPlaceholderText("Setup token"), { target: { value: "sk-ant-oat" } });
     fireEvent.click(screen.getByRole("button", { name: "Start with Claude Code" }));
 
@@ -685,6 +697,7 @@ describe("GetStartedPage", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }, { timeout: 6000 }));
     fireEvent.click(screen.getByRole("button", { name: /Claude/, pressed: false }));
+    fireEvent.click(screen.getByLabelText("Setup token"));
     fireEvent.change(screen.getByPlaceholderText("Setup token"), { target: { value: "sk-ant-oat" } });
     fireEvent.click(screen.getByRole("button", { name: "Start with Claude Code" }));
 
@@ -708,5 +721,50 @@ describe("GetStartedPage", () => {
         }),
       { timeout: 6000 }
     );
+  }, 15000);
+
+  it("signs Claude Code in with a browser on a device of your own", async () => {
+    device.snapshot = snapshot({ available: false, machine: null, controller: null });
+    const localController = controller("missing");
+    setControllers([localController]);
+    const url = "https://claude.ai/oauth/authorize?code=true";
+    management.startBrowserSignIn.mockResolvedValue("op-b");
+    management.browserSignIn
+      .mockResolvedValueOnce({ state: "open", url, userCode: null, needsCode: true })
+      .mockResolvedValue({ state: "succeeded" });
+    management.sendSignInCode.mockResolvedValue(undefined);
+    onboarding.createBuddy.mockResolvedValue({ agentId: "a1", name: buddy.name });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }, { timeout: 6000 }));
+    fireEvent.click(screen.getByRole("button", { name: /Claude/, pressed: false }));
+    expect(screen.getByLabelText("Sign in with browser").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByPlaceholderText("Setup token")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Start with Claude Code" }));
+
+    await waitFor(() => expect(management.startBrowserSignIn).toHaveBeenCalledWith("c1", "claude"));
+    const page = await screen.findByRole("link", { name: /Open sign-in page/ }, { timeout: 4000 });
+    expect(page.getAttribute("href")).toBe(url);
+    fireEvent.change(screen.getByLabelText("Sign-in code"), { target: { value: "abc#def" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send code" }));
+    await waitFor(() => expect(management.sendSignInCode).toHaveBeenCalledWith("op-b", "abc#def"));
+
+    const signedIn = { ...localController, status: { providers: [{ provider: "claude", installed: true, auth: "ok", auth_source: "sealed" }] } } as Controller;
+    setControllers([signedIn]);
+    await waitFor(() => expect(onboarding.createBuddy).toHaveBeenCalled(), { timeout: 8000 });
+    expect(onboarding.giveMachineLogin).not.toHaveBeenCalled();
+  }, 20000);
+
+  it("goes back to the providers with the device's reason when the browser sign-in fails", async () => {
+    device.snapshot = snapshot({ available: false, machine: null, controller: null });
+    setControllers([controller("missing")]);
+    management.startBrowserSignIn.mockResolvedValue("op-b");
+    management.browserSignIn.mockResolvedValue({ state: "failed", message: "That code wasn't accepted." });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }, { timeout: 6000 }));
+    fireEvent.click(screen.getByRole("button", { name: /Claude/, pressed: false }));
+    fireEvent.click(screen.getByRole("button", { name: "Start with Claude Code" }));
+    expect(await screen.findByText("That code wasn't accepted.", {}, { timeout: 4000 })).toBeTruthy();
+    expect(screen.getByText(/Pick an AI provider to power switch-buddy/)).toBeTruthy();
   }, 15000);
 });
