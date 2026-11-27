@@ -19,7 +19,6 @@ export const CONSOLE_FEATURE_FLAGS = [
   'switch_buddy',
   'group_chats',
   'buddy_slack_handoff',
-  'gateway_v2',
   'additional_agent_providers',
   'decision_routing',
 ] as const;

@@ -27,11 +27,11 @@ function answers(path: string): boolean {
 
 describe("the pages Switch Console opens", () => {
   it("opens workspace and organization settings, and still answers the old URLs", () => {
-    // Console picks the old URLs for a server that reports gateway_v2 off,
-    // which a server older than the settings areas does.
     for (const link of ["workspace-settings", "organization-settings"] as const) {
-      expect(opens(settingsPagePath(link, true))).toBe(true);
-      expect(answers(settingsPagePath(link, false))).toBe(true);
+      expect(opens(settingsPagePath(link))).toBe(true);
+    }
+    for (const old of ["workspace", "organization", "connectors"]) {
+      expect(answers(old)).toBe(true);
     }
   });
 

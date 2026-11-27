@@ -47,7 +47,6 @@ export const STABLE_MANAGED_SERVER_FLAGS: readonly string[] = [
   'service_connections',
   'group_chats',
   'buddy_slack_handoff',
-  'gateway_v2',
 ];
 
 /**

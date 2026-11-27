@@ -21,10 +21,8 @@ import {
 } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { useAnyServerFeatureFlag, useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
-import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { log } from '@renderer/utils/logger';
 import { settingsPagePath } from '@shared/core/switch-servers/dashboard-pages';
 import { dashboardPageUrl, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { administersOrganization } from '@shared/core/workspaces/workspaces';
@@ -79,45 +77,15 @@ function PreferencesSettingsPage() {
 }
 
 /**
- * Whether the server's gateway has its new layout on. Its flags are read first
- * when they never have been, so a click made before they arrive still lands on
- * the settings home. Flags belong to the deployment, not to a workspace, so
- * the answer holds for every workspace on the server.
- *
- * Flags that cannot be read count as off, which opens today's addresses: every
- * server serves them and the new layout redirects them, but there Workspace
- * settings then lands on its Users page, so the fallback is logged.
- */
-async function newGatewayLayout(server: SwitchServer): Promise<boolean> {
-  let cause: unknown;
-  try {
-    const res = await rpc.featureFlags.current(server.id);
-    if (res.success && res.data.fetchedAt !== null) return res.data.flags.gateway_v2;
-    cause = res.success ? (res.data.error ?? 'not read yet') : res.error;
-  } catch (thrown) {
-    cause = thrown;
-  }
-  log.warn(
-    "Settings: could not read the server's feature flags, so its gateway settings open at their older addresses",
-    { serverId: server.id, cause }
-  );
-  return false;
-}
-
-/**
  * Open a workspace's or an organization's settings in the gateway, for the
- * workspace `tenantId` names and in the layout the server has on.
+ * workspace `tenantId` names.
  */
 async function openGatewaySettings(
   server: SwitchServer,
   link: 'workspace-settings' | 'organization-settings',
   tenantId: string | null
 ): Promise<void> {
-  const newLayout = await newGatewayLayout(server);
-  await openServerPage(
-    server.id,
-    dashboardPageUrl(server, settingsPagePath(link, newLayout), tenantId)
-  );
+  await openServerPage(server.id, dashboardPageUrl(server, settingsPagePath(link), tenantId));
 }
 
 const TAB_CONTENT: Record<SettingsPageTab, () => React.ReactNode> = {

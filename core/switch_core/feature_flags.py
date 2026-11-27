@@ -105,12 +105,6 @@ BUDDY_SLACK_HANDOFF = "buddy_slack_handoff"
 # server's apps, as before organizations.
 ORGANIZATION_CONNECTOR_APPS = "organization_connector_apps"
 
-# The dashboard's settings-areas layout (Home, Templates and Connectors on
-# the rail, Workspace and Organization settings), which was built behind this
-# flag and is now the dashboard's only layout. Always on:
-# see ALWAYS_ON_FEATURE_FLAGS.
-GATEWAY_V2 = "gateway_v2"
-
 # Chats in the dashboard: a Chats page listing the person's chats and the
 # rooms they are in with agents, opened and answered on the web as in Switch
 # Console. Core has nothing of its own behind it; the dashboard reads it and
@@ -165,9 +159,9 @@ def without_flag(flags: frozenset[str], flag: str) -> frozenset[str]:
 # Flags whose feature no longer has an off. Each is still accepted in
 # FEATURE_FLAGS_ENABLED, so a deployment that names one keeps starting, and is
 # always reported on, so a client that still reads it sees what the server
-# does: Switch Console picks its links into the dashboard by gateway_v2.
+# does.
 ALWAYS_ON_FEATURE_FLAGS: frozenset[str] = frozenset(
-    {GATEWAY_V2, AGENT_MANAGEMENT, AGENT_CHATS, GROUP_CHATS}
+    {AGENT_MANAGEMENT, AGENT_CHATS, GROUP_CHATS}
 )
 
 # Every flag the server recognises.
@@ -190,7 +184,6 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         HOSTED_AWAKE_BUDGETS,
         BUDDY_SLACK_HANDOFF,
         ORGANIZATION_CONNECTOR_APPS,
-        GATEWAY_V2,
         GATEWAY_CHATS,
         GATEWAY_ONBOARDING,
         ADDITIONAL_MESSAGING_PLATFORMS,

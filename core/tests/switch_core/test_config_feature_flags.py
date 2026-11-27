@@ -13,7 +13,6 @@ from switch_core.feature_flags import (
     ECOSYSTEM_SHOW_OWNERS,
     GATEWAY_CHATS,
     GATEWAY_ONBOARDING,
-    GATEWAY_V2,
     GROUP_CHATS,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
@@ -50,17 +49,6 @@ def test_listed_flags_are_on(monkeypatch: pytest.MonkeyPatch) -> None:
         key: key == ECOSYSTEM_SHOW_OWNERS or key in ALWAYS_ON_FEATURE_FLAGS
         for key in KNOWN_FEATURE_FLAGS
     }
-
-
-def test_the_dashboard_layout_flag_is_always_on_and_still_accepted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Switch Console picks its links into the dashboard by gateway_v2, and
-    # deployments that turned it on still name it.
-    monkeypatch.setenv("FEATURE_FLAGS_ENABLED", GATEWAY_V2)
-    assert SwitchConfig(**_BASE_KWARGS).feature_flags[GATEWAY_V2] is True  # type: ignore[arg-type]
-    monkeypatch.setenv("FEATURE_FLAGS_ENABLED", "")
-    assert SwitchConfig(**_BASE_KWARGS).feature_flags[GATEWAY_V2] is True  # type: ignore[arg-type]
 
 
 def test_always_on_flags_listed_by_an_old_config_still_start(

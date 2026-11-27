@@ -24,7 +24,7 @@ function signedIn({ admin = false, orgAdmin = false, operator = false, connector
       administersOrganization: orgAdmin,
       isOperator: operator,
       canManageConnectorApps: connectorApps,
-      features: { gateway_v2: true },
+      features: {},
     },
     isOperator: operator,
   } as unknown as ReturnType<typeof useAuth>);

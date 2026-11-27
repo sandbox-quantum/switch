@@ -34,18 +34,15 @@ export type ConnectorViewer = {
  */
 export type ConnectorAppSetUp =
   | { by: 'viewer'; at: 'settings' | ConnectorAppsPage }
-  | { by: 'organization-admin'; at: AnsweredAppsPage }
+  | { by: 'organization-admin' }
   | { by: 'operator' }
   | { by: 'command' };
-
-/** The dashboard pages for connector apps on a server that says who sets them up. */
-type AnsweredAppsPage = Exclude<ConnectorAppsPage, 'platform'>;
 
 /**
  * {@link ConnectorAppSetUp} for the person looking. A server with a
  * dashboard says who may (`canManage`): its operator, or the admin of its one
- * organization, in either layout of the dashboard. To anyone else it says
- * whether its organization's admins set the apps up in the dashboard
+ * organization, in the dashboard. To anyone else it says whether its
+ * organization's admins set the apps up in the dashboard
  * (`inDashboard`) or the operator does with the command. Where it does not
  * say, or there is no dashboard (which leaves Admin › Apps), only the
  * operator may, and anyone else is told what they were before the server
@@ -54,13 +51,11 @@ type AnsweredAppsPage = Exclude<ConnectorAppsPage, 'platform'>;
 export function connectorAppSetUp({
   operator,
   servesDashboard,
-  gatewayV2,
   canManage,
   inDashboard,
 }: {
   operator: boolean;
   servesDashboard: boolean;
-  gatewayV2: boolean;
   /** The server's `can_manage_connector_apps`; null where it does not say. */
   canManage: boolean | null;
   /** The server's `connector_apps_in_dashboard`; null where it does not say. */
@@ -69,20 +64,11 @@ export function connectorAppSetUp({
   const operatorOnly = (at: 'settings' | ConnectorAppsPage): ConnectorAppSetUp =>
     operator ? { by: 'viewer', at } : { by: 'operator' };
   if (!servesDashboard) return operatorOnly('settings');
-  if (canManage === null) return operatorOnly(gatewayV2 ? 'platform' : 'old-layout');
-  const at: AnsweredAppsPage = gatewayV2 ? 'organization-settings' : 'old-layout';
-  if (canManage) return { by: 'viewer', at };
-  if (inDashboard === true) return { by: 'organization-admin', at };
-  if (inDashboard === false) return { by: 'command' };
-  return gatewayV2 ? { by: 'command' } : { by: 'operator' };
+  if (canManage === null) return operatorOnly('platform');
+  if (canManage) return { by: 'viewer', at: 'organization-settings' };
+  if (inDashboard === true) return { by: 'organization-admin' };
+  return { by: 'command' };
 }
-
-/** Where an organization's admin sets the apps up, in words for the person sent to them. */
-const ORGANIZATION_ADMIN_SETS_UP = {
-  'organization-settings':
-    'An admin of your organization sets it up in Organization settings › Connector apps.',
-  'old-layout': 'An admin of your organization sets it up in the dashboard, under Connectors.',
-} as const satisfies Record<AnsweredAppsPage, string>;
 
 /** The one fix a card or profile offers: set the app up, or turn it on for the workspace. */
 export type ConnectorFix = 'set_up' | 'turn_on';
@@ -121,7 +107,8 @@ function appNotSetUpState(
       return {
         kind: 'unavailable',
         label: 'Unavailable',
-        detail: ORGANIZATION_ADMIN_SETS_UP[setUp.at],
+        detail:
+          'An admin of your organization sets it up in Organization settings › Connector apps.',
         tone: 'muted',
         fix: null,
       };

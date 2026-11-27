@@ -98,7 +98,6 @@ describe('buildEnvFile', () => {
       'follow_the_conversation',
       'service_connections',
       'buddy_slack_handoff',
-      'gateway_v2',
     ]);
   });
 
@@ -111,7 +110,6 @@ describe('buildEnvFile', () => {
       'service_connections',
       'group_chats',
       'buddy_slack_handoff',
-      'gateway_v2',
     ]);
     expect(managedServerFeatureFlags(false, false, false)).toEqual([
       'agent_management',
@@ -129,7 +127,6 @@ describe('buildEnvFile', () => {
       managedServerFeatureFlags(true, false, false)
     );
     expect(managedServerFeatureFlags(true, false, false)).toContain('group_chats');
-    expect(managedServerFeatureFlags(true, false, false)).toContain('gateway_v2');
   });
 
   it('runs switch-core as the restricted runtime role, not the schema owner', () => {

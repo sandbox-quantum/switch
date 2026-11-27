@@ -126,11 +126,9 @@ describe('Settings sections', () => {
     expect(ids(everyone)[2]).not.toContain('organization-settings');
   });
 
-  it('opens the settings of the gateway layout the server has on', () => {
-    expect(settingsPagePath('workspace-settings', false)).toBe('workspace');
-    expect(settingsPagePath('organization-settings', false)).toBe('organization');
-    expect(settingsPagePath('workspace-settings', true)).toBe('settings');
-    expect(settingsPagePath('organization-settings', true)).toBe('settings/org');
+  it('opens the settings in the gateway', () => {
+    expect(settingsPagePath('workspace-settings')).toBe('settings');
+    expect(settingsPagePath('organization-settings')).toBe('settings/org');
   });
 
   it('offers your devices and managed agents only with agent management', () => {
