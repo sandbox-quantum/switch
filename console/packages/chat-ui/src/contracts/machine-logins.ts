@@ -14,3 +14,22 @@ export type MachineLoginInput =
       region: string;
       credentials: { from: 'key'; json: string } | { from: 'this-computer' };
     };
+
+/**
+ * Where a browser sign-in on a machine stands: the machine is starting it;
+ * its page is open to sign in on (with a code to type there, or waiting for
+ * the code the page shows to be pasted back); or it ended.
+ */
+export type BrowserSignInState =
+  | { state: 'starting' }
+  | { state: 'open'; url: string; userCode: string | null; needsCode: boolean }
+  | { state: 'succeeded' }
+  | { state: 'failed'; message: string };
+
+/** What an app does for a browser sign-in on a machine: start it, read it, send it the code. */
+export type BrowserSignInHost = {
+  /** Starts it; answers the operation the machine runs it as. */
+  start: () => Promise<string>;
+  read: (operationId: string) => Promise<BrowserSignInState>;
+  sendCode: (operationId: string, code: string) => Promise<void>;
+};
