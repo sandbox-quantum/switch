@@ -9,8 +9,6 @@ properties:
     levels: [code, system]
     owner: platform
     status: proposed
-    gaps:
-      system: waits on the two-replica lane
     notes: >
       `bridges/collaboration/collaboration_core.py` (`_post_source` for posts
       coming in, `_claim_outbound` for messages going out) and
@@ -27,6 +25,11 @@ properties:
       back to it. A message the platform took and then failed on is expected
       twice, since the bridge cannot tell it went out. An agent's retried
       `post_message` is outside this property: it takes no idempotency key.
+      At the system level, on the two-replica lane: the bridge's holder is
+      crashed, stopped, paused or taken out of rotation
+      (`src/fast/replica-faults.ts`), or its wake-up listener cut
+      (`src/fast/replica-bus-faults.ts`), and each agent post must reach the
+      channel once, and a person's post the agent once.
   - id: bridge.split-preserves-content
     title: A message split to fit a platform keeps what it said
     statement: >

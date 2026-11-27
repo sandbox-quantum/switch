@@ -21,9 +21,14 @@ prints one JSON object:
   derived from: how long a process lease holds unrenewed (`lease_ttl`), how
   often every process balances (`balance_interval`), how often a process
   renews (`renew_every`), how often a process checks the leases of the
-  connections held elsewhere (`watch_seconds`), and how often it reads every
-  connection again (`recheck_seconds`). A scenario reads them here rather than restating
-  them, so a change to a timer moves its waits with it.
+  connections held elsewhere (`watch_seconds`), how often every signal family
+  re-checks what the process holds (`recheck_seconds`), how often a client
+  that reads rooms looks for rows it was not woken for (`room_recheck`), how long a held row
+  lasts when no signal could reach it (`cache_ttl`, the default of
+  `AGENT_AUTH_CACHE_TTL_SECONDS`, which the lane does not set), and how often a
+  listening connection proves itself alive (`listener_heartbeat`) and waits
+  before its first reconnect (`reconnect_backoff`). A scenario reads them here
+  rather than restating them, so a change to a timer moves its waits with it.
 
 Connects as the schema owner, as `delivery.py` does: the rows are not
 tenant-scoped.
@@ -40,9 +45,16 @@ import sys
 import asyncpg
 
 from switch_core.bridges.agent.protocol.connection_rows import WATCH_SECONDS
+from switch_core.config import SwitchConfig
+from switch_core.messages import notify
 from switch_core.ownership import BALANCE_INTERVAL_SECONDS, owner_of
 from switch_core.process_lease import LEASE_TTL, RENEW_EVERY_SECONDS
-from switch_core.signals import RECHECK_SECONDS
+from switch_core.signals import (
+    HEARTBEAT_SECONDS,
+    RECHECK_SECONDS,
+    RECONNECT_BACKOFF_BASE,
+)
+from switch_core.transport import postgres as transport
 
 
 async def read(connection: asyncpg.Connection, kind: str) -> dict[str, object]:
@@ -131,6 +143,14 @@ async def read(connection: asyncpg.Connection, kind: str) -> dict[str, object]:
             "renew_every": RENEW_EVERY_SECONDS,
             "watch_seconds": WATCH_SECONDS,
             "recheck_seconds": RECHECK_SECONDS,
+            "room_recheck": transport.RECHECK_SECONDS,
+            "cache_ttl": SwitchConfig.model_fields[
+                "agent_auth_cache_ttl_seconds"
+            ].default,
+            "listener_heartbeat": max(HEARTBEAT_SECONDS, notify.HEARTBEAT_SECONDS),
+            "reconnect_backoff": max(
+                RECONNECT_BACKOFF_BASE, notify.RECONNECT_BACKOFF_BASE
+            ),
         },
     }
 

@@ -11,8 +11,6 @@ properties:
     levels: [model, code, system]
     owner: platform
     status: proposed
-    gaps:
-      system: waits on the two-replica lane
     notes: >
       One property with one checker parameterised by what is revoked, since the
       mechanism is the same: a held row (`bridges/agent/held_rows.py`) kept
@@ -27,4 +25,11 @@ properties:
       cache must refuse within the TTL once it missed a revocation; a copy
       that re-reads (room membership) must agree once it has resynced or
       re-checked; the broker, which keeps no grant in memory, must agree at
-      once.
+      once. At the system level, on the two-replica lane
+      (`src/fast/replica-bus-faults.ts`), one replica removes an agent from a
+      room or revokes a controller while the other's signal listener is cut,
+      and the agent's post or the controller's token through the deaf replica
+      must be refused within the TTL.
+      Not covered yet at that level: the lane revokes a membership and a
+      controller; a connector grant and a membership read by a client
+      that reads rooms are not faulted at the system level yet.

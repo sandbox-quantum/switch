@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { connect } from 'node:net';
 import path from 'node:path';
@@ -44,8 +44,35 @@ export interface Timers {
   renewEvery: number;
   /** How often a process checks the leases of connections held elsewhere (`connection_rows.WATCH_SECONDS`). */
   watchSeconds: number;
-  /** How often a process reads every connection again (`signals.RECHECK_SECONDS`). */
+  /** How often every signal family re-checks what the process holds (`signals.RECHECK_SECONDS`). */
   recheckSeconds: number;
+  /** How often a client that reads rooms looks for rows it was not woken for (`transport/postgres.py`). */
+  roomRecheck: number;
+  /** How long a held row lasts when no signal could reach it (`AGENT_AUTH_CACHE_TTL_SECONDS`'s default). */
+  cacheTtl: number;
+  /** How often a listening connection proves itself alive (`signals.HEARTBEAT_SECONDS`). */
+  listenerHeartbeat: number;
+  /** How long a listener waits before its first reconnect (`signals.RECONNECT_BACKOFF_BASE`). */
+  reconnectBackoff: number;
+}
+
+/**
+ * What a replica's database connection is for, as `main` names it
+ * (`connection_name`): the signal bus's listener, or the one that hears a
+ * room's new rows.
+ */
+export type ListenerRole = 'signals' | 'messages';
+
+/** A replica made deaf on one listener (`Replicas.deafen`). */
+export interface Deafened {
+  /** When the first cut was made, in epoch milliseconds. */
+  cutAt: Promise<number>;
+  /**
+   * Once the window has passed: every cut, as when and the backends it ended,
+   * and when the listener was seen connected again after the last cut
+   * (`backAt`, epoch milliseconds), or null if not within 30 seconds.
+   */
+  done: Promise<{ cuts: { at: number; pids: number[] }[]; backAt: number | null }>;
 }
 
 /** A connection still open by its row, and the process holding it. */
@@ -280,6 +307,10 @@ export class Replicas {
         renew_every: number;
         watch_seconds: number;
         recheck_seconds: number;
+        room_recheck: number;
+        cache_ttl: number;
+        listener_heartbeat: number;
+        reconnect_backoff: number;
       };
     };
     return {
@@ -309,8 +340,74 @@ export class Replicas {
         renewEvery: raw.timers.renew_every,
         watchSeconds: raw.timers.watch_seconds,
         recheckSeconds: raw.timers.recheck_seconds,
+        roomRecheck: raw.timers.room_recheck,
+        cacheTtl: raw.timers.cache_ttl,
+        listenerHeartbeat: raw.timers.listener_heartbeat,
+        reconnectBackoff: raw.timers.reconnect_backoff,
       },
     };
+  }
+
+  /**
+   * Make a replica deaf on one listener for `windowMs`: just after the
+   * listener's heartbeat, end its backend, and end it again each time it
+   * reconnects until the window has passed
+   * (`properties/history/listeners.py`). Nothing sent on that channel
+   * reaches the replica meanwhile, apart from what a reconnect re-reads, and
+   * the replica serves requests as usual, on its pool.
+   */
+  deafen(replica: ReplicaId, role: ListenerRole, windowMs: number): Deafened {
+    this.log(`replica ${replica}: cutting its ${role} listener for ${windowMs}ms`);
+    const child = spawn(
+      'uv',
+      [
+        'run',
+        '--project',
+        path.join(REPO_ROOT, 'core'),
+        'python',
+        path.join(REPO_ROOT, 'properties', 'history', 'listeners.py'),
+        '--replica',
+        String(replica),
+        '--role',
+        role,
+        '--window',
+        String(windowMs / 1000),
+      ],
+      { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+    let stdout = '';
+    let stderr = '';
+    let cutAt: (at: number) => void = () => undefined;
+    let notCut: (error: Error) => void = () => undefined;
+    const first = new Promise<number>((resolve, reject) => {
+      cutAt = resolve;
+      notCut = reject;
+    });
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+      const line = stdout.split('\n').find((l) => l.includes('first_cut_at'));
+      if (line !== undefined) cutAt((JSON.parse(line) as { first_cut_at: number }).first_cut_at);
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    const done = new Promise<{ cuts: { at: number; pids: number[] }[]; backAt: number | null }>((resolve, reject) => {
+      child.on('error', reject);
+      child.on('close', (code) => {
+        const failure = new Error(`cutting replica ${replica}'s ${role} listener failed (exit ${code}): ${stderr.trim()}`);
+        notCut(failure);
+        if (code !== 0) return reject(failure);
+        const last = stdout.trim().split('\n').at(-1) ?? '';
+        const result = JSON.parse(last) as { cuts: { at: number; pids: number[] }[]; back_at: number | null };
+        resolve({ cuts: result.cuts, backAt: result.back_at });
+      });
+    });
+    // Either may go unawaited when the other fails first.
+    first.catch(() => undefined);
+    done.catch(() => undefined);
+    return { cutAt: first, done };
   }
 
   /** Where a replica's log ends now, to read what it logs from here on. */

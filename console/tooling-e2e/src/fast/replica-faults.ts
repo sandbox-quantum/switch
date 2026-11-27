@@ -41,7 +41,7 @@ const BRIDGE = 'bridge';
 /** Slack on every deadline derived from the timers: a poll, a request, a slow CI runner. */
 const MARGIN_MS = 15_000;
 /** How long a message must stay single before it counts as delivered once. */
-const ONCE_WINDOW_MS = 10_000;
+export const ONCE_WINDOW_MS = 10_000;
 
 /**
  * A replica frozen (`SIGSTOP`) with an outside request in flight, such as the
@@ -55,14 +55,14 @@ const HOLDS_AGAIN = /^This process's lease .* holds again; claiming its share of
 
 const SUSPENDED = /^This process's lease .* was not renewed in time; stopping every piece of work it owns/;
 
-interface Setup {
+export interface Setup {
   agent: RegisteredAgent;
   bridged: BridgedRoom;
   holder: ReplicaId;
   timers: Timers;
 }
 
-async function setUp({ fixtures, replicas, log }: FastContext): Promise<Setup> {
+export async function setUp({ fixtures, replicas, log }: FastContext): Promise<Setup> {
   const agent = await fixtures.agent('fault');
   const bridged = await fixtures.mattermostRoom('room', [agent]);
   const ownership = await replicas!.settled(BRIDGE);
@@ -127,7 +127,7 @@ async function notificationsWithin(
 }
 
 /** The copies of an agent post in the channel since `sinceMs`. */
-async function postCopies(
+export async function postCopies(
   mattermost: MattermostClient,
   bridged: BridgedRoom,
   agent: RegisteredAgent,
@@ -170,7 +170,7 @@ async function waitForRightfulHolder(
 }
 
 /** An agent post appears in the channel exactly once, within `deadlineMs`. */
-async function expectPostedOnce(
+export async function expectPostedOnce(
   mattermost: MattermostClient,
   bridged: BridgedRoom,
   agent: RegisteredAgent,
@@ -276,7 +276,7 @@ async function expectDeliveredAfterHandOver(
  * when a human's post may be lost (`expectDeliveredAfterHandOver`). Returns
  * the posts lost.
  */
-async function roundTrip(
+export async function roundTrip(
   context: FastContext,
   setup: Setup,
   label: string,

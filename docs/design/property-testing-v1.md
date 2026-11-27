@@ -685,17 +685,63 @@ In this order, each checker shown to fail on a planted bug:
       lapse count, is held by a unit test: on the lane the balance usually
       runs before the renewal, so the plant passes there.
 
-   3. **Bus faults.** The listening connection is cut on its own with
-      `pg_terminate_backend` on the backends whose query is `LISTEN`, which
-      loses every notification sent until it reconnects; no proxy is needed.
-      - `signal.loss-only-delays`: cut one replica's listener, change something
-        on the other (rename an agent, remove a member), and see the change
-        take effect within the periodic re-check.
-      - `revocation.takes-effect-everywhere` at the system level: revoke on one
-        replica, then use what was revoked against the other, with its
-        listener whole and cut; it is refused within the bound.
-      A proxy such as toxiproxy, for latency between a replica and Postgres,
-      is added only if stage 2 shows timing hides what the checks look for.
+   3. **Bus faults.** One replica's listening connection is cut on its own,
+      with `pg_terminate_backend`, and no proxy. Every connection names its
+      process and what it is for as its `application_name`
+      (`replica-1-<suffix> signals`, `... messages`, `... pool`), so a cut
+      reaches one replica's signal bus or its room wake-ups and nothing
+      else, and the replica goes on serving requests on its pool. A single
+      cut is over in about a second, the reconnect's resync closing the gap,
+      so the harness (`Replicas.deafen`, with
+      `properties/history/listeners.py`) cuts just after the listener's
+      heartbeat and again each time it reconnects, for a window past the
+      heartbeat and the bound checked. A scenario makes its change right
+      after the first cut, from the other replica, straight to its port
+      (`SwitchClient.at`), so the change surely falls while the replica is
+      deaf (`src/fast/replica-bus-faults.ts`):
+      - `revocation.takes-effect-everywhere`: an agent taken out of a room,
+        and a controller revoked. The deaf replica read the membership or the
+        controller's row again after the cut; the agent's post, or the
+        controller's token, through it must be refused within a held row's
+        TTL (`AGENT_AUTH_CACHE_TTL_SECONDS`). Read again after the cut, so the
+        refusal waits out the TTL rather than finding it over already.
+      - `signal.loss-only-delays`: an agent's connection closed on the other
+        replica, which the deaf one must read offline within its first
+        reconnect backoff of the other doing so; and an agent's posts through
+        the other replica while the bridge's holder has its wake-ups cut,
+        each of which must reach Mattermost once, within the first backoff.
+        The posts are spaced across more than a room re-check
+        (`transport/postgres.py` wakes a client's rooms with unread rows every
+        30 seconds), which would relay at most two of them in time: one post
+        alone passed with the wake-up on reconnect removed when a re-check
+        happened to fall within its bound.
+      - Each also checks the listener is back within its first backoff once
+        the cuts stop.
+
+      Their first run found two bugs, in all four listeners
+      (`messages/notify.py`, `signals.py`, and the agent-event and
+      session-activity listeners), both fixed in `db/listening.py`. A
+      listener noticed its connection had ended only at its next heartbeat,
+      up to 20 seconds later; all that time it lost every notification, and a
+      held row stayed held past its TTL under a connection that no longer
+      existed, so a removed agent could still post through that replica. It
+      now notices when asyncpg reports the connection closed. And the
+      reconnect backoff never started again after a connection was made, so
+      a process that had lost its connection a few times waited the 15-second
+      cap before every reconnect.
+
+      Each check was seen to fail on a planted bug: a held row kept across a
+      reconnect (both revocations), no resync on reconnect (the closed
+      connection, read live until the periodic re-check), and no wake-up of
+      every room on reconnect (the post never reached the channel), as well
+      as on the two bugs above before their fix.
+
+      What is left: a connection that goes silent without ending (a half-open
+      socket, dropped packets) is noticed only by the heartbeat and the
+      socket's keepalive, and latency between a replica and Postgres is not
+      injected at all. Both need a proxy such as toxiproxy, added if a check
+      ever needs it. A connector grant and the room membership of a client
+      that reads rooms are not revoked on the lane yet.
 
 Not planned here: the controller's own rules on its side (TypeScript), such as
 a handed-over session never being driven by two controllers at once in

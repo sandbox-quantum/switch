@@ -156,7 +156,7 @@ passed or not. A teardown that leaves something behind fails the scenario.
 If `mattermost-roundtrip` passes and a provider-lane scenario fails, the fault
 is in the agent session, not in Switch, the bridge or the harness.
 
-Seven more run last, and only on `just e2e-fast --replicas 2`: the replica
+Eleven more run last, and only on `just e2e-fast --replicas 2`: the replica
 fault scenarios. Five fault the replica that holds the Mattermost bridge
 (`src/fast/replica-faults.ts`):
 
@@ -187,12 +187,29 @@ Two hold a client's connection (`src/fast/replica-connections.ts`):
   the old connection must be refused. The lane turns on `agent_management`
   for this.
 
+Four cut one replica's listening connection, just after its heartbeat and
+again each time it reconnects, while the other replica makes a change
+(`src/fast/replica-bus-faults.ts`). Each also checks the listener is back
+within its first reconnect backoff once the cuts stop:
+
+- `replica-membership-revoked-while-deaf` and
+  `replica-controller-revoked-while-deaf`: an agent is taken out of a room, or
+  a controller revoked. The agent's post, or the controller's token, through
+  the deaf replica must be refused within a held row's TTL.
+- `replica-disconnect-while-deaf`: an agent's connection closes on the other
+  replica. The deaf one must read the agent offline once its listener
+  reconnects, not at the periodic re-check.
+- `replica-wakeups-lost-while-deaf`: the bridge's holder has its wake-ups cut
+  while an agent posts, five times, spaced across more than a room re-check.
+  Each post must reach Mattermost once, within the first backoff.
+
 They act through `src/clients/replicas.ts`, which stops, pauses, starts again
-(`scripts/replica.sh`) and takes out of HAProxy's rotation a replica, and
-undoes every fault after the scenario, passed or not. Who holds what is read
-from the database by `properties/history/ownership.py`, which also reports the
-timers every wait is derived from. A full run of the seven takes about ten
-minutes.
+(`scripts/replica.sh`) and takes out of HAProxy's rotation a replica, cuts its
+listener (`properties/history/listeners.py`), and undoes every fault after the
+scenario, passed or not. `SwitchClient.at` sends requests straight to one
+replica's port. Who holds what is read from the database by
+`properties/history/ownership.py`, which also reports the timers every wait is
+derived from. A full run of the eleven takes about fifteen minutes.
 
 ### Browser lane
 

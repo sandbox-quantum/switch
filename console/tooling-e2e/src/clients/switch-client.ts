@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import type { Environment, SwitchEnv } from "../core/env.ts";
+import { type Environment, stripTrailingSlash, type SwitchEnv } from "../core/env.ts";
 import { assertAllowed } from "../core/guard.ts";
 import type { IssuedSecrets } from "../core/secrets.ts";
 
@@ -577,6 +577,22 @@ export class SwitchClient {
     await this.gateway("DELETE", `/management/controllers/${controllerId}`);
   }
 
+  /**
+   * The status `GET /v1/management/controllers/{id}/assignment` answers with,
+   * as the controller: 200 while its token stands, 401 once it is revoked.
+   */
+  async controllerAssignmentStatus(controller: EnrolledController): Promise<number> {
+    try {
+      await this.request("GET", `/v1/management/controllers/${controller.id}/assignment`, {
+        token: controller.accessToken,
+      });
+      return 200;
+    } catch (error) {
+      if (!(error instanceof SwitchHttpError)) throw error;
+      return error.status;
+    }
+  }
+
   /** The admin's controllers as the gateway lists them: `state` is `online`, `offline`, `unknown` or `revoked`. */
   async controllers(): Promise<{ id: string; state: string }[]> {
     return this.gateway("GET", "/management/controllers");
@@ -754,6 +770,30 @@ export class SwitchClient {
       this.issued,
     );
     other.tagging = this.tagging;
+    return other;
+  }
+
+  /**
+   * The same client, sending every request straight to replica `replica` of a
+   * two-replica stack, which serves on port `8000 + replica`
+   * (`scripts/replica.sh`), instead of through HAProxy. Shares the session,
+   * the record of issued credentials and the request tagging.
+   */
+  at(replica: 1 | 2): SwitchClient {
+    const url = new URL(this.apiUrl);
+    url.port = String(8000 + replica);
+    const other = new SwitchClient(
+      {
+        apiUrl: stripTrailingSlash(url.toString()),
+        agentRegistrationToken: this.registrationToken,
+        gatewayAdminEmail: this.adminEmail,
+        gatewayAdminPassword: this.adminPassword,
+      },
+      this.environment,
+      this.issued,
+    );
+    other.tagging = this.tagging;
+    other.gatewayCookie = this.gatewayCookie;
     return other;
   }
 
@@ -1205,6 +1245,11 @@ export class SwitchClient {
     if (!statuses || typeof statuses !== "object") return null;
     const status = (statuses as Record<string, unknown>)[agentId];
     return typeof status === "string" ? status : null;
+  }
+
+  /** `DELETE /gateway/rooms/{room}/agents/{agent}`: take an agent out of a room. */
+  async removeAgentFromRoom(roomId: string, agentId: string): Promise<void> {
+    await this.gateway("DELETE", `/rooms/${roomId}/agents/${agentId}`);
   }
 
   /**
