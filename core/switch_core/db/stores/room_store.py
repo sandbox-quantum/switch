@@ -1013,10 +1013,14 @@ class RoomStore:
         # they lost by leaving in a way nothing pruned (an account unlinked,
         # an agent deleted or handed on).
         await self.prune_admins(session, room_id)
+        # No conflict target: the row has two unique indexes, the primary key
+        # and the tenant-scoped one a delivery cursor refers to, and a
+        # concurrent insert of the same membership can meet on either. With
+        # the primary key named, a race decided on the other one raises.
         recorded = await session.scalar(
             pg_insert(ClientRoom)
             .values(client_id=client_id, room_id=room_id)
-            .on_conflict_do_nothing(index_elements=["client_id", "room_id"])
+            .on_conflict_do_nothing()
             .returning(ClientRoom.client_id)
         )
         # The client's consumer starts reading the room here, wherever and
