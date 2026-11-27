@@ -96,7 +96,9 @@ AdapterName = Literal["github", "oauth", "api_key"]
 RedirectMode = Literal["loopback", "core"]
 # Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
 # authorization request is Core's to set.
-AuthorizationParam = Literal["access_type", "include_granted_scopes"]
+AuthorizationParam = Literal[
+    "access_type", "include_granted_scopes", "token_access_type"
+]
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -191,6 +193,9 @@ class OAuthClient(BaseModel):
     themselves, and what the sign-in does until they do, said whenever Switch
     drops one it cannot revoke.
 
+    `revocation_by_bearer`: POST to the named revocation URL with the access
+    token as a bearer, rather than an RFC 7009 form.
+
     `revocation_ends_grant`: revoking any of an account's sign-ins through
     the client ends all of them, as Google's does. A reconnect to the same
     account through the same client then does not revoke the sign-in it
@@ -242,6 +247,7 @@ class OAuthClient(BaseModel):
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_discovered: bool = False
+    revocation_by_bearer: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     revocation_ends_grant: bool = False
     revocation_ends_tokens: bool = False
@@ -289,6 +295,8 @@ class OAuthClient(BaseModel):
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
             )
+        if self.revocation_by_bearer and self.revocation_url is None:
+            raise ValueError("bearer revocation needs an explicit revocation_url")
         if (self.revocation_ends_grant or self.revocation_ends_tokens) and (
             self.revocation_url is None and not self.revocation_discovered
         ):
@@ -333,8 +341,10 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Read account identity from an authenticated GET, an MCP tool result,
+    """Read account identity from an authenticated URL, an MCP tool result,
     or the vendor's RFC 7662 introspection answer for the token.
+
+    A URL names GET or POST; a POST can send a static JSON body.
 
     `arguments` go to the MCP tool in place of `{}`. They are fixed catalog
     text, such as a self-reference that the vendor documents as the caller
@@ -343,6 +353,8 @@ class ConnectionIdentity(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    method: Literal["GET", "POST"] | None = None
+    body: dict[str, object] | None = None
     mcp_tool: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,128}$")
     arguments: (
         dict[
@@ -368,6 +380,10 @@ class ConnectionIdentity(BaseModel):
             raise ValueError(
                 "identity needs exactly one of url, mcp_tool or introspection"
             )
+        if (self.method is not None) != (self.url is not None):
+            raise ValueError("an identity call to a url names its method, GET or POST")
+        if self.body is not None and self.method != "POST":
+            raise ValueError("only a POST identity call sends a body")
         if self.arguments is not None and self.mcp_tool is None:
             raise ValueError("arguments are for an mcp_tool identity")
         if isinstance(self.account_id, list) and len(set(self.account_id)) != len(

@@ -465,7 +465,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE, "gitlab"}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, "gitlab", "dropbox"}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -487,6 +487,15 @@ class TestOnlyTheOperator:
         assert apps["gitlab"]["redirect_uris"] == [gitlab]
         assert apps["gitlab"]["needs_public_url"] is True
         assert apps["gitlab"]["scopes"] == ["mcp", "read_api", "read_user", "api"]
+        dropbox = f"{PUBLIC}/gateway/service-connections/dropbox/flows/callback"
+        assert apps["dropbox"]["redirect_uris"] == [dropbox]
+        assert apps["dropbox"]["needs_public_url"] is True
+        assert apps["dropbox"]["scopes"] == [
+            "account_info.read",
+            "files.metadata.read",
+            "files.content.read",
+            "files.content.write",
+        ]
         assert apps[AIRTABLE]["scopes"] == [
             "data.records:read",
             "schema.bases:read",

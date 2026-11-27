@@ -231,6 +231,69 @@ class TestSignIn:
         identity = await adapter.identify(secret.access_token or "", {})
         assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
 
+    async def test_reads_the_account_with_a_post_that_sends_no_body(
+        self, vendor
+    ) -> None:
+        vendor.identity_method = "POST"
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    method: GET\n",
+                "    method: POST\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "", {})
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+        [request] = vendor.identity_requests
+        assert request.method == "POST"
+        assert request.content == b""
+        assert "content-type" not in request.headers
+
+    async def test_a_post_identity_call_sends_its_json_body(self, vendor) -> None:
+        vendor.identity_method = "POST"
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    method: GET\n",
+                "    method: POST\n    body: { include: all }\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        await adapter.identify(secret.access_token or "", {})
+        [request] = vendor.identity_requests
+        assert request.headers["content-type"] == "application/json"
+        assert json.loads(request.content) == {"include": "all"}
+
+    async def test_an_identity_call_on_the_wrong_method_is_refused(
+        self, vendor
+    ) -> None:
+        vendor.identity_method = "POST"
+        adapter, _ = _adapter(vendor)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="HTTP 405"):
+            await adapter.identify(secret.access_token or "", {})
+
+    async def test_sends_the_vendors_own_authorization_params(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                "    client_settings: EXAMPLE\n"
+                "    authorization_params: { token_access_type: offline }\n",
+            ),
+        )
+        url = await adapter.authorization_url(
+            redirect_uri=REDIRECT,
+            state="state-1",
+            code_challenge=s256("verifier"),
+            scopes=["read:items"],
+            choices={},
+        )
+        query = parse_qs(urlsplit(url).query)
+        assert query["token_access_type"] == ["offline"]
+        assert query["code_challenge_method"] == ["S256"]
+
     async def test_a_numeric_account_id_is_read_as_text(self, vendor) -> None:
         vendor.account = {"id": 1001}
         adapter, _ = _adapter(vendor)
@@ -247,6 +310,7 @@ class TestSignIn:
 
 
 INTROSPECTED = STATIC.replace(
+    "    method: GET\n"
     "    url: https://api.example.test/me\n"
     "    account_id: account.id\n"
     "    label: account.email\n",
@@ -689,6 +753,31 @@ class TestDisconnect:
         [revoked] = vendor.revoked
         assert revoked["token"] == secret.values["refresh_token"]
         assert revoked["token_type_hint"] == "refresh_token"
+
+    async def test_revokes_with_a_bearer_and_no_form(self, vendor) -> None:
+        url = f"{ISSUER}/bearer-revoke"
+        adapter, http = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                "    client_settings: EXAMPLE\n"
+                f"    revocation_url: {url}\n"
+                "    revocation_by_bearer: true\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        requests = []
+
+        async def capture(request: httpx.Request) -> None:
+            if str(request.url) == url:
+                requests.append(request)
+
+        http.event_hooks["request"].append(capture)
+        vendor.fail[url] = (200, {})
+        assert await adapter.revoke_connection(secret, "oauth") is True
+        [request] = requests
+        assert request.headers["authorization"] == f"Bearer {secret.access_token}"
+        assert request.content == b""
 
     async def test_says_it_ended_nothing_where_the_vendor_knew_no_such_token(
         self, vendor

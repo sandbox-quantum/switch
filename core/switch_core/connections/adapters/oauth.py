@@ -881,10 +881,12 @@ class OAuthAdapter:
             body = await self._introspect(access_token, checked)
         else:
             assert self._identity.url is not None
+            assert self._identity.method is not None
             response = await self._send(
                 self._http.build_request(
-                    "GET",
+                    self._identity.method,
                     render(self._identity.url, checked),
+                    json=self._identity.body,
                     headers={
                         "Authorization": f"Bearer {access_token}",
                         "Accept": "application/json",
@@ -1259,10 +1261,12 @@ class OAuthAdapter:
         shows (`alias`), or the service and the choices."""
         # The loader refuses paste methods on an entry with no identity url.
         assert self._identity.url is not None
+        assert self._identity.method is not None
         response = await self._send(
             self._http.build_request(
-                "GET",
+                self._identity.method,
                 render(self._identity.url, choices),
+                json=self._identity.body,
                 headers={
                     **self._paste_headers(method, values, choices),
                     "Accept": "application/json",
@@ -1346,6 +1350,32 @@ class OAuthAdapter:
         if url is None:
             raise ServiceAdapterError(
                 f"{self._name} gives Switch no way to revoke a sign-in."
+            )
+        if self._oauth.revocation_by_bearer:
+            token = secret.access_token
+            if token is None:
+                return False
+            response = await self._send(
+                self._http.build_request(
+                    "POST", url, headers={"Authorization": f"Bearer {token}"}
+                )
+            )
+            if response.status_code == 401:
+                # An expired access token cannot revoke the refresh token.
+                # Obtain a fresh access token and revoke that sign-in.
+                renewed = await self.refresh(secret)
+                token = renewed.access_token
+                if token is None:
+                    return False
+                response = await self._send(
+                    self._http.build_request(
+                        "POST", url, headers={"Authorization": f"Bearer {token}"}
+                    )
+                )
+            if response.status_code in (200, 204):
+                return True
+            raise ServiceAdapterError(
+                f"{self._name} refused to revoke the sign-in (HTTP {response.status_code})."
             )
         refresh_token = secret.values.get("refresh_token")
         token, hint = (

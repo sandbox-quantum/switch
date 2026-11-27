@@ -58,6 +58,13 @@ version of their own to them without also giving them a release of their own.
   nobody had given for a provider no agent used kept the "AI provider logins
   missing or expired on cloud machines" monitor alerting for good.
 
+#### Added
+- **The Dropbox connection.** An operator registers a Dropbox app, and a
+  connected person can grant agents access to read and change files through
+  Dropbox's MCP server. OAuth identity calls now support POST, and Dropbox
+  requests offline access. Live account verification is still needed.
+
+
 ### [0.32.2] - 2026-11-25
 
 #### Changed

@@ -26,7 +26,6 @@ PLACEHOLDERS = {
     "canva",
     "clickup",
     "cloudflare",
-    "dropbox",
     "grafana",
     "hubspot",
     "intercom",
@@ -57,6 +56,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "google-workspace",
         "gitlab",
         "notion",
@@ -67,6 +67,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "github",
         "gitlab",
         "google-workspace",
@@ -78,6 +79,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["dropbox"].skill_files
     assert "SKILL.md" in CATALOG["datadog"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
@@ -569,6 +571,60 @@ def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity.label == "username"
 
 
+def test_the_shipped_dropbox_entry_signs_in_as_dropbox_documents_it():
+    definition = CATALOG["dropbox"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Dropbox registers clients dynamically only for its trusted list, so
+    # each server's operator registers a Dropbox app.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "DROPBOX"
+    # A refresh token comes only with offline access.
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+    assert definition.auth.refresh == "reusable"
+    # Endpoints come from the MCP server's metadata, which offers S256.
+    assert (oauth.authorization_url, oauth.token_url) == (None, None)
+    assert oauth.revocation_url == "https://api.dropboxapi.com/2/auth/token/revoke"
+    assert oauth.revocation_by_bearer
+    assert not oauth.revocation_discovered
+    assert not oauth.revocation_ends_grant
+    assert not oauth.revocation_ends_tokens
+    assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.url, identity.body) == (
+        "POST",
+        "https://api.dropboxapi.com/2/users/get_current_account",
+        None,
+    )
+    assert (identity.account_id, identity.label) == ("account_id", "email")
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        4 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("dropbox", "https://mcp.dropbox.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read = ["account_info.read", "files.metadata.read", "files.content.read"]
+    assert definition.access.read.scopes == read
+    assert definition.access.write.scopes == [*read, "files.content.write"]
+    # Never permanent deletion, sharing, file requests or a team scope.
+    every = set(definition.access.write.scopes)
+    assert "files.permanent_delete" not in every
+    assert not any(
+        scope.startswith(("sharing.", "file_requests.", "team", "members."))
+        for scope in every
+    )
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+
+
 @pytest.fixture
 def catalog_copy(tmp_path):
     root = tmp_path / "catalog"
@@ -819,6 +875,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -859,6 +916,23 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+@pytest.mark.parametrize(
+    ("method", "body", "error"),
+    [
+        ("", "", "names its method"),
+        ("    method: GET\n", "    body: { include: all }\n", "only a POST"),
+        ("    method: PUT\n", "", "method"),
+    ],
+)
+def test_refuses_an_invalid_rest_identity(catalog_copy, method, body, error):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace("    method: GET\n", method + body),
+    )
+    with pytest.raises(CatalogError, match=error):
+        load_catalog(catalog_copy)
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
@@ -919,7 +993,7 @@ def test_rejects_revocation_ending_tokens_on_an_entry_that_passes_none_through(
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
@@ -1054,6 +1128,7 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
 
 GET_IDENTITY = (
     "  identity:\n"
+    "    method: GET\n"
     "    url: https://api.example.test/me\n"
     "    account_id: account.id\n"
     "    label: account.email\n"

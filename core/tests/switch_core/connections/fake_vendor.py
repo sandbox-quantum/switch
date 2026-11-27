@@ -398,6 +398,8 @@ class FakeOAuthServer:
         self.introspect_without_active = False
         # Fields every token response carries beside the tokens.
         self.token_extras: dict[str, Any] = {}
+        self.identity_method = "GET"
+        self.identity_requests: list[httpx.Request] = []
         # Credentials people paste rather than sign in for, each with whether
         # it may read the account: tokens, sent as a bearer, and pairs of
         # keys, sent in the example's own headers with the site they are for.
@@ -485,7 +487,10 @@ class FakeOAuthServer:
             return httpx.Response(200)
         if where == f"{self.issuer}/introspect" and request.method == "POST":
             return self._introspect(request)
-        if where == self.identity_url and request.method == "GET":
+        if where == self.identity_url:
+            self.identity_requests.append(request)
+            if request.method != self.identity_method:
+                return _json(405, {"error": "method_not_allowed"})
             if self._bearer(request) is None:
                 reads = self._pasted(request)
                 if reads is None:
