@@ -16,23 +16,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import (
     BaseModel,
-    Field,
     TypeAdapter,
     ValidationError,
-    model_validator,
 )
 
-from switch_core import hosted_v2
+from switch_core import box_cluster
 from switch_core.db.models import (
-    MAX_BUDGET_AMOUNT,
-    MAX_BUDGET_PERIOD_HOURS,
     UsageMetric,
 )
 from switch_core.gateway import tenants
 from switch_core.gateway.schemas import (
     BudgetCreateRequest,
     BudgetUpdateRequest,
-    _V1Metric,
 )
 from switch_core.management.controller_routes import router as controller_router
 from switch_core.tenant_context import tenant_scope
@@ -43,29 +38,9 @@ NOTICE_ROUTES = ("restart-notice", "rest-notice", "reset-refused")
 @pytest.fixture
 def v2(monkeypatch: pytest.MonkeyPatch):
     def _set(on: bool) -> None:
-        monkeypatch.setattr(hosted_v2, "_process_on", on)
+        monkeypatch.setattr(box_cluster, "_process_on", on)
 
     return _set
-
-
-class _UpstreamBudgetCreateRequest(BaseModel):
-    """Upstream's `BudgetCreateRequest` (807a1f94d), copied as it was, so the
-    v2-off answer is checked against the real thing rather than a summary."""
-
-    agent_id: str | None
-    metric: _V1Metric  # type: ignore[valid-type]
-    model: str
-    amount_limit: int = Field(gt=0, le=MAX_BUDGET_AMOUNT)
-    period_hours: int = Field(gt=0, le=MAX_BUDGET_PERIOD_HOURS)
-
-    @model_validator(mode="after")
-    def _model_only_on_token_metrics(self) -> _UpstreamBudgetCreateRequest:
-        if self.model and self.metric in ("messages", "turns"):
-            raise ValueError(
-                f"A {self.metric.value} budget cannot name a model: "
-                f"{self.metric.value} are not counted per model"
-            )
-        return self
 
 
 def _errors(model: type[BaseModel], body: dict) -> list[dict] | None:
@@ -94,16 +69,6 @@ _BUDGET_BODIES = [
 ]
 
 
-@pytest.mark.parametrize("body", _BUDGET_BODIES)
-def test_v2_off_a_new_budget_is_refused_exactly_as_upstream(v2, body: dict) -> None:
-    """With v2 off, the same errors in the same order,
-    raised while the body is read, so before the handler's workspace check."""
-    v2(False)
-    assert _errors(BudgetCreateRequest, body) == _errors(
-        _UpstreamBudgetCreateRequest, body
-    )
-
-
 def test_v2_on_its_budget_metric_is_accepted(v2) -> None:
     v2(True)
     body = {
@@ -114,17 +79,11 @@ def test_v2_on_its_budget_metric_is_accepted(v2) -> None:
         "period_hours": 24,
     }
     assert _errors(BudgetCreateRequest, body) is None
-    assert _errors(_UpstreamBudgetCreateRequest, body)
 
 
-@pytest.mark.parametrize("on", [False, True])
 @pytest.mark.parametrize("change", ["update", "delete"])
-async def test_the_budget_is_read_before_a_change_only_with_v2_on(
-    v2, monkeypatch, on: bool, change: str
-) -> None:
-    """With v2 off, no extra `usage_budgets` read before an
-    update or delete, as upstream; only v2's audit needs it."""
-    v2(on)
+async def test_the_budget_is_read_before_a_change(monkeypatch, change: str) -> None:
+    """The budget's audit needs it as it was."""
     monkeypatch.setattr(tenants, "record_audit_event", AsyncMock())
     row = AsyncMock(return_value=None)
     monkeypatch.setattr(tenants, "_budget_row", row)
@@ -147,22 +106,7 @@ async def test_the_budget_is_read_before_a_change_only_with_v2_on(
             )
         else:
             await tenants.delete_budget(**common)
-    assert row.await_count == (1 if on else 0)
-
-
-async def test_v2_off_a_budget_change_is_not_audited(v2, monkeypatch) -> None:
-    v2(False)
-    record = AsyncMock()
-    monkeypatch.setattr(tenants, "record_audit_event", record)
-    await tenants._audit_budget(
-        AsyncMock(),
-        tenant_id="t",
-        actor_id="u",
-        action="budget.created",  # type: ignore[arg-type]
-        budget_id="b",
-        details={},
-    )
-    record.assert_not_awaited()
+    assert row.await_count == 1
 
 
 async def test_v2_on_a_budget_change_is_audited(v2, monkeypatch) -> None:
@@ -182,18 +126,6 @@ async def test_v2_on_a_budget_change_is_audited(v2, monkeypatch) -> None:
 
 def _notice(route: str) -> str:
     return f"/v1/management/controllers/c-1/agents/a-1/{route}"
-
-
-@pytest.mark.parametrize("route", NOTICE_ROUTES)
-def test_v2_off_the_notice_routes_answer_as_if_absent(v2, route: str) -> None:
-    v2(False)
-    app = FastAPI()
-    app.include_router(controller_router)
-    response = TestClient(app).post(
-        _notice(route), json={}, headers={"Authorization": "Bearer anything"}
-    )
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Not Found"}
 
 
 @pytest.mark.parametrize("route", NOTICE_ROUTES)
@@ -227,25 +159,16 @@ def _machine(backend: str):
 
 
 @pytest.mark.parametrize(
-    ("on", "backend", "shown"),
-    [
-        (False, "vm", None),
-        (False, "box", "box"),
-        (True, "vm", "vm"),
-        (True, "box", "box"),
-    ],
+    ("on", "backend"),
+    [(on, backend) for on in (False, True) for backend in ("vm", "box")],
 )
-def test_a_machine_row_names_its_backend_as_ruled(
-    v2, on: bool, backend: str, shown: str | None
-) -> None:
-    """With v2 off a v1 machine's row is upstream's (no key),
-    and a box's still says `box`, so the v1 operator leaves it alone."""
+def test_a_machine_row_names_its_backend(v2, on: bool, backend: str) -> None:
+    """With or without a box cluster, so the v1 operator leaves a box alone."""
     from switch_core.gateway.hosted_controller import machine_item
 
     v2(on)
     item = machine_item(_machine(backend))  # type: ignore[arg-type]
-    assert item.get("backend") == shown
-    assert ("backend" in item) is (shown is not None)
+    assert item["backend"] == backend
 
 
 _OBSERVATIONS = [
@@ -256,19 +179,6 @@ _OBSERVATIONS = [
     {"state": "running", "revision": 1},
     {"state": "nope", "revision": 0},
 ]
-
-
-@pytest.mark.parametrize("body", _OBSERVATIONS)
-def test_v2_off_an_observation_is_refused_exactly_as_upstream(v2, body: dict) -> None:
-    """Upstream's `extra="forbid"` model alone decides, so
-    the 422 lists its errors in its order, even for v2 fields out of range."""
-    from switch_core.gateway.hosted_controller import (
-        Observation,
-        _UpstreamObservation,
-    )
-
-    v2(False)
-    assert _errors(Observation, body) == _errors(_UpstreamObservation, body)
 
 
 def test_v2_on_an_observation_may_name_v2s_fields(v2) -> None:
@@ -312,32 +222,6 @@ _LOOSE_MACHINE = {
 _LOOSE_AGENT = {"session": "sleepy", "busy": 1, "ai_calls_today": -3}
 
 
-def test_v2_off_a_status_report_is_read_as_upstream(v2) -> None:
-    """Sweep row 8: with v2 off, nothing v2 declared refuses a report; each
-    value is kept as sent, as upstream's `extra="allow"` kept it."""
-    from switch_core.management.schemas import StatusReport
-
-    v2(False)
-    report = StatusReport.model_validate(_status_with(_LOOSE_MACHINE, _LOOSE_AGENT))
-    dumped = report.model_dump(mode="json", exclude_unset=True)
-    for key, value in _LOOSE_MACHINE.items():
-        assert dumped["machine"][key] == value
-    for key, value in _LOOSE_AGENT.items():
-        assert dumped["agents"][0][key] == value
-
-
-@pytest.mark.parametrize("value", ["system", "workspace", 7])
-def test_v2_off_a_disk_scope_is_kept_as_sent(v2, value: object) -> None:
-    """With v2 off, `disk_scope` is an undeclared field to upstream: any value
-    is accepted and kept as sent, never refused or turned into "unknown"."""
-    from switch_core.management.schemas import StatusReport
-
-    v2(False)
-    report = StatusReport.model_validate(_status_with({"disk_scope": value}, {}))
-    dumped = report.model_dump(mode="json", exclude_unset=True)
-    assert dumped["machine"]["disk_scope"] == value
-
-
 def test_v2_on_the_same_report_is_refused(v2) -> None:
     from pydantic import ValidationError
 
@@ -348,44 +232,19 @@ def test_v2_on_the_same_report_is_refused(v2) -> None:
         StatusReport.model_validate(_status_with({}, _LOOSE_AGENT))
 
 
-def test_the_loose_fields_are_every_field_v2_declared() -> None:
-    """A guard on row 8 itself: a field v2 adds to a status report must be
-    loosened too, or v1 could be refused for it."""
-    from switch_core.management.schemas import (
-        V2_AGENT_STATUS_FIELDS,
-        V2_MACHINE_STATUS_FIELDS,
-        AgentStatus,
-        MachineStatus,
-        _V1AgentStatus,
-        _V1MachineStatus,
-    )
-
-    for model, loose, names in (
-        (MachineStatus, _V1MachineStatus, V2_MACHINE_STATUS_FIELDS),
-        (AgentStatus, _V1AgentStatus, V2_AGENT_STATUS_FIELDS),
-    ):
-        for name in names:
-            assert name in model.model_fields
-            assert (
-                loose.model_fields[name].annotation
-                is not model.model_fields[name].annotation
-            )
-
-
 @pytest.mark.parametrize(
-    ("on", "backend", "minutes", "reads"),
-    [(False, "box", 30, 0), (True, "vm", 30, 1), (True, "box", 15, 1)],
+    ("backend", "minutes"),
+    [("vm", 30), ("box", 15)],
 )
-async def test_a_machine_code_lives_15_minutes_only_for_a_v2_box(
-    v2, on: bool, backend: str, minutes: int, reads: int
+async def test_a_machine_code_lives_15_minutes_only_for_a_box(
+    backend: str, minutes: int
 ) -> None:
-    """Sweep row 18: upstream's 30 minutes for a v1 machine and with v2 off."""
+    """Sweep row 18: upstream's 30 minutes for a v1 machine."""
     from datetime import timedelta
     from types import SimpleNamespace
 
     from switch_core.management.service import _machine_code_lifetime
 
-    v2(on)
     session = AsyncMock()
     session.scalar = AsyncMock(return_value=backend)
     lifetime = await _machine_code_lifetime(
@@ -393,7 +252,7 @@ async def test_a_machine_code_lives_15_minutes_only_for_a_v2_box(
         SimpleNamespace(machine_id="m-1"),  # type: ignore[arg-type]
     )
     assert lifetime == timedelta(minutes=minutes)
-    assert session.scalar.await_count == reads
+    assert session.scalar.await_count == 1
 
 
 @pytest.mark.parametrize(
@@ -441,47 +300,14 @@ def test_the_opt_in_settings_are_unset_by_default() -> None:
         assert field.default is None
 
 
-@pytest.mark.parametrize("allowed_tenants", [None, ["t-1"], ["t-2"]])
-@pytest.mark.parametrize("user_id", ["u-1", "u-2"])
-def test_unset_they_answer_as_upstream(
-    monkeypatch: pytest.MonkeyPatch, allowed_tenants, user_id: str
-) -> None:
-    """Unset, with hosted agents v2 off, the cloud-machine check is upstream's
-    rule for every account, and agent management is open to every workspace,
-    as upstream. With v2 on, an unset account list admits nobody."""
-    from types import SimpleNamespace
-
-    from switch_core import hosted_v2
-    from switch_core.gateway import hosted_machines
-    from switch_core.providers.hosted import HostedControllerSettings, tenant_allowed
-
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
-    monkeypatch.setattr(hosted_machines, "require_tenant_id", lambda: "t-1")
-    config = SimpleNamespace(hosted_agents_enabled=True, hosted_launch_capacity=1)
-    # Only the lists matter here: every other setting is left at its default.
-    settings = HostedControllerSettings.model_construct(
-        allowed_tenant_ids=allowed_tenants
-    )
-    # Upstream `473c2e64b`'s `machines_enabled`, word for word in effect.
-    upstream = allowed_tenants is None or "t-1" in allowed_tenants
-    assert hosted_machines.machines_enabled(config, settings, user_id) is upstream  # type: ignore[arg-type]
-    assert tenant_allowed(settings.management_tenant_ids, "any-workspace")
-    monkeypatch.setattr(hosted_v2, "_process_on", True)
-    assert hosted_machines.machines_enabled(config, settings, user_id) is False  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize("on", [False, True])
-async def test_a_status_report_reads_and_locks_only_with_v2_on(
-    v2, monkeypatch, on: bool
-) -> None:
-    """With v2 off, no read of the bound agents, no lock on
-    the previous report, and a session state kept as sent, as upstream."""
+async def test_a_status_report_reads_the_bound_agents_and_locks(monkeypatch) -> None:
+    """The bound agents are read and the previous report locked, and an agent
+    not bound to the controller has its session state dropped."""
     from switch_core.bridges.agent.auth import ControllerPrincipal
     from switch_core.management import service as service_module
     from switch_core.management.schemas import StatusReport
     from switch_core.management.service import ManagementService
 
-    v2(on)
     monkeypatch.setattr(service_module, "controller_release_view", lambda *_: None)
     controller = SimpleNamespace(
         id="c", status={}, kind="local", assignment_revision=3, owner_id="u"
@@ -508,52 +334,12 @@ async def test_a_status_report_reads_and_locks_only_with_v2_on(
         ),
         report,
     )
-    calls = 1 if on else 0
-    assert listed.await_count == calls
-    assert locked.await_count == calls
+    assert listed.await_count == 1
+    assert locked.await_count == 1
     assert stored_status.await_args is not None
     stored = stored_status.await_args.kwargs["status"]
     # The agent isn't bound to this controller: v2 drops its session state.
-    assert ("session" in stored["agents"][0]) is not on
-
-
-@pytest.mark.parametrize("on", [False, True])
-async def test_a_claim_reads_the_owners_pause_only_with_v2_on(
-    v2, monkeypatch, on: bool
-) -> None:
-    """The pause is v2's; with it off, no read on claim."""
-    from switch_core.db.stores import hosted_machine_store as store_module
-
-    class _Reached(Exception):
-        pass
-
-    v2(on)
-    paused = AsyncMock(return_value=True)
-    monkeypatch.setattr(store_module, "owner_paused", paused)
-    monkeypatch.setattr(
-        store_module.CloudMachineStore,
-        "live_for_owner",
-        AsyncMock(side_effect=_Reached),
-    )
-    store = object.__new__(store_module.CloudMachineStore)
-    expected = store_module.CloudMachineConflict if on else _Reached
-    with pytest.raises(expected) as raised:
-        await store.claim(
-            AsyncMock(), AsyncMock(), owner_id="u", capacity=1, now=datetime.now(UTC)
-        )
-    if on:
-        assert str(raised.value) == store_module.MACHINE_PAUSED
-    assert paused.await_count == (1 if on else 0)
-
-
-@pytest.mark.parametrize("value", ["reply:7f1c", "not a key", "x" * 500])
-def test_v2_off_a_client_txn_id_is_ignored(v2, value: str) -> None:
-    """With v2 off the header is ignored as upstream: no 400
-    for one out of shape, and no key, so no `sent_under` lookup."""
-    from switch_core.bridges.agent.api.operations import reply_key
-
-    v2(False)
-    assert reply_key(value) is None
+    assert "session" not in stored["agents"][0]
 
 
 def test_v2_on_a_client_txn_id_is_checked_and_kept(v2) -> None:
@@ -567,37 +353,6 @@ def test_v2_on_a_client_txn_id_is_checked_and_kept(v2) -> None:
     with pytest.raises(HTTPException) as refused:
         reply_key("not a key")
     assert refused.value.status_code == 400
-
-
-@pytest.mark.parametrize("on", [False, True])
-def test_the_agent_apis_feature_flags_hide_v2s_own_flags_with_v2_off(
-    on: bool,
-) -> None:
-    """As the gateway's list, upstream's exactly with v2 off."""
-    from switch_core.bridges.agent.api.handlers import router as agent_router
-    from switch_core.bridges.agent.auth import get_agent_from_scope
-    from switch_core.bridges.agent.dependencies import get_config
-    from switch_core.feature_flags import (
-        ECOSYSTEM_SHOW_OWNERS,
-        HOSTED_AWAKE_BUDGETS,
-    )
-
-    flags = {
-        ECOSYSTEM_SHOW_OWNERS: True,
-        HOSTED_AWAKE_BUDGETS: True,
-    }
-    app = FastAPI()
-    app.include_router(agent_router, prefix="/agent")
-    app.dependency_overrides[get_agent_from_scope] = lambda: SimpleNamespace(id="a")
-    app.dependency_overrides[get_config] = lambda: SimpleNamespace(
-        feature_flags=flags, hosted_box_provisioning=on
-    )
-    listed = TestClient(app).get("/agent/feature-flags").json()["flags"]
-    keys = [flag["key"] for flag in listed]
-    if on:
-        assert keys == list(flags)
-    else:
-        assert keys == [ECOSYSTEM_SHOW_OWNERS]
 
 
 def _hosted_config(tmp_path, **lists) -> str:
@@ -647,9 +402,7 @@ async def test_unset_allow_lists_add_no_403_on_the_paths_that_check_them(
     from switch_core.providers.hosted import load_hosted_settings, tenant_allowed
 
     path = None if lists is None else _hosted_config(tmp_path, **lists)
-    # With v2 on, where the list can apply at all: with v2 off it never does
-    # (test_workspace_allowed).
-    tenant_ids = _management_tenant_ids(path, True)
+    tenant_ids = _management_tenant_ids(path)
     principal = ControllerPrincipal(
         controller_id="c", owner_id="u", tenant_id="t-2", key_id=None
     )
@@ -680,16 +433,16 @@ async def test_unset_allow_lists_add_no_403_on_the_paths_that_check_them(
     if path is not None:
         settings = load_hosted_settings(path)
         assert settings is not None
-        from switch_core import hosted_v2
-
         monkeypatch.setattr(hosted_machines, "require_tenant_id", lambda: "t-2")
         config = SimpleNamespace(hosted_agents_enabled=True, hosted_launch_capacity=1)
-        # A v1 server: every account, as upstream.
-        monkeypatch.setattr(hosted_v2, "_process_on", False)
-        assert hosted_machines.machines_enabled(config, settings, "any-user")  # type: ignore[arg-type]
-        # With v2 on, unset lists admit nobody.
-        monkeypatch.setattr(hosted_v2, "_process_on", True)
-        assert not hosted_machines.machines_enabled(config, settings, "any-user")  # type: ignore[arg-type]
+        # A v1 owner, on their v1 machine: every account, as upstream.
+        assert hosted_machines.machines_enabled(
+            config, settings, "any-user", on_v1=True
+        )  # type: ignore[arg-type]
+        # Anyone asking for a box: unset lists admit nobody.
+        assert not hosted_machines.machines_enabled(  # type: ignore[arg-type]
+            config, settings, "any-user", on_v1=False
+        )
 
 
 async def _sync(check: Any, authenticator: object) -> None:

@@ -16,7 +16,7 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core import hosted_v2
+from switch_core import box_cluster
 from switch_core.db.models import AgentController, CloudMachine, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.gateway.cloud_controllers import REPORTED_KEY
@@ -241,7 +241,7 @@ async def test_with_v2_off_only_a_report_makes_a_machine_ready(
 ) -> None:
     """With v2 off, as before v2: `running` never makes a machine ready, and
     no report is recorded in the heartbeat."""
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
+    monkeypatch.setattr(box_cluster, "_process_on", False)
     owner = await add_member(harness.session_factory, "ada")
     async with (
         _hosted_app(harness.session_factory, owner) as hosted,

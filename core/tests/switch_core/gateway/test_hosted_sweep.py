@@ -158,14 +158,14 @@ async def test_a_failed_pass_logs_a_fixed_line_and_the_loop_goes_on(
 async def test_a_pass_does_nothing_with_v2_off_or_no_hosted_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from switch_core import hosted_v2
+    from switch_core import box_cluster
 
     def never(*_a: Any, **_k: Any) -> Any:
         raise AssertionError("no session with v2 off or no hosted config")
 
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
+    monkeypatch.setattr(box_cluster, "_process_on", False)
     assert not await hosted_sweep.sweep_once(never, object(), lambda: object())  # type: ignore[arg-type, return-value]
-    monkeypatch.setattr(hosted_v2, "_process_on", True)
+    monkeypatch.setattr(box_cluster, "_process_on", True)
     assert not await hosted_sweep.sweep_once(never, object(), _no_settings)  # type: ignore[arg-type]
 
 
@@ -518,17 +518,17 @@ async def test_with_v2_turned_off_a_pass_marks_nothing_and_on_again_it_does(
     machine_metrics,  # noqa: F811
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from switch_core import hosted_v2
+    from switch_core import box_cluster
 
     app = provisioner_app
     seen: dict[str, float] = {}
     await _expired_request(app)
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
+    monkeypatch.setattr(box_cluster, "_process_on", False)
     assert not await _pass(app)
     assert (await _machine(app)).state == "provisioning"
     assert _total(machine_metrics, seen) == {}
 
-    monkeypatch.setattr(hosted_v2, "_process_on", True)
+    monkeypatch.setattr(box_cluster, "_process_on", True)
     assert await _pass(app)
     assert (await _machine(app)).error_code == "box_not_made"
     assert _total(machine_metrics, seen) == {"launch_refused": 1.0}

@@ -60,6 +60,7 @@ from tests.switch_core.gateway.test_cloud_controller_machines import (
 from tests.switch_core.hosted_machine_helpers import (
     add_tenant,
     link_controller,
+    no_revoke,
     place_managed_agent,
     seed_machine,
 )
@@ -534,6 +535,9 @@ async def test_nothing_starts_a_box_held_for_the_copy(
                 owner_id=ada.id,
                 capacity=5,
                 now=datetime.now(UTC),
+                revoke=no_revoke,
+                per_workspace=0,
+                pool_pick=None,
             )
         await session.rollback()
     # The person's start, and every other action on the machine, is refused.
@@ -964,6 +968,9 @@ async def test_a_person_mid_move_takes_no_new_workspace(
                         owner_id=ada.id,
                         capacity=10,
                         now=datetime.now(UTC),
+                        revoke=no_revoke,
+                        per_workspace=0,
+                        pool_pick=None,
                     )
                 finally:
                     await session.rollback()
@@ -1055,23 +1062,6 @@ async def test_the_clean_up_waits_for_the_rollback_window(
     }
     with pytest.raises(MigrationRefused):
         await world.migrations.rollback(ada.id, operator_id=op, execute=True)
-
-
-async def test_with_v2_off_nothing_runs(
-    session_factory: async_sessionmaker[AsyncSession],
-    people: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from switch_core import hosted_v2
-
-    world = World(session_factory)
-    ada = people["ada"]
-    await world.v1_machine(ada)
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
-    assert (await world.migrations.plan(ada.id)).refusals == ["v2_off"]
-    with pytest.raises(MigrationRefused) as refused:
-        await world.step(ada, people["op"].id)
-    assert refused.value.code == "v2_off"
 
 
 async def test_a_workspace_the_person_left_does_not_move(

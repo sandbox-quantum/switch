@@ -126,3 +126,7 @@ async def place_managed_agent(
     session.add(definition)
     await session.flush()
     return definition
+
+
+async def no_revoke(session: AsyncSession, tenant_id: str, controller_id: str) -> None:
+    """A claim's `revoke` for a test with no controller worth revoking."""

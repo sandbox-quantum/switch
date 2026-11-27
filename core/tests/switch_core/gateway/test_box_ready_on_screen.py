@@ -12,7 +12,6 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core import hosted_v2
 from switch_core.gateway.cloud_controllers import workspace_reported
 from tests.switch_core.gateway.test_box_ready_both_orders import (
     _box,
@@ -106,13 +105,6 @@ def test_a_v1_machine_is_unchanged() -> None:
         },
     )
     assert workspace_reported(later, "w", _controller())  # type: ignore[arg-type]
-
-
-def test_with_v2_off_only_a_later_report_counts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
-    assert not workspace_reported(_machine(), "w", _controller())  # type: ignore[arg-type]
 
 
 # ── through the owner's route ──

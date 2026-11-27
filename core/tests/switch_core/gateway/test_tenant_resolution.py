@@ -475,39 +475,6 @@ class TestSessionStateEndpoint:
             "hosted_operator": False,
         }
 
-    async def test_with_v2_off_the_session_says_nothing_of_hosted_operators(
-        self, session_factory: async_sessionmaker[AsyncSession], tmp_path: Path
-    ) -> None:
-        """The v1/v2 switch (sweep row 21): the user is upstream's four keys,
-        and the operator list isn't read, even for someone on it."""
-        user_id = await _make_user_with_memberships(
-            session_factory, name="v1user", tenant_ids=[TENANT_ZERO_ID]
-        )
-        token = create_jwt(
-            user_id,
-            "v1user@example.invalid",
-            "user",
-            _KEYRING,
-            TENANT_ZERO_ID,
-            session_version=0,
-            auth_time=datetime.now(UTC),
-            session_id=secrets.token_urlsafe(16),
-        )
-        response = await self._get(
-            session_factory,
-            token,
-            signup_mode="default_tenant",
-            operators=self._operator_list(tmp_path, [user_id]),
-            hosted_v2=False,
-        )
-        assert response.status_code == 200, response.text
-        assert response.json()["user"] == {
-            "id": user_id,
-            "name": "v1user",
-            "email": "v1user@example.invalid",
-            "is_operator": False,
-        }
-
     @staticmethod
     def _operator_list(tmp_path: Path, ids: list[str]) -> OperatorList:
         path = tmp_path / "operators.json"

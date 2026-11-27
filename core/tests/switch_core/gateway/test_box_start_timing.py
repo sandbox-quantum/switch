@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core import hosted_v2
+from switch_core import box_cluster
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.gateway.cloud_controllers import (
@@ -238,7 +238,7 @@ async def test_a_first_click_on_a_box_already_ready_is_a_first_start_of_nothing(
 
 
 async def test_with_v2_off_no_clock_is_kept(harness: Harness, monkeypatch) -> None:
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
+    monkeypatch.setattr(box_cluster, "_process_on", False)
     owner = await add_member(harness.session_factory, "ada")
     async with (
         _hosted_app(harness.session_factory, owner) as hosted,

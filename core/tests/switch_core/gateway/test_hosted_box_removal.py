@@ -131,7 +131,8 @@ async def _revive(app):
             capacity=5,
             now=datetime.now(UTC),
             revoke=revoke,  # type: ignore[arg-type]
-            backend="box",
+            per_workspace=0,
+            pool_pick=None,
         )
         await session.commit()
         return claimed.machine

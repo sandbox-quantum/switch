@@ -32,12 +32,13 @@ OPEN_TO_ALL_WARNING = (
     "allowed_tenant_ids nor allowed_user_ids narrows who may use them in the "
     "hosted controller config."
 )
-# An unset cloud-machine list admits nobody: said once at start, so a server
-# knows why nobody can claim.
+# An unset cloud-machine list admits nobody to a box: said once at start, so
+# a server knows why nobody can claim one.
 CLOSED_BY_DEFAULT_WARNING = (
     "Hosted agents are on and {lists} unset in the hosted controller config, "
-    "so nobody can use cloud machines. Name the workspaces and accounts, or "
-    'set "*" to open them to everyone.'
+    "so nobody can get a cloud box (existing v1 machines keep serving their "
+    'owners). Name the workspaces and accounts, or set "*" to open them to '
+    "everyone."
 )
 
 # The shortest bearer the config takes.

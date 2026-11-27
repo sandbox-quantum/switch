@@ -294,6 +294,7 @@ def _config() -> SimpleNamespace:
         decision_api_key=None,
         decision_bedrock_enabled=False,
         decision_auto_route_default_on=False,
+        hosted_pool_size=0,
         **LOGIN_LIMIT_DEFAULTS,
     )
 

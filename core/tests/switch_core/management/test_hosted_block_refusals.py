@@ -262,9 +262,9 @@ async def test_a_revoke_by_any_other_path_carries_no_mark_by_default(
 
 @pytest.fixture
 def v2_off(monkeypatch):
-    from switch_core import hosted_v2
+    from switch_core import box_cluster
 
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
+    monkeypatch.setattr(box_cluster, "_process_on", False)
 
 
 async def _on_machine(
@@ -419,7 +419,7 @@ async def test_v2_off_a_boxs_controller_cannot_reconnect_or_open_a_sealed_login(
 async def test_v2_off_a_refused_box_is_never_revoked_or_deleted(
     harness: Harness, v2_off, monkeypatch
 ) -> None:
-    from switch_core import hosted_v2
+    from switch_core import box_cluster
     from switch_core.db.models import CloudMachine
 
     controller = await _cloud_controller(harness, "ravi")
@@ -436,13 +436,14 @@ async def test_v2_off_a_refused_box_is_never_revoked_or_deleted(
     assert row.revoked_at is None and row.revoked_by is None
     assert machine.state != "deleted"
     # Its credential was kept: with v2 on again the same box carries on.
-    monkeypatch.setattr(hosted_v2, "_process_on", True)
+    monkeypatch.setattr(box_cluster, "_process_on", True)
     harness.controller_auth_cache.clear()
     assert (await _exchange(harness, controller)).status_code == 200
 
 
-# The extras: with v2 off a cloud controller's status report
-# records no awake minutes or AI calls, and its answer carries no v2 wait limit.
+# The extras: a v1 machine's status report records no awake minutes or AI
+# calls, and its answer carries no box wait limit, with or without a box
+# cluster.
 
 
 @pytest.mark.parametrize(
@@ -451,11 +452,11 @@ async def test_v2_off_a_refused_box_is_never_revoked_or_deleted(
 async def test_a_cloud_status_report_records_v2_usage_only_for_a_v2_box(
     harness: Harness, monkeypatch, on: bool, backend: str
 ) -> None:
-    from switch_core import hosted_v2
+    from switch_core import box_cluster
     from switch_core.management import service as service_module
     from tests.switch_core.management.harness import report_status_only
 
-    monkeypatch.setattr(hosted_v2, "_process_on", on)
+    monkeypatch.setattr(box_cluster, "_process_on", on)
     recorded: list[str] = []
 
     async def _awake(*_a, **_k) -> int:
@@ -468,7 +469,7 @@ async def test_a_cloud_status_report_records_v2_usage_only_for_a_v2_box(
     async with harness.client() as client:
         response = await report_status_only(client, controller, 2)
     assert response.status_code == 200, response.text
-    v2_box = on and backend == "box"
+    v2_box = backend == "box"
     assert ("wait_limit_seconds" in response.json()) is v2_box
     assert recorded == (["awake"] if v2_box else [])
 
@@ -529,9 +530,9 @@ DOORS = ("token", "rotate", "sealed_login", "reconnect", "placement")
 async def test_each_door_refuses_only_a_box_while_v2_is_off(
     harness: Harness, monkeypatch, door: str, on: bool, backend: str, refused: bool
 ) -> None:
-    from switch_core import hosted_v2
+    from switch_core import box_cluster
 
-    monkeypatch.setattr(hosted_v2, "_process_on", on)
+    monkeypatch.setattr(box_cluster, "_process_on", on)
     controller = await _cloud_controller(harness, f"{door}-{on}-{backend}")
     await _on_machine(harness, controller, backend)
     response = await _door(harness, controller, door)
@@ -585,7 +586,7 @@ async def test_off_then_on_the_box_carries_on_with_the_same_credential_and_login
     """Refused with the switch off, then served with the same
     credential once it's on again; its sealed login is still there, and
     nothing was revoked or cleared by the refusals."""
-    from switch_core import hosted_v2
+    from switch_core import box_cluster
 
     key = _b64(32)
     controller = await _cloud_controller(harness, "otto")
@@ -599,10 +600,10 @@ async def test_off_then_on_the_box_carries_on_with_the_same_credential_and_login
         )
     assert stored.status_code in (200, 201, 204), stored.text
     await _on_machine(harness, controller, "box")
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
+    monkeypatch.setattr(box_cluster, "_process_on", False)
     for door in DOORS:
         assert _switch_refused(await _door(harness, controller, door)), door
-    monkeypatch.setattr(hosted_v2, "_process_on", True)
+    monkeypatch.setattr(box_cluster, "_process_on", True)
     harness.controller_auth_cache.clear()
     assert (await _exchange(harness, controller)).status_code == 200
     login = await _door(harness, controller, "sealed_login")

@@ -1,7 +1,8 @@
-"""`HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE`: with hosted agents v2 on, at most
-that many live cloud machines may serve any one workspace (a box serving
-several workspaces counts in each), under the server-wide capacity. 0 means
-no limit, with a warning at start. With v2 off it's ignored."""
+"""`HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE`: at most that many live boxes may
+serve any one workspace (a box serving several workspaces counts in each),
+under the server-wide capacity. 0 means no limit, with a warning at start.
+v1 machines aren't counted (`test_box_cluster`), so the fixture's machine is
+a box here."""
 
 from __future__ import annotations
 
@@ -34,8 +35,16 @@ from tests.switch_core.gateway.test_cloud_controller_machines import (
 )
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     controller_app,
+    update_machine,
 )
 from tests.switch_core.hosted_machine_helpers import add_tenant
+
+
+@pytest.fixture(autouse=True)
+async def _a_box(controller_app):  # noqa: F811
+    await update_machine(
+        controller_app.factory, controller_app.machine_id, backend="box"
+    )
 
 
 async def _person(app, name: str, tenant_id: str | None = None) -> str:
@@ -207,21 +216,10 @@ async def test_zero_means_no_per_workspace_limit(controller_app):  # noqa: F811
         assert (await _claim_as(app, await _person(app, name))).status_code == 200
 
 
-async def test_with_v2_off_the_limit_is_ignored(controller_app, monkeypatch):  # noqa: F811
-    from switch_core import hosted_v2
-
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
-    app = controller_app
-    app.settings.allowed_user_ids = None  # v1: every account
-    _limit(app, per_workspace=1)
-    claimed = await _claim_as(app, await _person(app, "bea"))
-    assert claimed.status_code == 200, claimed.text
-
-
-def test_core_warns_at_start_only_when_v2_runs_machines_with_no_limit(caplog):
+def test_core_warns_at_start_only_when_it_runs_boxes_with_no_limit(caplog):
+    """Called at start only with a box cluster (`create_gateway_app`)."""
     with caplog.at_level(logging.WARNING, logger="switch_core.providers.hosted"):
-        assert warn_if_no_per_workspace_limit(10, 0, v2=True) is True
-        assert warn_if_no_per_workspace_limit(10, 3, v2=True) is False
-        assert warn_if_no_per_workspace_limit(0, 0, v2=True) is False
-        assert warn_if_no_per_workspace_limit(10, 0, v2=False) is False
+        assert warn_if_no_per_workspace_limit(10, 0) is True
+        assert warn_if_no_per_workspace_limit(10, 3) is False
+        assert warn_if_no_per_workspace_limit(0, 0) is False
     assert [r.getMessage() for r in caplog.records] == [PER_WORKSPACE_UNSET_WARNING]

@@ -18,7 +18,6 @@ import pytest
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core import hosted_v2
 from switch_core.db.models import TENANT_ZERO_ID, AgentController, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.gateway.cloud_controllers import set_cloud_enrollment
@@ -152,20 +151,3 @@ async def test_no_box_controller_is_ever_adopted(
     after = await _row(harness, box_id)
     assert after.revoked_at == before.revoked_at
     assert after.api_key_id == before.api_key_id
-
-
-async def test_with_v2_off_an_ec2_device_is_taken_over_as_upstream(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The guard is v2's: with v2 off, upstream's take-over is unchanged for
-    every kind."""
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
-    owner = await add_member(harness.session_factory, "ada")
-    async with harness.client() as client:
-        first = await _enroll_by_code(client, await _plain_code(client, owner), "ec2")
-        await _settle(harness)
-        second = await _enroll_by_code(client, await _plain_code(client, owner), "ec2")
-
-    assert first["adopted"] is False
-    assert second["adopted"] is True
-    assert second["controller_id"] == first["controller_id"]

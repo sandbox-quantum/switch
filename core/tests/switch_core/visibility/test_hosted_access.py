@@ -41,6 +41,7 @@ from tests.conftest import RLSHarness
 from tests.switch_core.hosted_machine_helpers import (
     add_workspace,
     link_controller,
+    no_revoke,
     seed_machine,
 )
 
@@ -273,6 +274,9 @@ async def test_a_user_with_no_box_is_paused_on_the_user_and_can_claim_nothing(
                     owner_id=user_id,
                     capacity=10,
                     now=datetime.now(UTC),
+                    revoke=no_revoke,
+                    per_workspace=0,
+                    pool_pick=None,
                 )
             await session.rollback()
     async with rls_harness.owner() as session:
@@ -1179,6 +1183,9 @@ async def test_the_pause_survives_its_box_row_going(rls_harness: RLSHarness) -> 
                     owner_id=user_id,
                     capacity=10,
                     now=datetime.now(UTC),
+                    revoke=no_revoke,
+                    per_workspace=0,
+                    pool_pick=None,
                 )
             await session.rollback()
 

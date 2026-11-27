@@ -70,8 +70,13 @@ def _box_cluster_on(monkeypatch: pytest.MonkeyPatch) -> None:
     every test, as on a server that runs hosted agents. A test of a server
     without one sets it off itself (`box_cluster_off`)."""
     from switch_core import box_cluster
+    from switch_core.visibility import dependencies
+    from switch_core.visibility.keyed_id import KeyedIdKey
 
     monkeypatch.setattr(box_cluster, "_process_on", True)
+    # A box cluster needs the keyed-id key to name its boxes, so a server with
+    # one always has it (`box_cluster_configured`).
+    monkeypatch.setitem(dependencies._process_key, "key", KeyedIdKey(b"t" * 32, "k1"))
 
 
 @pytest.fixture

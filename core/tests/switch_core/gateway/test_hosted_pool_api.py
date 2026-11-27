@@ -286,14 +286,9 @@ async def test_a_pool_box_not_made_retires_reapable(provisioner_app) -> None:  #
 
 @pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_scaler_lists_pool_boxes_with_no_owner(provisioner_app) -> None:  # noqa: F811
-    from switch_core.hosted_v2 import _config as hosted_v2_config
     from tests.switch_core.gateway.test_hosted_controller import HEADERS
 
     app = provisioner_app
-    # The v2-only routes' gate reads the switch from the config.
-    app.client._transport.app.dependency_overrides[hosted_v2_config] = lambda: (
-        app.config
-    )
     await _claim(app, CAPABLE)
     (box_id,) = await _refill(app)
     listed = await app.client.get("/hosted-controller/pool", headers=HEADERS)

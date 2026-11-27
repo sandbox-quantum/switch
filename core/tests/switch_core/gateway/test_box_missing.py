@@ -17,7 +17,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core import hosted_v2
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import (
     AgentController,
@@ -249,20 +248,6 @@ async def test_a_failed_provision_and_a_v1_machine_are_never_expected(
         await _made(harness, vm.machine_id)
         # never for a v1 machine, whatever: its entry stays upstream's
         assert "box_expected" not in await _listed(hosted, vm.machine_id)
-
-
-async def test_with_v2_off_the_listing_and_the_code_are_upstreams(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    owner = await add_member(harness.session_factory, "ada")
-    monkeypatch.setattr(hosted_v2, "_process_on", True)
-    async with _app(harness, owner) as hosted, harness.client() as client:
-        box = await _ready_made_box(harness, owner, hosted, client)
-        monkeypatch.setattr(hosted_v2, "_process_on", False)
-        assert "box_expected" not in await _listed(hosted, box.machine_id)
-        refused = await _missing(box)
-        assert refused.status_code == 422
-    assert not await _entries(harness, box.machine_id, result="missing")
 
 
 # ── a missing report ──

@@ -19,7 +19,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core import hosted_v2
+from switch_core import box_cluster
 from switch_core.bridges.agent import refusals
 from switch_core.bridges.agent.refusals import RefusalGuard
 from switch_core.visibility.keyed_id import KeyedIdKey
@@ -180,16 +180,16 @@ async def _v2_gateway(
     operators.chmod(0o600)
     copied = harness.config().model_copy(
         update={
-            "hosted_box_provisioning": on,
             "visibility_operators_path": str(operators),
         }
     )
     monkeypatch.setattr(harness, "config", lambda: copied)
-    monkeypatch.setattr(hosted_v2, "_process_on", on)
     # A fresh lockout guard per test, as the token routes' own tests use: the
     # refusals here would otherwise add up to a 429 lockout across tests.
     monkeypatch.setattr(refusals, "_DEFAULT", RefusalGuard())
     gateway = build_gateway(session_factory)
+    # After the build, which reads the box cluster from its own config.
+    monkeypatch.setattr(box_cluster, "_process_on", on)
     gateway.state.keyed_id_key = KeyedIdKey(b"m" * 32, "k1")
     gateway.state.hosted_controller_settings = HostedControllerSettings(
         allowed_tenant_ids=None,

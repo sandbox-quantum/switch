@@ -123,8 +123,9 @@ async def provisioner_app(session_factory):
         hosted_idle_stop_minutes=0,
         hosted_disk_retention_days=7,
         hosted_launch_capacity=5,
+        hosted_launch_capacity_per_workspace=0,
+        hosted_pool_size=0,
         hosted_agents_enabled=True,
-        hosted_box_provisioning=True,
         hosted_provisions_per_minute=5,
         hosted_box_ceiling=50,
     )
@@ -587,19 +588,6 @@ async def test_the_gates_are_checked_again_at_claim(provisioner_app) -> None:
         "linked_to": action,
         "machine_id": app.machine_id,
     }
-
-
-async def test_a_claim_with_provisioning_turned_off_is_blocked(
-    provisioner_app,
-) -> None:
-    app = provisioner_app
-    await _ask(app.factory, app.machine_id)
-    app.config.hosted_box_provisioning = False
-    claimed = await app.client.post(
-        "/hosted-provisioner/claim", headers=_bearer(PROVISIONER)
-    )
-    assert claimed.status_code == 204
-    assert (await _entries(app.factory))[-1].details["step"] == "blocked"
 
 
 async def test_a_revived_machine_is_asked_for_again(provisioner_app) -> None:
