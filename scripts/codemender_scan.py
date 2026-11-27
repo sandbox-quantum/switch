@@ -195,6 +195,40 @@ def run_cmd(
 ACTIVE_STATUSES = {"queued", "running", "pending", "waiting_for_tool", "in_progress"}
 
 
+def cancel_stale_sessions(
+    env: dict[str, str], room_id: str, dry_run: bool
+) -> None:
+    """Cancel sessions that show as RUNNING but have expired."""
+    if dry_run:
+        print("[dry-run] Would check for stale (expired) sessions")
+        return
+    result = run_cmd(["cm", "session", "list"], check=False)
+    if result.returncode != 0:
+        return
+    cancelled: list[str] = []
+    for line in result.stdout.splitlines():
+        lower = line.lower()
+        if "running" in lower and "expired" in lower:
+            session_id = line.split()[0].strip()
+            if not session_id or session_id.startswith("─"):
+                continue
+            cancel = run_cmd(
+                ["cm", "session", "cancel", session_id], check=False
+            )
+            if cancel.returncode == 0:
+                cancelled.append(session_id)
+                print(f"Cancelled stale session: {session_id}")
+            else:
+                print(
+                    f"WARNING: failed to cancel {session_id}: {cancel.stderr}",
+                    file=sys.stderr,
+                )
+    if cancelled:
+        ids = ", ".join(f"`{s}`" for s in cancelled)
+        msg = f"Cancelled {len(cancelled)} stale session(s) (expired while running): {ids}"
+        post_to_room(env, room_id, msg)
+
+
 def check_running_sessions(dry_run: bool) -> bool:
     if dry_run:
         print("[dry-run] Would check for running Codemender sessions")
@@ -205,6 +239,8 @@ def check_running_sessions(dry_run: bool) -> bool:
         return False
     for line in result.stdout.splitlines():
         lower = line.lower()
+        if "expired" in lower:
+            continue
         if any(status in lower for status in ACTIVE_STATUSES):
             return True
     return False
@@ -420,6 +456,9 @@ def main(argv: list[str] | None = None) -> int:
     env = load_switch_env(args.credentials)
 
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = SA_KEY_PATH
+
+    # 0. Cancel stale sessions (RUNNING but expired).
+    cancel_stale_sessions(env, args.room_id, args.dry_run)
 
     # 1. If a scan is still running, exit early.
     if check_running_sessions(args.dry_run):
