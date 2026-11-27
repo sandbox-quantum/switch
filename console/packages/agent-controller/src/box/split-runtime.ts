@@ -99,11 +99,16 @@ export class LaunchGate {
   }
 }
 
-/** A gateway probe for one sign-in check: the CLI environment, and how to end it (`gatewayProbe`). */
+/**
+ * A gateway probe for one sign-in check (`gatewayProbe`): the CLI environment
+ * and how to end it, or the gateway's own answer where the CLI can't check.
+ */
 export type ProbeEnv = (
   provider: Provider,
   login: GivenLogin
-) => Promise<{ env: Record<string, string>; done: () => void } | null>;
+) => Promise<
+  { env: Record<string, string>; done: () => void } | { readiness: ProviderReadiness } | null
+>;
 
 /**
  * How agents run on a box where the controller is its own user: every
@@ -242,11 +247,13 @@ export class SplitRuntime implements AgentRuntime {
     });
     let probe: { env: Record<string, string>; done: () => void } | null = null;
     if (login) {
-      probe = this.probeEnv ? await this.probeEnv(provider, login) : null;
-      if (!probe)
+      const given = this.probeEnv ? await this.probeEnv(provider, login) : null;
+      if (!given)
         return unknown(
           'This login cannot be checked on this box: it doesn’t go through the provider gateway.'
         );
+      if ('readiness' in given) return given.readiness;
+      probe = given;
     }
     try {
       // The same rule as a launch: only empty values or gateway tokens

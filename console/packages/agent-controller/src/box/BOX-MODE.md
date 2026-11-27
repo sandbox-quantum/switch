@@ -45,9 +45,16 @@ Each item below is gated on box mode, with a test for box on and one showing box
   id that answers EPERM counts as alive; no device id is sent.
 - Only the providers the box image carries are offered: Claude Code, Codex, OpenCode, Cursor and Antigravity
   (`providersFor` in `providers.ts`). Every other provider stays registered, for desktop and v1.
-- A browser sign-in (`provider.login` with `method: "browser"`) runs only for Claude Code (`BOX_BROWSER_SIGN_IN` in
-  `gateway-logins.ts`): the setup token it ends with is kept sealed and goes through the provider gateway like a
-  pasted one. The others are refused, as the gateway fronts none of their sign-ins.
+- A browser sign-in (`provider.login` with `method: "browser"`) runs only for Claude Code and Codex
+  (`BOX_BROWSER_SIGN_IN` in `gateway-logins.ts`): the setup token or ChatGPT sign-in it ends with is kept sealed and
+  goes through the provider gateway like a pasted one. The others are refused, as the gateway fronts none of their
+  sign-ins.
+- A Codex ChatGPT sign-in (browser or a pasted sign-in file) is held by the gateway (`chatgpt-tokens.ts`), which
+  renews the access token before it expires and once when the backend refuses it, one refresh at a time for every
+  agent, and keeps each rotation with Switch, sealed again, in place of the revision it came from. Codex reads its
+  base URL from configuration only, so a gateway-backed Codex login reaches its sessions as a `switch_gateway`
+  provider in their configuration plus the agent's token in `OPENAI_API_KEY`; a split box's sign-in check of it is
+  answered by the gateway, as Codex's own check can't carry that configuration.
 - Updates come only from rolling the box image, which is pinned by digest: a box runs `--updated-by-console`, and
   Switch sends such a controller no release.
 
@@ -57,3 +64,5 @@ Each item below is gated on box mode, with a test for box on and one showing box
   Switch that runs hosted agents v2 does.
 - Each provider's own variables in the controller's environment reach every agent (`PROVIDER_ENV_VARS`), so a box
   controller's environment must hold only what is meant for its agents.
+- A Codex ChatGPT sign-in needs the gateway's way out to reach `chatgpt.com` and `auth.openai.com`. Where a box's
+  egress lists are fixed, they must name both for the controller's login.

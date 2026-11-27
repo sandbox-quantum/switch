@@ -24,6 +24,7 @@ import {
   type OperationResult,
   operationSchema,
   type Provider,
+  keptLoginResponseSchema,
   type SealedLoginResponse,
   sealedLoginResponseSchema,
   PROTOCOL_VERSION,
@@ -437,6 +438,23 @@ export class ControllerClient {
       throw error;
     }
     return parsed(response, sealedLoginResponseSchema);
+  }
+
+  /**
+   * Keeps a login this machine renewed (a rotated Codex ChatGPT sign-in),
+   * sealed to its own key, in place of revision `replaces`; answers its new
+   * revision. Switch refuses (409) when it holds another revision by then.
+   */
+  async replaceSealedLogin(
+    provider: Provider,
+    replaces: number,
+    sealed: SealedLogin
+  ): Promise<number> {
+    const response = await this.request(
+      `${this.controllerPath}/provider-credentials/${encodeURIComponent(provider)}`,
+      { method: 'PUT', body: { sealed, replaces } }
+    );
+    return (await parsed(response, keptLoginResponseSchema)).revision;
   }
 
   async rotateCredential(): Promise<string> {

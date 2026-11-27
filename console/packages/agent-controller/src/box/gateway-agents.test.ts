@@ -5,7 +5,9 @@ import { ensureRelayCredentials } from '../controller';
 import { silentLogger } from '../log';
 import type { LocalRelay } from '../relay';
 import type { GivenLogin } from '../sealed-logins';
+import { fakeAccessToken, fakeChatgptSignIn } from '../testing/chatgpt-sign-in';
 import { FakeRuntime } from '../testing/fake-runtime';
+import { ChatgptTokenCache, ChatgptTokens } from './chatgpt-tokens';
 import {
   type GatewayDeps,
   gatewayEnvironment,
@@ -60,7 +62,25 @@ async function startGateway(): Promise<GatewayDeps> {
   const gateway = new ProviderGateway({ log: silentLogger, send: standInSend(() => upstreamUrl) });
   await gateway.start();
   gateway.setReady();
-  return { gateway, vertex: new VertexTokenCache() };
+  return { gateway, vertex: new VertexTokenCache(), chatgpt: chatgptCache() };
+}
+
+/** What OpenAI's token endpoint answers in these tests; it is never really called. */
+let tokenAnswer: { status: number; body: unknown };
+let refreshes: number;
+
+function chatgptCache(): ChatgptTokenCache {
+  return new ChatgptTokenCache(
+    (login) =>
+      new ChatgptTokens(login, {
+        save: null,
+        log: silentLogger,
+        post: async () => {
+          refreshes += 1;
+          return tokenAnswer;
+        },
+      })
+  );
 }
 
 /** Calls the gateway as the agent's CLI would; resolves with the status. */
@@ -81,6 +101,8 @@ function callAs(gw: GatewayDeps, token: string): Promise<number> {
 
 beforeEach(async () => {
   seen = [];
+  refreshes = 0;
+  tokenAnswer = { status: 400, body: { error: 'invalid_grant' } };
   upstream = createServer((req, res) => {
     seen.push(req.headers);
     req.resume();
@@ -194,7 +216,8 @@ describe('the CLI environment', () => {
   it('names the gateway and the saved token, never the login', async () => {
     await ensure(given('1'));
     const record = runtime.credentials.get(AGENT)!.gateway!;
-    const env = gatewayEnvironment(given('1'), record, deps)!;
+    const { env, codexConfig } = gatewayEnvironment(given('1'), record, deps)!;
+    expect(codexConfig).toBeNull();
     expect(env).toMatchObject({
       ANTHROPIC_BASE_URL: deps.gateway.endpoint,
       ANTHROPIC_API_KEY: record.token,
@@ -208,11 +231,54 @@ describe('the CLI environment', () => {
     expect(gatewayEnvironment(given('1', { kind: 'setup-token' }), record, deps)).toBeNull();
     expect(gatewayEnvironment(given('1'), null, deps)).toBeNull();
   });
+
+  it('gives Codex the gateway in its configuration, and only the token in its environment', async () => {
+    const signIn = given('1', {
+      provider: 'codex',
+      kind: 'auth-json',
+      credential: fakeChatgptSignIn({ expMs: Date.now() + 3_600_000, refresh: 'rt-REAL' }),
+    });
+    await ensure(signIn);
+    const record = runtime.credentials.get(AGENT)!.gateway!;
+    const { env, codexConfig } = gatewayEnvironment(signIn, record, deps)!;
+    expect(env).toEqual({ OPENAI_API_KEY: record.token, CODEX_API_KEY: '' });
+    expect(codexConfig).toContain(`base_url = "${deps.gateway.endpoint}/backend-api/codex"`);
+    expect(codexConfig).toContain('env_key = "OPENAI_API_KEY"');
+    expect(`${JSON.stringify(env)}${codexConfig}`).not.toContain('REAL');
+  });
+});
+
+describe('a renewed Codex ChatGPT sign-in', () => {
+  it('kept by Switch under a new revision, swaps nothing and restarts nothing', async () => {
+    const first = given('1', {
+      provider: 'codex',
+      kind: 'auth-json',
+      credential: fakeChatgptSignIn({ expMs: Date.now() + 3_600_000, refresh: 'rt-1' }),
+    });
+    await ensure(null);
+    expect(await ensure(first)).toBe('login');
+    const tokens = deps.chatgpt.for(first);
+    // What Switch gives back after a save: the same sign-in, as an older or the same rotation.
+    const kept = { ...first, revision: '2' };
+    expect(await ensure(kept)).toBe(false);
+    expect(deps.chatgpt.for(kept)).toBe(tokens);
+    // A sign-in made afresh is another one.
+    const fresh = given('3', {
+      provider: 'codex',
+      kind: 'auth-json',
+      credential: fakeChatgptSignIn({ expMs: Date.now() + 3_600_000, refresh: 'rt-other' }),
+    });
+    await ensure(fresh);
+    expect(deps.chatgpt.for(fresh)).not.toBe(tokens);
+  });
 });
 
 describe('a probe of a login', () => {
   it('runs through the gateway with a short-lived token, never the login, and stops when done', async () => {
-    const probe = gatewayProbe('probe-1', given('1'), deps)!;
+    const probe = (await gatewayProbe('probe-1', given('1'), deps)) as {
+      env: Record<string, string>;
+      done: () => void;
+    };
     expect(JSON.stringify(probe.env)).not.toContain('REAL');
     const token = probe.env.ANTHROPIC_API_KEY!;
     expect(token.startsWith('swpg_')).toBe(true);
@@ -227,9 +293,44 @@ describe('a probe of a login', () => {
     expect(deps.gateway.probes()).toBe(0);
   });
 
-  it('is null for a login the gateway can’t front', () => {
+  it('is null for a login the gateway can’t front', async () => {
     const cursor = given('1', { provider: 'cursor', kind: 'api-key', credential: 'cursor-key' });
-    expect(gatewayProbe('probe-2', cursor, deps)).toBeNull();
+    expect(await gatewayProbe('probe-2', cursor, deps)).toBeNull();
+    expect(deps.gateway.probes()).toBe(0);
+  });
+
+  it('answers for Codex itself, which reaches the gateway only through configuration', async () => {
+    const live = given('1', {
+      provider: 'codex',
+      kind: 'auth-json',
+      credential: fakeChatgptSignIn({ expMs: Date.now() + 3_600_000 }),
+    });
+    expect(await gatewayProbe('probe-3', live, deps)).toEqual({
+      readiness: expect.objectContaining({ status: 'authenticated' }),
+    });
+    expect(refreshes).toBe(0);
+    // Expired, and OpenAI refuses the refresh token: signed out, saying so.
+    const stale = given('2', {
+      provider: 'codex',
+      kind: 'auth-json',
+      credential: fakeChatgptSignIn({ expMs: Date.now() - 1000, refresh: 'rt-used' }),
+    });
+    expect(await gatewayProbe('probe-4', stale, deps)).toEqual({
+      readiness: expect.objectContaining({
+        status: 'unauthenticated',
+        message: expect.stringContaining('Sign in again'),
+      }),
+    });
+    // Expired, and renewed: signed in.
+    tokenAnswer = { status: 200, body: { access_token: fakeAccessToken(Date.now() + 3_600_000) } };
+    const renewed = given('3', {
+      provider: 'codex',
+      kind: 'auth-json',
+      credential: fakeChatgptSignIn({ expMs: Date.now() - 1000, refresh: 'rt-fresh' }),
+    });
+    expect(await gatewayProbe('probe-5', renewed, deps)).toEqual({
+      readiness: expect.objectContaining({ status: 'authenticated' }),
+    });
     expect(deps.gateway.probes()).toBe(0);
   });
 });
@@ -266,7 +367,7 @@ describe('a withdrawn Vertex login', () => {
       log: silentLogger,
       send: standInSend(() => 'http://127.0.0.1:1'),
     });
-    const vertexDeps: GatewayDeps = { gateway: gw, vertex };
+    const vertexDeps: GatewayDeps = { gateway: gw, vertex, chatgpt: chatgptCache() };
     const login = given('1', { kind: 'vertex', credential: VERTEX });
     const first = resolveGateway(AGENT, login, null, vertexDeps);
     expect(made).toBe(1);

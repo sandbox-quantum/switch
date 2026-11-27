@@ -579,6 +579,7 @@ export async function runController(
     void registerSealingKey(client, keys, log).then((registered) => {
       if (!registered) providers.disableGiven();
     });
+  boxed?.setLoginSaver(keys ? { client, keys, controllerId: identity.controllerId } : null);
   const offered = providersFor(deps.box);
   const providers = new ProviderStatuses({
     providers: offered,

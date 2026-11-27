@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { GivenLogin } from '../sealed-logins';
+import { fakeChatgptSignIn } from '../testing/chatgpt-sign-in';
+import { ChatgptTokenCache, ChatgptTokens } from './chatgpt-tokens';
 import {
   BOX_BROWSER_SIGN_IN,
   gatewayPlanFor,
+  type LoginCaches,
   VertexTokenCache,
   vertexUpstream,
 } from './gateway-logins';
@@ -27,8 +30,25 @@ const VERTEX = JSON.stringify({
   },
 });
 
-/** A cache whose tokens never call Google. */
-function quietCache(): VertexTokenCache {
+/** Caches whose tokens never call Google or OpenAI. */
+function quietCache(): LoginCaches {
+  return { vertex: quietVertex(), chatgpt: quietChatgpt() };
+}
+
+function quietChatgpt(): ChatgptTokenCache {
+  return new ChatgptTokenCache(
+    (login) =>
+      new ChatgptTokens(login, {
+        save: null,
+        log: { debug() {}, info() {}, warn() {}, error() {} },
+        post: async () => ({ status: 500, body: null }),
+      })
+  );
+}
+
+const CODEX_SIGN_IN = fakeChatgptSignIn({ expMs: Date.now() + 3_600_000, refresh: 'rt-REAL' });
+
+function quietVertex(): VertexTokenCache {
   return new VertexTokenCache(
     () =>
       new VertexTokens(
@@ -49,6 +69,10 @@ describe('the CLI never gets the login', () => {
     ['a Claude setup-token', login({ kind: 'setup-token', credential: 'sk-ant-oat01-REAL' })],
     ['a Claude Vertex login', login({ kind: 'vertex', credential: VERTEX })],
     ['a Codex API key', login({ provider: 'codex', kind: 'api-key', credential: 'sk-proj-REAL' })],
+    [
+      'a Codex ChatGPT sign-in',
+      login({ provider: 'codex', kind: 'auth-json', credential: CODEX_SIGN_IN }),
+    ],
   ] as const) {
     it(`${name}: the environment holds the gateway and its token only`, () => {
       const plan = gatewayPlanFor(given, quietCache())!;
@@ -57,22 +81,35 @@ describe('the CLI never gets the login', () => {
       expect(env).not.toContain('REAL');
       expect(env).not.toContain('refresh_token');
       expect(env).toContain(TOKEN);
-      expect(env).toContain(ENDPOINT);
+      // Codex's base URL is in its configuration, which carries no token or login.
+      const config = plan.codexConfig?.(ENDPOINT) ?? '';
+      expect(env + config).toContain(ENDPOINT);
+      expect(config).not.toContain('REAL');
+      expect(config).not.toContain(TOKEN);
     });
   }
 });
 
 describe('a browser sign-in on a box', () => {
   it('is offered only for a provider whose sign-in ends in a login the gateway fronts', () => {
-    expect(BOX_BROWSER_SIGN_IN).toEqual(['claude']);
-    // What `claude setup-token` ends with, and what Codex's and OpenCode's ChatGPT sign-ins do.
+    expect(BOX_BROWSER_SIGN_IN).toEqual(['claude', 'codex']);
+    // What `claude setup-token` and `codex login --device-auth` end with.
     expect(
       gatewayPlanFor(login({ kind: 'setup-token', credential: 'sk-ant-oat01-x' }), quietCache())
     ).not.toBeNull();
-    for (const provider of ['codex', 'opencode'] as const)
-      expect(
-        gatewayPlanFor(login({ provider, kind: 'auth-json', credential: '{}' }), quietCache())
-      ).toBeNull();
+    expect(
+      gatewayPlanFor(
+        login({ provider: 'codex', kind: 'auth-json', credential: CODEX_SIGN_IN }),
+        quietCache()
+      )
+    ).not.toBeNull();
+    // OpenCode's ChatGPT sign-in is in its own file, which the gateway doesn't front.
+    expect(
+      gatewayPlanFor(
+        login({ provider: 'opencode', kind: 'auth-json', credential: CODEX_SIGN_IN }),
+        quietCache()
+      )
+    ).toBeNull();
   });
 });
 
@@ -136,28 +173,54 @@ describe('each login', () => {
     });
   });
 
-  it('a Codex API key: OPENAI_BASE_URL on the gateway', async () => {
+  it('a Codex API key: a provider on the gateway in its configuration, the token in OPENAI_API_KEY', async () => {
     const plan = gatewayPlanFor(
       login({ provider: 'codex', kind: 'api-key', credential: 'sk-proj-REAL' }),
       quietCache()
     )!;
     expect(plan.route.provider).toBe('openai');
-    expect(plan.env(ENDPOINT, TOKEN)).toEqual({
-      OPENAI_BASE_URL: `${ENDPOINT}/v1`,
-      OPENAI_API_KEY: TOKEN,
+    expect(await plan.route.credential()).toEqual({
+      header: 'authorization',
+      value: 'Bearer sk-proj-REAL',
     });
+    expect(plan.env(ENDPOINT, TOKEN)).toEqual({ OPENAI_API_KEY: TOKEN, CODEX_API_KEY: '' });
+    expect(plan.codexConfig!(ENDPOINT)).toBe(
+      'model_provider = "switch_gateway"\n' +
+        `model_providers.switch_gateway = { name = "Switch provider gateway", base_url = "${ENDPOINT}/v1", env_key = "OPENAI_API_KEY", wire_api = "responses" }\n`
+    );
+  });
+
+  it('a Codex ChatGPT sign-in: the ChatGPT backend, with its access token and account', async () => {
+    const plan = gatewayPlanFor(
+      login({ provider: 'codex', kind: 'auth-json', credential: CODEX_SIGN_IN }),
+      quietCache()
+    )!;
+    expect(plan.route.provider).toBe('chatgpt');
+    expect(plan.route.upstream).toBe('https://chatgpt.com');
+    expect(plan.route.rejected).toBeTypeOf('function');
+    const credential = await plan.route.credential();
+    expect(credential.value).toBe(`Bearer ${JSON.parse(CODEX_SIGN_IN).tokens.access_token}`);
+    expect(credential.extra).toEqual({ 'chatgpt-account-id': 'acct-fake-0001' });
+    expect(plan.env(ENDPOINT, TOKEN)).toEqual({ OPENAI_API_KEY: TOKEN, CODEX_API_KEY: '' });
+    expect(plan.codexConfig!(ENDPOINT)).toContain(`base_url = "${ENDPOINT}/backend-api/codex"`);
   });
 
   it('a login the gateway can’t front is not gateway-backed', () => {
     expect(
       gatewayPlanFor(login({ provider: 'cursor', kind: 'api-key', credential: 'k' }), quietCache())
     ).toBeNull();
-    expect(
-      gatewayPlanFor(
-        login({ provider: 'codex', kind: 'auth-json', credential: '{}' }),
-        quietCache()
-      )
-    ).toBeNull();
+    // A Codex sign-in file holding no ChatGPT sign-in: an API key, another issuer, not JSON.
+    const issuer = JSON.parse(CODEX_SIGN_IN);
+    issuer.tokens.oauth_provenance = { issuer: 'https://login.example.com', client_id: 'x' };
+    for (const credential of [
+      '{}',
+      JSON.stringify({ OPENAI_API_KEY: 'sk-proj-x', tokens: null }),
+      JSON.stringify(issuer),
+      'not json',
+    ])
+      expect(
+        gatewayPlanFor(login({ provider: 'codex', kind: 'auth-json', credential }), quietCache())
+      ).toBeNull();
     expect(
       gatewayPlanFor(
         login({ provider: 'antigravity', kind: 'auth-json', credential: '{}' }),

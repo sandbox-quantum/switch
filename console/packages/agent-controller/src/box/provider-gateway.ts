@@ -41,8 +41,11 @@ export function baseUrlWithToken(endpoint: string, token: string): string {
   return `${endpoint}/t/${token}`;
 }
 
-/** The provider APIs the gateway fronts. */
-export type GatewayProvider = 'anthropic' | 'openai' | 'vertex';
+/** The provider APIs the gateway fronts. `chatgpt` is Codex's ChatGPT backend. */
+export type GatewayProvider = 'anthropic' | 'openai' | 'vertex' | 'chatgpt';
+
+/** The headers a route adds upstream: the credential, and any headers bound to it. Never logged. */
+export type GatewayCredential = { header: string; value: string; extra?: Record<string, string> };
 
 /**
  * How one agent's calls reach its provider: where to, and the credential to
@@ -58,7 +61,13 @@ export type GatewayRoute = {
    */
   upstream: string;
   /** The header to send and its value: never logged. */
-  credential: () => Promise<{ header: string; value: string }>;
+  credential: () => Promise<GatewayCredential>;
+  /**
+   * For a credential that can be renewed: the provider refused `value` (401).
+   * The call is sent once more with the credential asked again, so its body
+   * is held in memory for that.
+   */
+  rejected?: (value: string) => Promise<void>;
   /** Vertex only: the one project and region this login may call. */
   vertex?: { project: string; region: string };
 };
@@ -115,12 +124,17 @@ const ROUTES: Record<GatewayProvider, { method: string; path: RegExp; name: stri
       name: 'vertex_predict',
     },
   ],
+  chatgpt: [
+    { method: 'POST', path: /^\/backend-api\/codex\/responses$/, name: 'responses' },
+    { method: 'POST', path: /^\/backend-api\/codex\/responses\/compact$/, name: 'compact' },
+  ],
 };
 
 /** The one host each provider's calls may go to. Vertex's depends on the login's region. */
 const PROVIDER_HOSTS: Record<Exclude<GatewayProvider, 'vertex'>, string> = {
   anthropic: 'api.anthropic.com',
   openai: 'api.openai.com',
+  chatgpt: 'chatgpt.com',
 };
 
 /** A Vertex region with its own host, e.g. `us-east5`, `europe-west1`, `northamerica-northeast1`. */
@@ -165,15 +179,31 @@ const REQUEST_HEADERS: Record<GatewayProvider, ReadonlySet<string>> = {
   anthropic: new Set([...COMMON_REQUEST, 'anthropic-version', 'anthropic-beta', 'x-app']),
   openai: new Set([...COMMON_REQUEST, 'openai-beta', 'originator', 'session_id']),
   vertex: new Set([...COMMON_REQUEST, 'anthropic-version', 'anthropic-beta', 'x-app']),
+  // What Codex sends its backend about the session and the request's shape;
+  // the account (`chatgpt-account-id`) is the login's, added upstream.
+  chatgpt: new Set([
+    ...COMMON_REQUEST,
+    'openai-beta',
+    'originator',
+    'session_id',
+    'session-id',
+    'thread-id',
+    'version',
+    'x-client-request-id',
+    'x-openai-internal-codex-responses-lite',
+  ]),
 };
 /** The SDKs' own descriptive headers (language, version, retry count): allowed for every provider. */
 const SDK_HEADER = /^x-stainless-[a-z0-9-]{1,40}$/;
+/** Codex's own request headers (its window, turn and beta features): its backend only. */
+const CODEX_HEADER = /^x-codex-[a-z0-9-]{1,40}$/;
 
 /** The query parameters passed on, for each provider, with their allowed values. All else is dropped. */
 const QUERY: Record<GatewayProvider, Record<string, readonly string[]>> = {
   anthropic: { beta: ['true'] },
   openai: {},
   vertex: { alt: ['sse', 'json'] },
+  chatgpt: {},
 };
 
 /** Response headers never passed back. */
@@ -470,23 +500,40 @@ export class ProviderGateway {
       this.admit(state);
       admitted = state;
       const route = state.route;
-      let credential: { header: string; value: string };
-      try {
-        credential = await route.credential();
-      } catch {
-        // A fixed reason, never the error: a failed exchange could quote a credential.
-        this.deps.log.warn('The provider gateway could not get an agent’s credential', {
-          agentId,
-          provider,
-          reason: 'credential_unavailable',
-        });
-        throw new Refusal(502, 'credential');
-      }
-      const status = await this.forward(req, res, {
+      const credentialFor = async (ask: () => Promise<unknown>) => {
+        try {
+          await ask();
+          return await route.credential();
+        } catch {
+          // A fixed reason, never the error: a failed exchange could quote a credential.
+          this.deps.log.warn('The provider gateway could not get an agent’s credential', {
+            agentId,
+            provider,
+            reason: 'credential_unavailable',
+          });
+          throw new Refusal(502, 'credential');
+        }
+      };
+      const target = (credential: GatewayCredential) => ({
         url: new URL(`${route.upstream}${path}${keptQuery(route.provider, url.searchParams)}`),
         method,
         headers: requestHeaders(route.provider, req.headers, credential),
       });
+      const credential = await credentialFor(async () => {});
+      let status: number;
+      if (!route.rejected) {
+        status = await this.forward(req, res, target(credential));
+      } else {
+        // A renewable credential: the body is held, so a refused call can be sent again.
+        const body = await readBody(req, this.limits.maxBodyBytes);
+        let response = await this.send1(res, target(credential), body);
+        if (response.statusCode === 401) {
+          response.resume();
+          const renewed = await credentialFor(() => route.rejected!(credential.value));
+          response = await this.send1(res, target(renewed), body);
+        }
+        status = await this.relay(res, response);
+      }
       this.deps.log.debug('Provider call', {
         agentId,
         provider,
@@ -538,6 +585,39 @@ export class ProviderGateway {
       if (sent instanceof BodyTooLarge) throw new Refusal(413, 'body_too_large');
       throw new Refusal(502, 'upstream_failed');
     }
+    return this.relay(res, response);
+  }
+
+  /** Sends a held body upstream once; resolves with the provider's answer, not yet passed back. */
+  private async send1(
+    res: ServerResponse,
+    target: { url: URL; method: string; headers: OutgoingHttpHeaders },
+    body: Buffer
+  ): Promise<IncomingMessage> {
+    let upstream: Awaited<ReturnType<UpstreamSend>>;
+    try {
+      upstream = await this.send(target.url, {
+        method: target.method,
+        headers: { ...target.headers, 'content-length': body.length },
+        timeoutMs: this.limits.idleTimeoutMs,
+      });
+    } catch {
+      throw new Refusal(502, 'upstream_unreachable');
+    }
+    const abandon = () => upstream.request.destroy(new Error('the agent went away'));
+    res.once('close', abandon);
+    upstream.request.end(body);
+    try {
+      return await upstream.response;
+    } catch {
+      throw new Refusal(502, 'upstream_failed');
+    } finally {
+      res.off('close', abandon);
+    }
+  }
+
+  /** Streams the provider's answer back; resolves with the status sent. */
+  private async relay(res: ServerResponse, response: IncomingMessage): Promise<number> {
     res.writeHead(response.statusCode ?? 502, responseHeaders(response.headers));
     try {
       await pipeline(response, res);
@@ -575,6 +655,18 @@ export class ProviderGateway {
 
 class BodyTooLarge extends Error {}
 
+/** The whole request body, refused (413) past `max` bytes. */
+async function readBody(req: IncomingMessage, max: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let seen = 0;
+  for await (const chunk of req) {
+    seen += (chunk as Buffer).length;
+    if (seen > max) throw new Refusal(413, 'body_too_large');
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
 function limitBytes(max: number): Transform {
   let seen = 0;
   return new Transform({
@@ -589,14 +681,24 @@ function limitBytes(max: number): Transform {
 function requestHeaders(
   provider: GatewayProvider,
   incoming: IncomingHttpHeaders,
-  credential: { header: string; value: string }
+  credential: GatewayCredential
 ): OutgoingHttpHeaders {
   const allowed = REQUEST_HEADERS[provider];
   const headers: OutgoingHttpHeaders = {};
   for (const [name, value] of Object.entries(incoming)) {
-    if (value === undefined || !(allowed.has(name) || SDK_HEADER.test(name))) continue;
+    if (value === undefined) continue;
+    if (
+      !(
+        allowed.has(name) ||
+        SDK_HEADER.test(name) ||
+        (provider === 'chatgpt' && CODEX_HEADER.test(name))
+      )
+    )
+      continue;
     headers[name] = value;
   }
+  for (const [name, value] of Object.entries(credential.extra ?? {}))
+    headers[name.toLowerCase()] = value;
   headers[credential.header.toLowerCase()] = credential.value;
   return headers;
 }

@@ -156,6 +156,9 @@ export const sealedLoginResponseSchema = z.object({
 });
 export type SealedLoginResponse = z.infer<typeof sealedLoginResponseSchema>;
 
+/** A sealed login Switch kept for this machine: its new revision. */
+export const keptLoginResponseSchema = z.object({ revision: z.number().int() });
+
 // §2 Assignment (v1 definition)
 
 export const agentDefinitionSchema = z.object({

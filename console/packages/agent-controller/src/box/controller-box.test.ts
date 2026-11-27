@@ -26,8 +26,10 @@ import type { AgentAssignment, StatusReport } from '../schemas';
 import type { GivenLogin } from '../sealed-logins';
 import { CONTROLLER_CREDENTIAL, FileSecretStore, SEALING_KEY } from '../secrets';
 import { ControllerStore } from '../store';
+import { fakeChatgptSignIn } from '../testing/chatgpt-sign-in';
 import { FakeCore } from '../testing/fake-core';
 import { FakeLocator, FakeRuntime } from '../testing/fake-runtime';
+import { ChatgptTokenCache, ChatgptTokens } from './chatgpt-tokens';
 import { type BoxControllerDeps, frontable } from './controller-box';
 import { VertexTokenCache } from './gateway-logins';
 import { LauncherLink } from './launcher-link';
@@ -416,10 +418,10 @@ describe('runController in box mode', () => {
     expect(await running).toBe('stopped');
   });
 
-  it('refuses a browser sign-in for every provider but Claude Code, whose token goes through the provider gateway', async () => {
+  it('refuses a browser sign-in for every provider but Claude Code and Codex, whose logins go through the provider gateway', async () => {
     core.setAssignment({ revision: 1, agents: [] });
     running = runController(boxDeps(), stop.signal);
-    const refused = ['codex', 'opencode', 'cursor', 'antigravity'];
+    const refused = ['opencode', 'cursor', 'antigravity'];
     for (const provider of refused) {
       core.addOperation({
         id: `op-${provider}`,
@@ -852,21 +854,35 @@ describe('runController on a split box with the provider gateway', () => {
       kind: 'api-key',
       credential: 'sk-ant-api03-REAL-1',
     } as never;
-    const probe = await probeEnv!('claude', login);
+    const probe = (await probeEnv!('claude', login)) as {
+      env: Record<string, string>;
+      done: () => void;
+    };
     expect(probe).not.toBeNull();
-    expect(JSON.stringify(probe!.env)).not.toContain('REAL');
-    expect(probe!.env.ANTHROPIC_API_KEY?.startsWith('swpg_')).toBe(true);
-    probe!.done();
+    expect(JSON.stringify(probe.env)).not.toContain('REAL');
+    expect(probe.env.ANTHROPIC_API_KEY?.startsWith('swpg_')).toBe(true);
+    probe.done();
   });
 });
 
 describe('frontable', () => {
   it('takes as usable exactly the logins the gateway fronts', () => {
-    const gateway = { vertex: new VertexTokenCache() };
-    const codexSignIn = JSON.stringify({ tokens: { access_token: 'given-codex-sign-in' } });
+    const gateway = {
+      vertex: new VertexTokenCache(),
+      chatgpt: new ChatgptTokenCache(
+        (login) => new ChatgptTokens(login, { save: null, log: silentLogger })
+      ),
+    };
+    const notChatgpt = JSON.stringify({ tokens: { access_token: 'given-codex-sign-in' } });
     const given = (provider: 'claude' | 'codex', kind: GivenLogin['kind'], credential: string) =>
       ({ status: 'connected', provider, revision: '1', kind, credential }) as GivenLogin;
-    expect(frontable(given('codex', 'auth-json', codexSignIn), gateway)).toBe(false);
+    expect(frontable(given('codex', 'auth-json', notChatgpt), gateway)).toBe(false);
+    expect(
+      frontable(
+        given('codex', 'auth-json', fakeChatgptSignIn({ expMs: Date.now() + 3_600_000 })),
+        gateway
+      )
+    ).toBe(true);
     expect(frontable(given('codex', 'api-key', 'sk-openai'), gateway)).toBe(true);
     expect(frontable(given('claude', 'setup-token', 'sk-ant-oat'), gateway)).toBe(true);
     expect(frontable(given('claude', 'api-key', 'sk-ant-api'), gateway)).toBe(true);

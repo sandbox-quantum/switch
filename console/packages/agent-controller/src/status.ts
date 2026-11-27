@@ -285,7 +285,7 @@ type ProviderEntry = {
  */
 export function unusableLoginMessage(login: Pick<GivenLogin, 'provider' | 'kind'>): string {
   if (login.provider === 'codex' && login.kind === 'auth-json')
-    return "This cloud machine can't use Codex's 'This computer's sign-in'. Give it an OpenAI API key instead.";
+    return 'This cloud machine uses a Codex sign-in file only when it holds a ChatGPT sign-in (from `codex login`). Sign Codex in with the browser, or give it an OpenAI API key.';
   if (login.provider === 'claude' && login.kind === 'vertex')
     return "This cloud machine can't use Vertex AI in this login's region. Give it a Claude setup token or API key, or a Vertex AI login in a region with its own endpoint.";
   return `This cloud machine can't use this ${login.provider} login. Give it an API key instead.`;
