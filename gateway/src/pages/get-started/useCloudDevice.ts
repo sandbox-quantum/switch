@@ -51,7 +51,8 @@ export function useCloudDevice(): {
         });
         return;
       }
-      if (machine === null && !ensured.current) {
+      // A machine released while it had no agents is claimed again, as a missing one is.
+      if ((machine === null || machine.desired_state === "retained") && !ensured.current) {
         ensured.current = true;
         // Asked again on the next read when it cannot be had now (all in use, say).
         machine = await ensureCloudMachine().finally(() => {

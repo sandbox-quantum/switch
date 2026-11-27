@@ -107,7 +107,7 @@ export default function CloudWarmUp() {
         if (!hosted.available) return;
         const isFirstVisit = await firstVisitWithoutAgents(userId, tenantId);
         let machine: CloudMachine | null = hosted.machines[0] ?? null;
-        if (machine === null && isFirstVisit) {
+        if ((machine === null || machine.desired_state === "retained") && isFirstVisit) {
           machine = await ensureCloudMachine().catch((caught: unknown): CloudMachine | null => {
             console.warn("Your cloud device could not be started ahead of time:", caught);
             return null;
