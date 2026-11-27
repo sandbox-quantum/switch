@@ -84,6 +84,7 @@ class DecisionService:
         self.error: Exception | None = None
         self.during: Callable[[], Awaitable[None]] | None = None
         self.headers: list[dict[str, str]] = []
+        self.rooms_on_by_default = False
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(json.loads(request.content))
@@ -120,6 +121,7 @@ class DecisionService:
                     bedrock_enabled=False,
                 ),
                 store=DecisionSettingsStore(),
+                rooms_on_by_default=self.rooms_on_by_default,
             ),
             keyring=TEST_KEYRING,
             client=httpx.AsyncClient(transport=httpx.MockTransport(self.handle)),
@@ -167,6 +169,35 @@ async def _owner_only(world: World, agent: str) -> None:
             .values(addressing_policy=owner_only_policy([]).model_dump(mode="json"))
         )
         await session.commit()
+
+
+class TestTheServerDefault:
+    """`DECISION_AUTO_ROUTE_DEFAULT_ON`: a room that never ran `!auto-route`
+    routes by decision, and one that turned it off stays off."""
+
+    @pytest.fixture
+    async def default_on(self, world: World, service: DecisionService) -> Journey:
+        service.rooms_on_by_default = True
+        return await Journey(world, ON, service.client(world.session_factory)).start()
+
+    async def test_a_room_that_never_chose_is_asked(
+        self, default_on: Journey, service: DecisionService
+    ) -> None:
+        told = await default_on.say("bob", "can someone check the deploy?", at=10)
+
+        [request] = service.requests
+        assert request["message"]["text"] == "can someone check the deploy?"
+        assert await default_on.reached(told) == set()
+
+    async def test_a_room_that_turned_it_off_is_not(
+        self, default_on: Journey, service: DecisionService
+    ) -> None:
+        reply = await default_on.command("alice", "auto-route", "off", at=0)
+        assert "Automatic routing is **off**" in reply
+
+        await default_on.say("bob", "can someone check the deploy?", at=10)
+
+        assert service.requests == []
 
 
 class TestWhichMessagesAreAsked:

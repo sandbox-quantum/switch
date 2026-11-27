@@ -590,6 +590,11 @@ switchCore:
     bedrockEnabled: false
     # DECISION_TIMEOUT_SECONDS; empty keeps switch-core's default.
     timeoutSeconds: ""
+    # DECISION_AUTO_ROUTE_DEFAULT_ON: auto-route is on in every room that has
+    # not turned it on or off itself (`!auto-route`, or the room's toggle in
+    # the dashboard), wherever the room's workspace has a decision service.
+    # false leaves it off until a room turns it on.
+    autoRouteDefaultOn: true
   # The agent controller release switch-core tells every controller to run
   # (CONTROLLER_RELEASE_VERSION / _URL / _SHA256), except Switch Console's own,
   # which updates with Console. A controller that runs

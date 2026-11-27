@@ -185,9 +185,10 @@ does, and there is no polling tool to call.
   suggest either, and offer what the server does have instead: tagging the
   agent, or `!assign-agent`. Where the server has it:
 
-  In a room where people turned on automatic routing (`!auto-route on`), a
-  message that tags nobody and that no follow-up or assigned agent caught goes
-  to a decision service, which picks the one agent best placed to answer it,
+  In a room with automatic routing on (`!auto-route on`, or the server's
+  default in a room that has not turned it off), a message that tags nobody
+  and that no follow-up or assigned agent caught goes to a decision service,
+  which picks the one agent best placed to answer it,
   or nobody. When it picks you, the person's own message reaches you, and its
   line reads `[Switch] <sender> posted in room <room> without tagging anyone,
   and Switch picked you to answer (…)` rather than `addressed you`. Switch can

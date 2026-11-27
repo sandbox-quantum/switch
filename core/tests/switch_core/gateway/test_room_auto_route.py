@@ -102,6 +102,7 @@ def _app(
                     endpoint_url=server_url, api_key=None, bedrock_enabled=False
                 ),
                 store=DecisionSettingsStore(),
+                rooms_on_by_default=False,
             ),
         }
     )

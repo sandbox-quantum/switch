@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, get_args
 
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
+from switch_core.db.stores.room_store import auto_route_on_in
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -209,11 +210,14 @@ def availability(enabled: bool, settings: ResolvedSettings) -> Availability:
 @dataclass(frozen=True)
 class DecisionAvailability:
     """The one availability check, for the room detail, the room toggle and
-    `!auto-route`: the server's flag and default, and the workspace's row."""
+    `!auto-route`: the server's flag and default, and the workspace's row.
+    `rooms_on_by_default` is whether auto-route is on in a room that has not
+    chosen (`DECISION_AUTO_ROUTE_DEFAULT_ON`)."""
 
     enabled: bool
     server: ServerDefault
     store: DecisionSettingsStore
+    rooms_on_by_default: bool
 
     @classmethod
     def from_config(cls, config: SwitchConfig) -> DecisionAvailability:
@@ -221,7 +225,13 @@ class DecisionAvailability:
             enabled=config.decision_routing_enabled,
             server=ServerDefault.from_config(config),
             store=DecisionSettingsStore(),
+            rooms_on_by_default=config.decision_auto_route_default_on,
         )
+
+    def room_on(self, metadata: dict | None) -> bool:
+        """Whether a room with this metadata has auto-route on: its own
+        choice, or the server's default while it has none."""
+        return auto_route_on_in(metadata, self.rooms_on_by_default)
 
     async def settings(self, session: AsyncSession, tenant_id: str) -> ResolvedSettings:
         return resolve(await self.store.get(session, tenant_id), self.server)

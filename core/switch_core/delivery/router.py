@@ -104,8 +104,8 @@ from switch_core.db.raw import RawStatement
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.pending_decision_store import Pending, PendingDecisionStore
 from switch_core.db.stores.room_store import (
+    auto_route_choice_in,
     auto_route_fallback_in,
-    auto_route_on_in,
     follow_ups_enabled_in,
     main_agent_in,
 )
@@ -491,7 +491,7 @@ class RoomReads:
                 agent_count=agent_count,
                 follow_ups_enabled=follow_ups_enabled_in(room.metadata_),
                 main_agent_id=main_agent_in(room.metadata_),
-                auto_route_on=auto_route_on_in(room.metadata_),
+                auto_route_choice=auto_route_choice_in(room.metadata_),
                 auto_route_fallback_agent_id=auto_route_fallback_in(room.metadata_),
                 agent_greeting=(room.metadata_ or {}).get("agent_greeting"),
                 console_chat="chat_operation_id" in (room.metadata_ or {}),
@@ -1533,14 +1533,25 @@ class MessageRouter:
 
     async def _auto_routes(self, session: AsyncSession, reads: RoomReads) -> bool:
         """Whether messages in the room go to the decision service: the room
-        turned it on, the server routes by decision, and the room's workspace
-        has a decision backend (`decision/settings.py`). A workspace with none
-        keeps today's behaviour, follow-ups in threads included."""
+        has it on (its own choice, or the server's default), the server routes
+        by decision, and the room's workspace has a decision backend
+        (`decision/settings.py`). A workspace with none keeps today's
+        behaviour, follow-ups in threads included."""
         return (
-            reads.meta.auto_route_on
-            and self._decisions is not None
+            self._decisions is not None
+            and self._room_auto_route_on(reads.meta)
             and await self._decisions.available(session, reads.tenant_id)
         )
+
+    def _room_auto_route_on(self, meta: RoomMeta) -> bool:
+        """Whether the room has auto-route on, by its own choice or the
+        server's default; never on a server that does not route by decision."""
+        if self._decisions is None:
+            return False
+        choice = meta.auto_route_choice
+        if choice is None:
+            return self._decisions.availability.rooms_on_by_default
+        return choice
 
     @staticmethod
     async def _asks_for_a_decision(
@@ -1704,7 +1715,7 @@ class MessageRouter:
                             decision_id,
                         )
                         return
-                    if not reads.meta.auto_route_on:
+                    if not self._room_auto_route_on(reads.meta):
                         await self._settle(
                             tenant_id, pending, "auto-route was turned off", decision_id
                         )
