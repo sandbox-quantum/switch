@@ -163,9 +163,14 @@ V1_OPERATION_KINDS = frozenset(
     {"agent.restart", "provider.recheck", "controller.restart"}
 )
 
-# The providers a machine's controller can sign in through a browser. Not on
-# a cloud device: Switch runs its controller, which has no browser sign-in.
+# The providers a machine's controller can sign in through a browser.
 BROWSER_SIGN_IN = frozenset({"claude", "codex", "cursor", "antigravity", "opencode"})
+# Those a cloud device can. Its agents' CLIs never hold the real login: the
+# provider gateway fronts it, and of these sign-ins it fronts only Claude's
+# setup token (`gatewayPlanFor` in the controller's box mode). Codex's and
+# OpenCode's ChatGPT tokens refresh and rotate, and Cursor and Antigravity keep
+# their login inside the CLI.
+CLOUD_BROWSER_SIGN_IN = frozenset({"claude"})
 
 # What a Switch Cloud machine's controller is called, whatever enrolled it.
 CLOUD_MACHINE_NAME = "Switch Cloud"
@@ -1748,7 +1753,9 @@ class ManagementService:
         controller = await self._sealing_target(
             session, tenant_id, owner_id, controller_id, provider
         )
-        if controller.kind == "ec2" or provider not in BROWSER_SIGN_IN:
+        await _refuse_while_migrating(session, tenant_id, controller_id)
+        offered = CLOUD_BROWSER_SIGN_IN if controller.kind == "ec2" else BROWSER_SIGN_IN
+        if provider not in offered:
             raise ManagementError(
                 422,
                 reason_codes.VALIDATION_ERROR,

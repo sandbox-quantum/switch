@@ -205,7 +205,7 @@ class TestBrowserSignIn:
         assert codex.status_code == 200, codex.text
         assert second_seen["state"] == "pending"
 
-    async def test_a_cloud_device_signs_in_nothing_through_a_browser(
+    async def test_a_cloud_device_signs_in_only_claude_through_a_browser(
         self, harness: Harness
     ) -> None:
         async with harness.client() as client:
@@ -219,12 +219,14 @@ class TestBrowserSignIn:
                     .values(kind="ec2")
                 )
                 await session.commit()
-            refused = {
+            answered = {
                 provider: await _start(client, controller, provider)
                 for provider in ("claude", "codex", "cursor", "antigravity", "opencode")
             }
 
-        for provider, response in refused.items():
+        # Only Claude's setup token goes through the provider gateway.
+        assert answered.pop("claude").status_code == 200
+        for provider, response in answered.items():
             assert response.status_code == 422, (provider, response.text)
 
     async def test_each_provider_with_a_browser_sign_in_starts_one(
