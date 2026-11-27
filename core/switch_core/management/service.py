@@ -163,6 +163,10 @@ V1_OPERATION_KINDS = frozenset(
     {"agent.restart", "provider.recheck", "controller.restart"}
 )
 
+# The providers a machine's controller can sign in through a browser. Not on
+# a cloud device: Switch runs its controller, which has no browser sign-in.
+BROWSER_SIGN_IN = frozenset({"claude", "codex", "cursor", "antigravity", "opencode"})
+
 # What a Switch Cloud machine's controller is called, whatever enrolled it.
 CLOUD_MACHINE_NAME = "Switch Cloud"
 
@@ -1252,15 +1256,28 @@ class ManagementService:
         session: AsyncSession,
         principal: ControllerPrincipal,
         operation_id: str,
-    ) -> None:
+        progress: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Renew the lease and record `progress` when sent. Answers what the
+        owner sent the operation since (`{"code": ...}`), handed over once, or
+        None."""
         await self._controller_operation(session, principal, operation_id)
+        now = self.now()
         renewed = await self.operations.renew_lease(
-            session, principal.tenant_id, operation_id, self.now() + OPERATION_LEASE
+            session,
+            principal.tenant_id,
+            operation_id,
+            now + OPERATION_LEASE,
+            progress,
         )
         if renewed is None:
             current = await self._controller_operation(session, principal, operation_id)
             raise self._no_longer_yours(current)
+        given = await self.operations.take_input(
+            session, principal.tenant_id, operation_id, now
+        )
         await session.commit()
+        return given
 
     async def complete_operation(
         self,
@@ -1712,6 +1729,175 @@ class ManagementService:
             agent_id=None,
         )
         return {"login": login, "operation": view}
+
+    async def start_browser_login(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        controller_id: str,
+        provider: str,
+    ) -> dict[str, Any]:
+        """Have the owner's machine sign `provider` in through a browser: a
+        `provider.login` operation with `method: "browser"`, in which the
+        controller runs the provider's own sign-in, reports the page to open
+        as progress, takes a code pasted back (`give_sign_in_code`) when the
+        page shows one, and keeps the login it ends with as a login given to
+        it, sealed to its own key (`keep_browser_login`). A sign-in already
+        running for the provider there is cancelled: only the newest stands."""
+        controller = await self._sealing_target(
+            session, tenant_id, owner_id, controller_id, provider
+        )
+        if controller.kind == "ec2" or provider not in BROWSER_SIGN_IN:
+            raise ManagementError(
+                422,
+                reason_codes.VALIDATION_ERROR,
+                f"{provider} can't be signed in through a browser on this device; "
+                "give it a key or token instead.",
+            )
+        if controller.public_key is None:
+            raise ManagementError(
+                409,
+                reason_codes.VALIDATION_ERROR,
+                "This device has no key to keep a login with yet. Update its "
+                "controller, which registers one when it next runs.",
+            )
+        params = {"provider": provider, "method": "browser"}
+        replaced = await self.operations.cancel_open_matching(
+            session,
+            tenant_id,
+            controller_id=controller_id,
+            kind="provider.login",
+            params=params,
+        )
+        operation = await self.operations.create(
+            session,
+            controller_id=controller_id,
+            agent_id=None,
+            kind="provider.login",
+            params=params,
+            created_by=owner_id,
+        )
+        view = operation_view(operation)
+        await session.commit()
+        logger.info(
+            "Started a browser sign-in for %s on agent controller %s%s",
+            provider,
+            controller_id,
+            f", replacing {', '.join(replaced)}" if replaced else "",
+        )
+        self.signals.operation_pending(
+            controller_id,
+            operation_id=operation.id,
+            kind="provider.login",
+            agent_id=None,
+        )
+        return {"operation": view}
+
+    async def give_sign_in_code(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        operation_id: str,
+        code: str,
+    ) -> None:
+        """Send the code the sign-in page showed to the browser sign-in
+        waiting for it on the owner's machine. Once per sign-in: a second
+        code, or one the sign-in is not waiting for, is refused."""
+        operation = await self.operations.get(session, tenant_id, operation_id)
+        if operation is None:
+            raise not_found("Operation")
+        await self.owned_controller(
+            session, tenant_id, owner_id, operation.controller_id
+        )
+        if not _is_browser_login(operation):
+            raise ManagementError(
+                409,
+                reason_codes.VALIDATION_ERROR,
+                "That operation is not a browser sign-in.",
+            )
+        sign_in = (operation.progress or {}).get("sign_in")
+        if (
+            operation.state != "claimed"
+            or not isinstance(sign_in, dict)
+            or sign_in.get("needs_code") is not True
+        ):
+            raise ManagementError(
+                409,
+                reason_codes.VALIDATION_ERROR,
+                "The sign-in is not waiting for a code. Start it again.",
+            )
+        given = await self.operations.give_input(
+            session, tenant_id, operation_id, {"code": code}
+        )
+        if given is None:
+            raise ManagementError(
+                409,
+                reason_codes.VALIDATION_ERROR,
+                "A code was already sent to this sign-in. Start it again to "
+                "send another.",
+            )
+        await session.commit()
+        logger.info(
+            "Sent a sign-in code to operation %s on agent controller %s",
+            operation_id,
+            operation.controller_id,
+        )
+
+    async def keep_browser_login(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        operation_id: str,
+        sealed: SealedLogin,
+    ) -> dict[str, Any]:
+        """Keep the login a browser sign-in on the machine ended with, sealed
+        by the controller to its own key, as a login its owner gave it: the
+        controller then takes it up as it would one pasted, and Switch never
+        sees inside. Only while the controller holds that sign-in."""
+        operation = await self._controller_operation(session, principal, operation_id)
+        if not _is_browser_login(operation):
+            raise ManagementError(
+                409,
+                reason_codes.VALIDATION_ERROR,
+                "That operation is not a browser sign-in.",
+            )
+        if operation.state != "claimed":
+            raise self._no_longer_yours(operation)
+        controller = await self.controllers.get(
+            session, principal.tenant_id, principal.controller_id
+        )
+        if controller is None or controller.public_key is None:
+            raise ManagementError(
+                409,
+                reason_codes.VALIDATION_ERROR,
+                "This device has no key registered to keep a login with.",
+            )
+        if sealed.key_id != key_id(controller.public_key["key"]):
+            raise ManagementError(
+                409,
+                reason_codes.VALIDATION_ERROR,
+                "The login is sealed to a key Switch does not hold for this device.",
+            )
+        provider = operation.params["provider"]
+        row = await self.controllers.put_sealed_login(
+            session,
+            principal.tenant_id,
+            principal.controller_id,
+            provider,
+            sealed.model_dump(),
+            operation.created_by,
+        )
+        await session.commit()
+        logger.info(
+            "Agent controller %s kept the %s login a browser sign-in ended with "
+            "(revision %s)",
+            principal.controller_id,
+            provider,
+            row.revision,
+        )
+        return sealed_login_view(row)
 
     async def withdraw_sealed_login(
         self,
@@ -2583,6 +2769,13 @@ def _resume_cursors(recorded: dict[str, Any] | None) -> dict[str, int | None]:
         agent_id: cursor if isinstance(cursor, int) else None
         for agent_id, cursor in recorded.items()
     }
+
+
+def _is_browser_login(operation: AgentControllerOperation) -> bool:
+    return (
+        operation.kind == "provider.login"
+        and operation.params.get("method") == "browser"
+    )
 
 
 def refuse_cloud(controller: AgentController, done: str) -> None:

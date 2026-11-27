@@ -42,6 +42,7 @@ from switch_core.management.schemas import (
     CreateOperationRequest,
     PatchManagedAgentRequest,
     PutManagedAgentRequest,
+    SignInCodeRequest,
     UpdateControllerRequest,
     wire_time,
 )
@@ -302,6 +303,37 @@ async def give_sealed_login(
     return await management.give_sealed_login(
         session, require_tenant_id(), user.id, controller_id, provider, body.sealed
     )
+
+
+@router.post("/controllers/{controller_id}/provider-logins/{provider}/browser")
+async def start_browser_login(
+    controller_id: str,
+    provider: str,
+    session: Session,
+    user: CurrentUser,
+    management: Management,
+) -> dict[str, Any]:
+    """Have this machine sign the provider in through a browser. Returns the
+    `provider.login` operation (`method: "browser"`), whose `progress` names
+    the page to open, and whose result says whether the provider signs in."""
+    return await management.start_browser_login(
+        session, require_tenant_id(), user.id, controller_id, provider
+    )
+
+
+@router.post("/operations/{operation_id}/sign-in-code")
+async def give_sign_in_code(
+    operation_id: str,
+    body: SignInCodeRequest,
+    session: Session,
+    user: CurrentUser,
+    management: Management,
+) -> dict[str, bool]:
+    """Send a browser sign-in on the caller's machine the code its page showed."""
+    await management.give_sign_in_code(
+        session, require_tenant_id(), user.id, operation_id, body.code
+    )
+    return {"ok": True}
 
 
 @router.delete("/controllers/{controller_id}/provider-logins/{provider}")

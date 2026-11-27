@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, null, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import AgentControllerOperation
@@ -128,6 +128,10 @@ class AgentControllerOperationStore:
             ),
             state="claimed",
             lease_expires_at=lease_expires_at,
+            # A claim starts the work afresh: nothing an earlier claim
+            # reported or was sent carries over.
+            progress=null(),
+            input=null(),
         )
 
     async def renew_lease(
@@ -136,14 +140,63 @@ class AgentControllerOperationStore:
         tenant_id: str,
         operation_id: str,
         lease_expires_at: datetime,
+        progress: dict[str, Any] | None,
     ) -> AgentControllerOperation | None:
+        """Renew the lease, recording `progress` as the latest report when
+        one is sent; a renewal without one keeps the last."""
+        values: dict[str, Any] = {"lease_expires_at": lease_expires_at}
+        if progress is not None:
+            values["progress"] = progress
         return await self._transition(
             session,
             tenant_id,
             operation_id,
             AgentControllerOperation.state == "claimed",
-            lease_expires_at=lease_expires_at,
+            **values,
         )
+
+    async def give_input(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        operation_id: str,
+        given: dict[str, Any],
+    ) -> AgentControllerOperation | None:
+        """Hold `given` for the claimed operation to take, once: refused
+        (None) when it was already sent something."""
+        return await self._transition(
+            session,
+            tenant_id,
+            operation_id,
+            and_(
+                AgentControllerOperation.state == "claimed",
+                AgentControllerOperation.input.is_(None),
+            ),
+            input=given,
+        )
+
+    async def take_input(
+        self, session: AsyncSession, tenant_id: str, operation_id: str, now: datetime
+    ) -> dict[str, Any] | None:
+        """What the owner sent and the controller has not taken yet, or None.
+        Taking it keeps only when, so it is handed over once."""
+        row = (
+            await session.execute(
+                select(AgentControllerOperation)
+                .where(
+                    AgentControllerOperation.tenant_id == tenant_id,
+                    AgentControllerOperation.id == operation_id,
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if row is None or row.input is None or "taken_at" in row.input:
+            return None
+        given = dict(row.input)
+        row.input = {"taken_at": now.isoformat()}
+        await session.flush()
+        return given
 
     async def complete(
         self,
@@ -186,6 +239,32 @@ class AgentControllerOperationStore:
         result = await session.execute(
             update(AgentControllerOperation)
             .where(*conditions)
+            .values(state="cancelled", lease_expires_at=None)
+            .returning(AgentControllerOperation.id)
+            .execution_options(synchronize_session=False)
+        )
+        return list(result.scalars().all())
+
+    async def cancel_open_matching(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        *,
+        controller_id: str,
+        kind: str,
+        params: dict[str, Any],
+    ) -> list[str]:
+        """Cancel the controller's open operations of `kind` whose params
+        hold `params`. Returns the ids cancelled."""
+        result = await session.execute(
+            update(AgentControllerOperation)
+            .where(
+                AgentControllerOperation.tenant_id == tenant_id,
+                AgentControllerOperation.controller_id == controller_id,
+                AgentControllerOperation.kind == kind,
+                AgentControllerOperation.params.contains(params),
+                AgentControllerOperation.state.in_(OPEN_STATES),
+            )
             .values(state="cancelled", lease_expires_at=None)
             .returning(AgentControllerOperation.id)
             .execution_options(synchronize_session=False)

@@ -1592,12 +1592,22 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/management/controllers/{controller_id}/provider-logins/{provider}/browser",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/management/enrollment-codes",
       "auth": "session",
       "flags": []
     },
     {
       "route": "POST /gateway/management/operations",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/management/operations/{operation_id}/sign-in-code",
       "auth": "session",
       "flags": []
     },

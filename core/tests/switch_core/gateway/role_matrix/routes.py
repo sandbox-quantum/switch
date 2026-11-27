@@ -1217,6 +1217,18 @@ ROUTES: dict[str, Case] = {
         owner(ok=404),
         why="Its owner's; it has no login for this provider to withdraw.",
     ),
+    # A browser sign-in on a machine: its owner's alone, as giving it a login.
+    "POST /gateway/management/controllers/{controller_id}/provider-logins/{provider}/browser": post(
+        f"{G}/management/controllers/{{controller}}/provider-logins/claude/browser",
+        owner(ok=409),
+        why="Its owner's; refused then, the machine having no key to keep a login with.",
+    ),
+    "POST /gateway/management/operations/{operation_id}/sign-in-code": post(
+        f"{G}/management/operations/nobody/sign-in-code",
+        anyone(404),
+        json={"code": "abc"},
+        why="The operation's owner's; this operation is nobody's.",
+    ),
     "GET /gateway/management/agents": get(f"{G}/management/agents", SELF),
     "POST /gateway/management/agents": post(
         f"{G}/management/agents",
