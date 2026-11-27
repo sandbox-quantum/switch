@@ -390,7 +390,7 @@ async def warm_after_sign_in(
     if not config.gateway_onboarding_enabled or settings is None or tenant_id is None:
         return
     async with tenant_session(factory, tenant_id) as session:
-        if not machines_enabled(config, settings):
+        if not machines_enabled(config, settings, user_id):
             return
         try:
             await ensure_machine(session, factory, user_id, config, settings)

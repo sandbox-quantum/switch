@@ -1,5 +1,5 @@
 {
- "source": "upstream main 908a23b70: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
+ "source": "upstream main 523ddc4ff: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
  "gateway": [
   [
    "DELETE",
@@ -247,6 +247,14 @@
   ],
   [
    "GET",
+   "/auth/me/license"
+  ],
+  [
+   "GET",
+   "/auth/me/team-survey"
+  ],
+  [
+   "GET",
    "/auth/oidc/callback"
   ],
   [
@@ -380,6 +388,10 @@
   [
    "GET",
    "/joinable-tenants"
+  ],
+  [
+   "GET",
+   "/license"
   ],
   [
    "GET",
@@ -831,6 +843,10 @@
   ],
   [
    "POST",
+   "/auth/me/start-over"
+  ],
+  [
+   "POST",
    "/auth/oidc/exchange"
   ],
   [
@@ -1219,7 +1235,15 @@
   ],
   [
    "PUT",
+   "/auth/me/license"
+  ],
+  [
+   "PUT",
    "/auth/me/password"
+  ],
+  [
+   "PUT",
+   "/auth/me/team-survey"
   ],
   [
    "PUT",
