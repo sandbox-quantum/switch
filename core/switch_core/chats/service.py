@@ -1647,6 +1647,7 @@ class ChatService:
         read_visibility: str | None = None,
         write_visibility: str | None = None,
         room_kind: str | None = None,
+        follow_ups: bool | None = None,
     ) -> Room:
         """A private room with the agents and members, owned by and joined by
         the user.
@@ -1753,6 +1754,7 @@ class ChatService:
             ("readVisibility", read_visibility),
             ("writeVisibility", write_visibility),
             ("roomKind", room_kind),
+            ("followUps", follow_ups),
         ):
             if value is not None:
                 request[key] = value
@@ -1888,6 +1890,7 @@ class ChatService:
                                 created_by_kind="user",
                                 chat_operation_id=operation_id,
                                 room_kind=room_kind,
+                                follow_ups_off=follow_ups is False,
                                 agent_greeting=(
                                     {"agent_id": agents[0].id, "body": greeting}
                                     if greeting is not None

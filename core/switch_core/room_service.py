@@ -62,6 +62,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import validate_role_name
 from switch_core.db.stores.room_store import (
+    FOLLOW_UPS_OFF_KEY,
     LINKED_CHANNEL_NAME_KEY,
     NAME_SOURCE_KEY,
     RoomStore,
@@ -204,6 +205,9 @@ class RoomCreateConfig(BaseModel):
     # The client app's own kind of room (`ROOM_KIND_KEY`), stamped into the
     # room's metadata; None for an ordinary room.
     room_kind: str | None = None
+    # Starts the room with follow-ups off (`FOLLOW_UPS_OFF_KEY`), as
+    # `!follow-ups off` would leave it.
+    follow_ups_off: bool = False
     # `{agent_id, body}`: what that agent says as it joins, in place of its
     # usual line. Stamped with the room, so it is there before the agent is.
     agent_greeting: dict[str, str] | None = None
@@ -1224,6 +1228,7 @@ class RoomService:
                         if config.room_kind is not None
                         else {}
                     ),
+                    **({FOLLOW_UPS_OFF_KEY: True} if config.follow_ups_off else {}),
                     **(
                         {"user_external_id": config.user_external_id}
                         if config.user_external_id is not None

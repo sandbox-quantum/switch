@@ -147,6 +147,9 @@ class CreateChatRequest(CamelModel):
     # Makes the room one of a client app's own kind, listed only where that
     # kind is asked for (`?roomKind=`); older clients send none.
     room_kind: str | None = None
+    # False starts the room with follow-ups off (`!follow-ups off`), so only
+    # a message that names an agent reaches it; older clients send none.
+    follow_ups: bool | None = None
 
     def chosen_agents(self) -> list[str]:
         if (self.agent_id is None) == (self.agent_ids is None):
@@ -396,6 +399,7 @@ async def create_chat(
         read_visibility=req.read_visibility,
         write_visibility=req.write_visibility,
         room_kind=req.room_kind,
+        follow_ups=req.follow_ups,
     )
     async with tenant_session(service.session_factory, tenant_id) as session:
         return ChatEnvelope(

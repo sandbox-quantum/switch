@@ -24,6 +24,7 @@ from switch_core.db.models import (
     Message,
     User,
 )
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.chats import chat_activity_events, chat_events
 from switch_core.session_activity.listener import Change
 from tests.switch_core.gateway.conftest import _Harness
@@ -366,3 +367,25 @@ async def test_room_activity_shows_a_tool_steps_detail_and_an_approvals_tool(
     [approval] = activity.json()["approvals"]
     assert approval["tool"] == {"name": "ExitPlanMode", "input": {"plan": "1. Build"}}
     assert (approval["plan"], approval["reason"]) == ("1. Build", None)
+
+
+async def test_a_chat_can_start_with_follow_ups_off(chats: _Harness) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    plain = await chats.new_chat(chats.alice, agent, "c1")
+    created = await chats.client.post(
+        "/chats",
+        json={
+            "agentIds": [agent.id],
+            "requestId": "c2",
+            "roomKind": "lab-app",
+            "followUps": False,
+        },
+        headers=chats.as_user(chats.alice),
+    )
+    assert created.status_code == 200, created.text
+    quiet = created.json()["chat"]["roomId"]
+
+    async with chats.factory() as session:
+        store = RoomStore()
+        assert await store.follow_ups_enabled(session, plain) is True
+        assert await store.follow_ups_enabled(session, quiet) is False
