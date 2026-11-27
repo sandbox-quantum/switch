@@ -205,6 +205,7 @@ export default function GetStartedPage() {
           snapshot={snapshot}
           localDevice={useLocal ? local : null}
           providers={providers}
+          readError={error}
           error={page.error ?? providersError}
           onBack={() => setPage({ kind: "meet" })}
           onSkip={() => navigate(AI_PROVIDERS)}
@@ -401,7 +402,7 @@ function MeetPage({
               {!useLocal && (
                 <>
                   <BuddyStartCard
-                    checking={snapshot === null || providers === null}
+                    checking={!readError && (snapshot === null || providers === null)}
                     ready={signedInHere}
                     starting={null}
                     onStart={onStart}
@@ -477,14 +478,16 @@ type ProviderCard = {
  * Every provider Switch runs, as a card saying where it stands on the device:
  * signed in, ready for a login given here, or why it cannot be picked. Until
  * a cloud device has checked a provider, it can be picked if every cloud
- * device installs it, and waits for the check otherwise; one the device left
- * out of a settled report is not available there.
+ * device installs it; otherwise it waits for the device to start (`started`)
+ * and then for its check. One the device left out of a settled report is not
+ * available there.
  */
 function providerCards(
   providers: ProviderInfo[],
   controller: Controller | null,
   deviceName: string,
   cloud: boolean,
+  started: boolean,
 ): ProviderCard[] {
   const reports = (controller?.status?.providers ?? []).map(providerReport);
   const options = machineProviderOptions(
@@ -506,7 +509,9 @@ function providerCards(
     if (problem === "not available")
       return { ...card, tag: `Not available on ${deviceName}`, tone: "plain", disabled: true };
     if (problem === "not checked yet" && !(cloud && CLOUD_DEVICE_PROVIDERS.includes(id)))
-      return { ...card, tag: `Checking ${deviceName}…`, tone: "checking", disabled: true };
+      return started
+        ? { ...card, tag: `Checking ${deviceName}…`, tone: "checking", disabled: true }
+        : { ...card, tag: `Available once ${deviceName} has started`, tone: "plain", disabled: true };
     if (logins.length === 0)
       return {
         ...card,
@@ -524,6 +529,7 @@ function ProviderPage({
   snapshot,
   localDevice,
   providers,
+  readError,
   error,
   onBack,
   onSkip,
@@ -534,6 +540,8 @@ function ProviderPage({
   localDevice: ReturnType<typeof useLocalDevice> | null;
   /** The providers Switch runs; null while they load. */
   providers: ProviderInfo[] | null;
+  /** Why the device could not be read or claimed just now, if it could not. */
+  readError: string | null;
   /** Why the last login did not work, from setting up. */
   error: string | null;
   onBack: () => void;
@@ -543,7 +551,15 @@ function ProviderPage({
   const controller = localDevice?.snapshot?.selected ?? snapshot?.controller ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const deviceName = localDevice?.snapshot?.selected?.name ?? "Switch Cloud";
-  const cards = providerCards(providers ?? [], controller, deviceName, localDevice === null);
+  const cloud = localDevice === null;
+  const machine = snapshot?.machine ?? null;
+  const cloudError =
+    machine?.state === "error" ? (machine.error ?? "Switch Cloud did not start.") : null;
+  const started = !cloud || deviceReady(snapshot);
+  // Asleep, it starts again once a provider is picked.
+  const starting =
+    !started && !readError && !cloudError && !(machine && needsWaking(machine));
+  const cards = providerCards(providers ?? [], controller, deviceName, cloud, started);
   const selected = cards.find((card) => card.id === selectedId && !card.disabled) ?? null;
   // Picking one that needs a login leaves it alone above its login, so the login is in view.
   const signingIn = selected !== null && !signedIn(controller, selected.id);
@@ -593,6 +609,13 @@ function ProviderPage({
             Choose another provider
           </Button>
         )}
+        {starting && (
+          <p className="flex items-center gap-2 text-xs text-foreground-muted">
+            <Spinner className="size-3" />
+            Switch Cloud is starting…
+          </p>
+        )}
+        {(readError || cloudError) && <Alert>{readError ?? cloudError}</Alert>}
         {providers === null && !error && (
           <p className="flex items-center gap-2 text-xs text-foreground-muted">
             <Spinner className="size-3" />
@@ -1044,7 +1067,9 @@ function SettingUpPage({
         note={
           deviceError || error || readError
             ? null
-            : long
+            : login === "browser" && !up
+              ? `Waiting for ${deviceName} to start… The sign-in opens here once it is up.`
+              : long
               ? "Still working: the first setup can take a few minutes."
               : null
         }

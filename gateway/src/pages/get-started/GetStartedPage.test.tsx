@@ -28,6 +28,7 @@ vi.mock("@switch-console/chat-ui/components/meet-buddy-intro", () => ({
 
 const device = vi.hoisted(() => ({
   snapshot: null as CloudSnapshot | null,
+  error: null as string | null,
   listeners: new Set<() => void>(),
   refresh: vi.fn(),
 }));
@@ -43,7 +44,7 @@ vi.mock("./useCloudDevice", async (importOriginal) => {
         },
         () => device.snapshot,
       ),
-      error: null,
+      error: device.error,
       refresh: device.refresh,
     }),
   };
@@ -191,12 +192,14 @@ function renderPage() {
 async function pickClaudeWithToken(token: string) {
   fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }));
   fireEvent.click(screen.getByRole("button", { name: /Claude/, pressed: false }));
+  fireEvent.click(screen.getByLabelText("Setup token"));
   fireEvent.change(screen.getByPlaceholderText("Setup token"), { target: { value: token } });
   fireEvent.click(screen.getByRole("button", { name: "Start with Claude Code" }));
 }
 
 beforeEach(() => {
   device.snapshot = snapshot();
+  device.error = null;
   management.fetchControllers.mockResolvedValue([]);
   management.fetchProviders.mockResolvedValue(SERVER_PROVIDERS);
   onboarding.welcomeChat.mockResolvedValue("r1");
@@ -257,12 +260,43 @@ describe("GetStartedPage", () => {
     });
   });
 
-  it("offers no browser sign-in on Switch Cloud, whose controller has none", async () => {
+  it("signs Claude Code in with a browser on Switch Cloud once it has started", async () => {
+    device.snapshot = snapshot({ machine: machine({ state: "provisioning" }), controller: null });
+    management.startBrowserSignIn.mockResolvedValue("op-b");
+    management.browserSignIn.mockResolvedValue({ state: "starting" });
     renderPage();
     fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }));
     fireEvent.click(screen.getByRole("button", { name: /Claude/, pressed: false }));
+    expect(screen.getByLabelText("Sign in with browser").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Start with Claude Code" }));
+
+    expect(await screen.findByText(/Waiting for Switch Cloud to start…/)).toBeTruthy();
+    expect(management.startBrowserSignIn).not.toHaveBeenCalled();
+
+    setDevice(snapshot());
+    await waitFor(() => expect(management.startBrowserSignIn).toHaveBeenCalledWith("c1", "claude"));
+    expect(screen.queryByText(/Waiting for Switch Cloud to start…/)).toBeNull();
+  });
+
+  it("offers no browser sign-in on Switch Cloud for a provider that keeps it in the controller's own CLI state", async () => {
+    device.snapshot = snapshot({ controller: reporting(["cursor", "antigravity"]) });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Antigravity/, pressed: false }));
     expect(screen.queryByLabelText("Sign in with browser")).toBeNull();
-    expect(screen.getByPlaceholderText("Setup token")).toBeTruthy();
+  });
+
+  it("shows why Switch Cloud could not be had, not spinners", async () => {
+    device.snapshot = null;
+    device.error = "This server does not support cloud agents.";
+    renderPage();
+    expect(await screen.findByText("This server does not support cloud agents.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Set up AI provider" }));
+    expect(await screen.findByText("This server does not support cloud agents.")).toBeTruthy();
+    expect(screen.queryByText(/Checking Switch Cloud|Switch Cloud is starting/)).toBeNull();
+    expect(
+      (screen.getByRole("button", { name: /Cursor CLI/, pressed: false }) as HTMLButtonElement).textContent,
+    ).toMatch(/Available once Switch Cloud has started/);
   });
 
   it("goes back to the providers with the device's reason when the login does not work", async () => {
@@ -393,12 +427,14 @@ describe("GetStartedPage", () => {
     const card = (name: RegExp) =>
       screen.getByRole("button", { name, pressed: false }) as HTMLButtonElement;
     await screen.findByRole("button", { name: /Antigravity/, pressed: false });
-    // Before the device reports: what every cloud device installs can be picked.
+    // Before the device reports: what every cloud device installs can be picked,
+    // and the rest wait for it to start, said once for the page.
+    expect(screen.getByText("Switch Cloud is starting…")).toBeTruthy();
     expect(card(/Claude Code/).disabled).toBe(false);
     expect(card(/Codex/).disabled).toBe(false);
     for (const name of [/OpenCode/, /Antigravity/, /Cursor CLI/]) {
       expect(card(name).disabled).toBe(true);
-      expect(card(name).textContent).toMatch(/Checking Switch Cloud/);
+      expect(card(name).textContent).toMatch(/Available once Switch Cloud has started/);
     }
 
     setDevice(
@@ -416,6 +452,7 @@ describe("GetStartedPage", () => {
     );
     await waitFor(() => expect(card(/Codex/).textContent).toMatch(/Not installed on Switch Cloud/));
     expect(card(/Codex/).disabled).toBe(true);
+    expect(screen.queryByText("Switch Cloud is starting…")).toBeNull();
     // Not checked yet: it waits for the device's check rather than being left out.
     expect(card(/Cursor CLI/).textContent).toMatch(/Checking Switch Cloud/);
     expect(card(/Cursor CLI/).disabled).toBe(true);
@@ -453,6 +490,7 @@ describe("GetStartedPage", () => {
       screen.getByText("Your Switch Cloud starts with no AI logins. Pick an AI provider to power switch-buddy and sign in to it:"),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Sign in to Claude Code" }));
+    fireEvent.click(screen.getByLabelText("Setup token"));
 
     expect(document.activeElement).toBe(screen.getByPlaceholderText("Setup token"));
     expect(screen.getByText(/claude setup-token/)).toBeTruthy();
@@ -509,6 +547,7 @@ describe("GetStartedPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Choose another provider" }));
     fireEvent.click(screen.getByRole("button", { name: /OpenCode/, pressed: false }));
+    fireEvent.click(screen.getByLabelText("Sign-in file"));
     expect(screen.getByText(/opencode\/auth\.json/)).toBeTruthy();
     const auth = '{"opencode":{"type":"api","key":"placeholder"}}';
     fireEvent.change(screen.getByLabelText("OpenCode sign-in file"), {

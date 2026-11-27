@@ -197,15 +197,25 @@ describe("AIProvidersPage", () => {
     expect(calls.find((call) => call.path.endsWith("/sign-in-code"))?.body).toEqual({ code: "abc#def" });
   });
 
-  it("offers no browser sign-in on a Switch Cloud device", async () => {
+  it("offers a browser sign-in on a Switch Cloud device for Claude Code only", async () => {
     answer({
       "GET /management/controllers": [
         200,
-        [device("cloud-1", [report("codex", { auth: "missing" })], { kind: "ec2", public_key: await sealingKey() })],
+        [
+          device("cloud-1", [report("claude", { auth: "missing" }), report("codex", { auth: "missing" })], {
+            kind: "ec2",
+            public_key: await sealingKey(),
+          }),
+        ],
       ],
       "GET /management/providers": [200, PROVIDERS],
       "GET /hosted-machines": [200, { available: true, machines: [] }],
     });
+    renderPage();
+    await waitFor(() => fireEvent.click(within(providerRow("Claude Code")).getByRole("button", { name: /Give login/ })));
+    expect(screen.getByLabelText("Sign in with browser").getAttribute("aria-pressed")).toBe("true");
+    cleanup();
+
     renderPage();
     await waitFor(() => fireEvent.click(within(providerRow("Codex")).getByRole("button", { name: /Give login/ })));
     expect(screen.queryByLabelText("Sign in with browser")).toBeNull();

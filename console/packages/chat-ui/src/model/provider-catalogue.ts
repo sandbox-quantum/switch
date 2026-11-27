@@ -57,11 +57,16 @@ export function providerLoginKinds(provider: string, thisComputer: boolean): Log
   });
 }
 
-/**
- * The providers a machine's controller signs in through a browser. Not a
- * cloud device: Switch runs its controller, which has no browser sign-in.
- */
+/** The providers a machine's controller signs in through a browser. */
 const BROWSER_SIGN_IN = new Set(['claude', 'codex', 'cursor', 'antigravity', 'opencode']);
+/**
+ * Those a Switch Cloud device signs in through a browser. Its agents' CLIs
+ * never hold the real login: the provider gateway does, and of these sign-ins
+ * it fronts only Claude Code's setup token. Codex's and OpenCode's ChatGPT
+ * tokens refresh and rotate, and Cursor and Antigravity keep theirs inside
+ * the CLI.
+ */
+const CLOUD_BROWSER_SIGN_IN = new Set(['claude']);
 
 /** What a browser sign-in asks of the person, by provider, once the machine shows its page. */
 const BROWSER_HINTS: Record<string, string> = {
@@ -86,7 +91,7 @@ export function browserCodePrompt(provider: string): string {
 
 /** Signing in through a browser, offered first where a machine can: null where it can't. */
 export function browserSignInKind(provider: string, cloud: boolean): LoginKindOption | null {
-  if (cloud || !BROWSER_SIGN_IN.has(provider)) return null;
+  if (!(cloud ? CLOUD_BROWSER_SIGN_IN : BROWSER_SIGN_IN).has(provider)) return null;
   return { value: 'browser', label: 'Sign in with browser' };
 }
 
