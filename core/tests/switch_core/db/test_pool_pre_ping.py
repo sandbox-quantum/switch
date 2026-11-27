@@ -39,13 +39,14 @@ async def _fill_and_close_pool(
             db_pool_size=POOLED,
             db_max_overflow=0,
             db_pool_pre_ping=pre_ping,
-        )
+        ),
+        "test-pool-pre-ping",
     )
     held = [await engine.connect() for _ in range(POOLED)]
     pids = {await _pid(conn) for conn in held}
     for conn in held:
         await conn.close()
-    closer = create_unpooled_engine(_config_for(postgres_url))
+    closer = create_unpooled_engine(_config_for(postgres_url), "test-pool-pre-ping")
     try:
         async with closer.connect() as conn:
             for pid in pids:

@@ -38,6 +38,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from switch_core.db.agent_event_notify_ddl import AGENT_EVENT_CHANNEL
+from switch_core.db.listening import ReconnectBackoff, hold_open
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
@@ -61,6 +62,9 @@ class AgentEventListener:
         self._task: asyncio.Task[None] | None = None
         self._running = False
         self.connected = asyncio.Event()
+        self._backoff = ReconnectBackoff(
+            base=RECONNECT_BACKOFF_BASE, cap=RECONNECT_BACKOFF_CAP
+        )
 
     async def start(self) -> None:
         if self._running:
@@ -80,18 +84,13 @@ class AgentEventListener:
         self.connected.clear()
 
     async def _listen_forever(self) -> None:
-        attempt = 0
         while self._running:
             try:
                 await self._listen_once()
-                attempt = 0
             except asyncio.CancelledError:
                 raise
             except Exception:
-                attempt += 1
-                delay = min(
-                    RECONNECT_BACKOFF_BASE * 2 ** (attempt - 1), RECONNECT_BACKOFF_CAP
-                )
+                delay = self._backoff.next_delay()
                 logger.error(
                     "Agent event listener lost its connection; retrying in %.1fs",
                     delay,
@@ -115,12 +114,14 @@ class AgentEventListener:
                 try:
                     self._buffer.listening(True)
                     self.connected.set()
-                    while self._running:
-                        await asyncio.sleep(HEARTBEAT_SECONDS)
-                        await driver.execute(
-                            "SELECT 1", timeout=HEARTBEAT_TIMEOUT_SECONDS
-                        )
-                        self._buffer.forget_told_heads()
+                    self._backoff.connected()
+                    await hold_open(
+                        driver,
+                        heartbeat_seconds=HEARTBEAT_SECONDS,
+                        heartbeat_timeout_seconds=HEARTBEAT_TIMEOUT_SECONDS,
+                        running=lambda: self._running,
+                        after_beat=self._buffer.forget_told_heads,
+                    )
                 finally:
                     self.connected.clear()
                     self._buffer.listening(False)

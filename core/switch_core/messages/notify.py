@@ -40,6 +40,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+from switch_core.db.listening import ReconnectBackoff, hold_open
 from switch_core.db.notify_ddl import MESSAGE_CHANNEL
 
 if TYPE_CHECKING:
@@ -132,6 +133,9 @@ class MessageListener:
         # Set once the connection is up and every subscriber has been woken,
         # so a caller can wait for delivery to be live rather than guess.
         self.connected = asyncio.Event()
+        self._backoff = ReconnectBackoff(
+            base=RECONNECT_BACKOFF_BASE, cap=RECONNECT_BACKOFF_CAP
+        )
 
     # ── Subscription ──────────────────────────────────────────────────────────
 
@@ -190,18 +194,13 @@ class MessageListener:
     # ── The listening connection ──────────────────────────────────────────────
 
     async def _listen_forever(self) -> None:
-        attempt = 0
         while self._running:
             try:
                 await self._listen_once()
-                attempt = 0
             except asyncio.CancelledError:
                 raise
             except Exception:
-                attempt += 1
-                delay = min(
-                    RECONNECT_BACKOFF_BASE * 2 ** (attempt - 1), RECONNECT_BACKOFF_CAP
-                )
+                delay = self._backoff.next_delay()
                 logger.error(
                     "Message listener lost its connection; retrying in %.1fs",
                     delay,
@@ -227,19 +226,20 @@ class MessageListener:
                     # queued anywhere, so assume every room moved.
                     self._wake_everything()
                     self.connected.set()
-                    await self._hold_open(driver)
+                    self._backoff.connected()
+                    await hold_open(
+                        driver,
+                        heartbeat_seconds=HEARTBEAT_SECONDS,
+                        heartbeat_timeout_seconds=HEARTBEAT_TIMEOUT_SECONDS,
+                        running=lambda: self._running,
+                        after_beat=None,
+                    )
                 finally:
                     self.connected.clear()
                     with contextlib.suppress(Exception):
                         await driver.remove_listener(MESSAGE_CHANNEL, self._on_notify)
         finally:
             await engine.dispose()
-
-    async def _hold_open(self, driver: Any) -> None:
-        """Keep the connection until it fails, proving it alive as we go."""
-        while self._running:
-            await asyncio.sleep(HEARTBEAT_SECONDS)
-            await driver.execute("SELECT 1", timeout=HEARTBEAT_TIMEOUT_SECONDS)
 
     def _on_notify(
         self, _connection: Any, _pid: int, _channel: str, payload: str

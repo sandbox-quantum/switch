@@ -218,7 +218,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
             "switch-link-workos needs WORKOS_API_KEY and the gateway's OIDC "
             "sign-in (GATEWAY_OIDC_*) configured against the WorkOS environment."
         )
-    engine = create_engine_from_config(config)
+    engine = create_engine_from_config(config, "switch-link-workos")
     try:
         async with guarded_async_client(config.outbound_policy) as http:
             # Linking reads WorkOS and changes nobody's membership there.

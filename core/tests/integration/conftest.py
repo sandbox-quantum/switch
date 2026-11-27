@@ -448,7 +448,9 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
     await admin_conn.execute(f'CREATE DATABASE "{db_name}"')
     await admin_conn.close()
 
-    owner_engine = create_engine_from_config(_build_config(switch_stack, db_name))
+    owner_engine = create_engine_from_config(
+        _build_config(switch_stack, db_name), "test-integration-owner"
+    )
 
     # Schema is built directly from the SQLAlchemy models (not Alembic). This is
     # fast and always matches the current models, but means the integration suite
@@ -481,7 +483,7 @@ async def session_env(switch_stack: StackInfo) -> AsyncIterator[SessionEnv]:
     config = _build_config(
         switch_stack, db_name, user=runtime_role, password=runtime_password
     )
-    engine = create_engine_from_config(config)
+    engine = create_engine_from_config(config, "test-integration")
     session_factory = create_session_factory(engine)
 
     # The same check `main.run()` makes before it serves a request: not a
@@ -581,7 +583,9 @@ async def harness(
         # wrote, and everything here runs in this one.
         # The transport's wake-up path: rows are announced over LISTEN/NOTIFY, so
         # nothing is delivered to a client until this connection is up.
-        message_listener = MessageListener(lambda: create_unpooled_engine(config))
+        message_listener = MessageListener(
+            lambda: create_unpooled_engine(config, "test-integration")
+        )
         await message_listener.start()
         event_buffer = EventBuffer(
             session_factory,  # type: ignore[arg-type]
@@ -598,7 +602,7 @@ async def harness(
             request.node.get_closest_marker("collaboration_bridges") is not None
         )
         session_activity_listener = AgentSessionActivityListener(
-            lambda: create_unpooled_engine(config)
+            lambda: create_unpooled_engine(config, "test-integration")
         )
 
         invites = InviteBus()
@@ -704,7 +708,7 @@ async def harness(
             session_factory=session_factory,  # type: ignore[arg-type]
             bus=SignalBus(
                 session_factory,  # type: ignore[arg-type]
-                lambda: create_unpooled_engine(config),
+                lambda: create_unpooled_engine(config, "test-integration"),
                 process_id=lease.process_id,
             ),
             store=OwnershipLeaseStore(),

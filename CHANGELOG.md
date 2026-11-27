@@ -137,6 +137,10 @@ version of their own to them without also giving them a release of their own.
   switcher out, and `npm run build` now fails if it gets in.
 
 #### Changed
+- **Database connections name the server they belong to.** Each carries its
+  process id and what it is for (`pool`, `signals`, `messages`, ...) as its
+  `application_name`, so `pg_stat_activity` shows which replica holds which
+  connection.
 - **The morning report's graph explains itself.** `daily_report.py` draws the
   graph of the day itself instead of taking a Datadog snapshot, with a title,
   the time span, labelled axes, a legend and a caption on how to read it, so
@@ -220,6 +224,16 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **A server notices at once when the database closes a connection it
+  listens on.** A failover, a restart or an ended backend used to go unseen
+  until the connection's next heartbeat, up to 20 seconds later: messages
+  reached that server's bridges and agents late, and a membership or
+  controller revoked elsewhere could still be honored there all that time.
+  Now it reconnects within a second and catches up, and a revocation takes
+  effect within the cache TTL (`AGENT_AUTH_CACHE_TTL_SECONDS`). Its reconnect
+  delay also starts again from one second after each successful connection,
+  where before it stayed at 15 seconds once a few connections had been lost
+  over the server's life.
 - **Deleting an agent no longer fails, leaving the agent in place, when it
   is added to a room at the same moment.** A room membership written between
   the delete clearing the agent's memberships and removing the agent made the
