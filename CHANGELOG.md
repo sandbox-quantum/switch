@@ -86,6 +86,12 @@ version of their own to them without also giving them a release of their own.
   A message's file link is fetched only when it has the shape of a Zulip
   upload (`/user_uploads/<realm>/…/<name>`); any other is reported as a file
   that could not be relayed.
+- **A template param's `pattern` is checked in bounded time.** A pattern may
+  be at most 500 characters, a value checked against one at most 10,000, and
+  a match that takes longer than 0.1 s is refused as a validation error
+  naming the param, so a backtracking pattern cannot hold the server.
+  Patterns are matched with the `regex` package, which switch-core now
+  depends on; its default syntax is the same as Python's `re`.
 
 ### [0.32.2] - 2026-11-25
 

@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+import regex
 import yaml
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
@@ -82,6 +83,15 @@ logger = logging.getLogger(__name__)
 KICKOFF_JOIN_TIMEOUT = 30.0
 
 PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
+
+# A string param's `pattern` is written by the template's author, who can also
+# supply the value matched against it, and a backtracking regular expression
+# can take exponential time. So the pattern and the value checked against it
+# are both bounded, and the match is cut off: a value that cannot be checked
+# in time is refused, never let through.
+PARAM_PATTERN_MAX_LENGTH = 500
+PARAM_PATTERN_VALUE_MAX_LENGTH = 10_000
+PARAM_PATTERN_TIMEOUT_SECONDS = 0.1
 
 # Param types whose value names something the server already has. They
 # interpolate as plain strings; the difference is that the server checks the
@@ -210,9 +220,14 @@ class ParamSpec(BaseModel):
         if self.pattern is not None:
             if self.type != "string":
                 raise ValueError("'pattern' applies to params of type string")
+            if len(self.pattern) > PARAM_PATTERN_MAX_LENGTH:
+                raise ValueError(
+                    f"'pattern' is {len(self.pattern)} characters long; "
+                    f"at most {PARAM_PATTERN_MAX_LENGTH} are allowed"
+                )
             try:
-                re.compile(self.pattern)
-            except re.error as e:
+                regex.compile(self.pattern, flags=regex.VERSION0)
+            except regex.error as e:
                 raise ValueError(
                     f"'pattern' is not a valid regular expression: {e}"
                 ) from e
@@ -223,15 +238,38 @@ class ParamSpec(BaseModel):
         return self
 
 
+def _check_pattern(pattern: str, value: str, name: str) -> None:
+    """Raise unless `value` wholly matches `pattern`, checked in bounded time."""
+    if len(value) > PARAM_PATTERN_VALUE_MAX_LENGTH:
+        raise ValueError(
+            f"param {name!r}: the value is {len(value)} characters long; at most "
+            f"{PARAM_PATTERN_VALUE_MAX_LENGTH} can be checked against its pattern"
+        )
+    try:
+        matched = regex.fullmatch(
+            pattern,
+            value,
+            flags=regex.VERSION0,
+            timeout=PARAM_PATTERN_TIMEOUT_SECONDS,
+        )
+    except TimeoutError as e:
+        raise ValueError(
+            f"param {name!r}: checking the value against the pattern {pattern!r} "
+            "took too long; the template's pattern needs simplifying"
+        ) from e
+    if matched is None:
+        raise ValueError(
+            f"param {name!r}: {value!r} does not match the pattern {pattern!r}"
+        )
+
+
 def coerce_param(value: Any, spec: ParamSpec, name: str) -> str | int | float | bool:
     """Coerce a raw input value to the declared type."""
     t = spec.type
     if t == "string":
         s = str(value)
-        if spec.pattern is not None and re.fullmatch(spec.pattern, s) is None:
-            raise ValueError(
-                f"param {name!r}: {s!r} does not match the pattern {spec.pattern!r}"
-            )
+        if spec.pattern is not None:
+            _check_pattern(spec.pattern, s, name)
         return s
     if t in ENTITY_PARAM_TYPES or t in CONSOLE_PARAM_TYPES:
         return str(value)
