@@ -7,9 +7,14 @@ own account holds none of that, and this process holds none of the operator's ri
 Where things come from (the Deployment):
 
 - Kubernetes: the pod's own projected token (`SA_DIR`), read with `read_token` on every call.
-- Core: `SWITCH_DRAIN_CORE_URL` (https, with no user, password, query or fragment), and the operator's bearer in the
-  file named by `SWITCH_DRAIN_CORE_TOKEN_FILE`, read on every call (and once at start, so an empty or unreadable file
-  refuses to start). `SWITCH_DRAIN_CORE_CA` is required, and is the only CA trusted for Core.
+- Core: `SWITCH_DRAIN_CORE_URL` (https, with no user, password, query or fragment), and two bearers, each in its own
+  file, read on every call (and once at start, so an empty or unreadable file refuses to start):
+  - `SWITCH_DRAIN_CORE_TOKEN_FILE`: the box workers' controller bearer (Core's `box_controller_token`; v1's
+    `token` until it's set), for Core's machine list (`/machines`);
+  - `SWITCH_DRAIN_OPERATOR_TOKEN_FILE`: the operator API's own bearer, for listing drains and reporting their steps
+    (`/actions`). Required, and must hold a different bearer from the controller's: no pod sends one bearer to
+    both APIs, and Core takes the controller's on the operator routes only until its move-over window ends.
+  `SWITCH_DRAIN_CORE_CA` is required, and is the only CA trusted for Core.
 - `SWITCH_DRAIN_OWN_NODE`: the node this pod runs on (the Deployment passes `spec.nodeName`), required. The worker
   never drains it.
 - The box map: `SWITCH_DRAIN_BOX_MAP`, the `box-map` Secret mounted as a folder, read with `load_boxes` every pass.
@@ -45,6 +50,7 @@ logger = logging.getLogger(__name__)
 PREFIX = "SWITCH_DRAIN_"
 ENV_CORE_URL = PREFIX + "CORE_URL"
 ENV_CORE_TOKEN_FILE = PREFIX + "CORE_TOKEN_FILE"
+ENV_OPERATOR_TOKEN_FILE = PREFIX + "OPERATOR_TOKEN_FILE"
 ENV_CORE_CA = PREFIX + "CORE_CA"
 ENV_BOX_MAP = PREFIX + "BOX_MAP"
 ENV_PAUSE_IMAGE = PREFIX + "PAUSE_IMAGE"
@@ -85,9 +91,21 @@ def config_from_env(env: Mapping[str, str]) -> dict[str, Any]:
     if not token_file.is_file():
         raise DrainConfigError(f"{ENV_CORE_TOKEN_FILE} is not a file")
     try:
-        read_token(token_file)  # read and dropped: only that it can be read and isn't empty
+        controller_token = read_token(token_file)  # checked, then dropped
     except (OSError, ValueError):
         raise DrainConfigError(f"{ENV_CORE_TOKEN_FILE} can't be read, or is empty") from None
+    operator_file = Path(_required(env, ENV_OPERATOR_TOKEN_FILE))
+    if not operator_file.is_file():
+        raise DrainConfigError(f"{ENV_OPERATOR_TOKEN_FILE} is not a file")
+    try:
+        same = read_token(operator_file) == controller_token
+    except (OSError, ValueError):
+        raise DrainConfigError(f"{ENV_OPERATOR_TOKEN_FILE} can't be read, or is empty") from None
+    if same:
+        raise DrainConfigError(
+            f"{ENV_OPERATOR_TOKEN_FILE} must hold the operator's bearer, not the controller's"
+        )
+    del controller_token
     own_node = _required(env, ENV_OWN_NODE)
     if len(own_node) > 253 or not NODE_NAME_RE.fullmatch(own_node):
         raise DrainConfigError(f"{ENV_OWN_NODE} must be a node name")
@@ -119,6 +137,7 @@ def config_from_env(env: Mapping[str, str]) -> dict[str, Any]:
     return {
         "core_url": core_url,
         "token_file": token_file,
+        "operator_token_file": operator_file,
         "box_map": box_map,
         "pause_image": image,
         "pool": pool,
@@ -129,24 +148,28 @@ def config_from_env(env: Mapping[str, str]) -> dict[str, Any]:
 
 
 class FreshDrainCore:
-    """Core's drain routes on the operator's bearer, read from its file on every call so a renewed one is picked up."""
+    """Core's routes for the drain, each on its own bearer, read from its file on every call so a renewed one is
+    picked up: the operator API's for the drains (`/actions`), the hosted controller's for the machine list."""
 
-    def __init__(self, url: str, token_file: Path, context: ssl.SSLContext):
+    def __init__(
+        self, url: str, token_file: Path, context: ssl.SSLContext, operator_token_file: Path
+    ):
         self._url, self._token_file, self._context = url, token_file, context
+        self._operator_token_file = operator_token_file
 
-    def _api(self) -> DrainCoreApi:
-        return DrainCoreApi(self._url, read_token(self._token_file), context=self._context)
+    def _api(self, token_file: Path) -> DrainCoreApi:
+        return DrainCoreApi(self._url, read_token(token_file), context=self._context)
 
     def open_actions(self) -> list[dict[str, Any]]:
-        return self._api().open_actions()
+        return self._api(self._operator_token_file).open_actions()
 
     def step(
         self, action_id: str, step: str, state: str, counts: dict[str, int] | None = None
     ) -> None:
-        self._api().step(action_id, step, state, counts)
+        self._api(self._operator_token_file).step(action_id, step, state, counts)
 
     def machines(self) -> list[dict[str, Any]]:
-        return self._api().machines()
+        return self._api(self._token_file).machines()
 
 
 class BoxMap:
@@ -174,7 +197,9 @@ def build(env: Mapping[str, str]) -> DrainWorker:
         str(SA_DIR / "ca.crt"),
         config["pool"],
     )
-    core = FreshDrainCore(config["core_url"], config["token_file"], config["context"])
+    core = FreshDrainCore(
+        config["core_url"], config["token_file"], config["context"], config["operator_token_file"]
+    )
     return DrainWorker(
         kube,
         core,
