@@ -553,8 +553,11 @@ function ProviderPage({
   const deviceName = localDevice?.snapshot?.selected?.name ?? "Switch Cloud";
   const cloud = localDevice === null;
   const machine = snapshot?.machine ?? null;
-  const cloudError =
-    machine?.state === "error" ? (machine.error ?? "Switch Cloud did not start.") : null;
+  const cloudError = machine?.stopped_by_admin
+    ? "A Switch administrator stopped Switch Cloud. Contact them to have it released."
+    : machine?.state === "error"
+      ? (machine.error ?? "Switch Cloud did not start.")
+      : null;
   const started = !cloud || deviceReady(snapshot);
   // Asleep, it starts again once a provider is picked.
   const starting =

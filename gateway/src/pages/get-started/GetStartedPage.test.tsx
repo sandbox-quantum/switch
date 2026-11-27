@@ -278,12 +278,30 @@ describe("GetStartedPage", () => {
     expect(screen.queryByText(/Waiting for Switch Cloud to start…/)).toBeNull();
   });
 
-  it("offers no browser sign-in on Switch Cloud for a provider that keeps it in the controller's own CLI state", async () => {
-    device.snapshot = snapshot({ controller: reporting(["cursor", "antigravity"]) });
+  it("offers no browser sign-in on Switch Cloud for any provider but Claude Code", async () => {
+    device.snapshot = snapshot({ controller: reporting(["codex", "opencode", "cursor", "antigravity"]) });
     renderPage();
     fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Antigravity/, pressed: false }));
-    expect(screen.queryByLabelText("Sign in with browser")).toBeNull();
+    for (const name of [/Codex/, /OpenCode/, /Cursor CLI/, /Antigravity/]) {
+      fireEvent.click(await screen.findByRole("button", { name, pressed: false }));
+      expect(screen.queryByLabelText("Sign in with browser")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Choose another provider" }));
+    }
+  });
+
+  it("says nothing is starting while Switch Cloud sleeps or an administrator stopped it", async () => {
+    device.snapshot = snapshot({ machine: machine({ state: "stopped", sleeping: true }), controller: null });
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }));
+    expect(
+      (screen.getByRole("button", { name: /Cursor CLI/, pressed: false }) as HTMLButtonElement).textContent,
+    ).toMatch(/Available once Switch Cloud has started/);
+    expect(screen.queryByText("Switch Cloud is starting…")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    setDevice(snapshot({ machine: machine({ state: "stopped", stopped_by_admin: true }), controller: null }));
+    expect(await screen.findByText(/A Switch administrator stopped Switch Cloud/)).toBeTruthy();
+    expect(screen.queryByText("Switch Cloud is starting…")).toBeNull();
   });
 
   it("shows why Switch Cloud could not be had, not spinners", async () => {
@@ -547,7 +565,6 @@ describe("GetStartedPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Choose another provider" }));
     fireEvent.click(screen.getByRole("button", { name: /OpenCode/, pressed: false }));
-    fireEvent.click(screen.getByLabelText("Sign-in file"));
     expect(screen.getByText(/opencode\/auth\.json/)).toBeTruthy();
     const auth = '{"opencode":{"type":"api","key":"placeholder"}}';
     fireEvent.change(screen.getByLabelText("OpenCode sign-in file"), {
