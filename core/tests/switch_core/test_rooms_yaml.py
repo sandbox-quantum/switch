@@ -2279,21 +2279,18 @@ def test_pattern_and_bounds_are_enforced(env):
         ParamSpec(type="string", pattern="(")
 
 
-def test_a_pattern_longer_than_the_cap_is_refused():
-    ParamSpec(type="string", pattern="a" * PARAM_PATTERN_MAX_LENGTH)
-    with pytest.raises(ValueError, match="at most 500 are allowed"):
-        ParamSpec(type="string", pattern="a" * (PARAM_PATTERN_MAX_LENGTH + 1))
+def test_a_stored_pattern_longer_than_the_save_cap_still_loads_and_matches():
+    """The length caps are held when a template is saved (`template_lint`),
+    not when one is read, so a template stored before them keeps working."""
+    pattern = "(?:" + "a" * (PARAM_PATTERN_MAX_LENGTH + 100) + ")|b+"
+    spec = ParamSpec(type="string", pattern=pattern)
+    assert coerce_param("bbb", spec, "p") == "bbb"
+    with pytest.raises(ValueError, match="does not match the pattern"):
+        coerce_param("c", spec, "p")
 
 
-def test_a_value_longer_than_the_cap_is_not_matched_against_its_pattern():
+def test_a_long_value_is_matched_under_the_timeout_not_refused_for_length():
     spec = ParamSpec(type="string", pattern=".*")
-    assert coerce_param("x" * PARAM_PATTERN_VALUE_MAX_LENGTH, spec, "p")
-    with pytest.raises(ValueError, match="can be checked against its pattern"):
-        coerce_param("x" * (PARAM_PATTERN_VALUE_MAX_LENGTH + 1), spec, "p")
-
-
-def test_a_value_without_a_pattern_is_not_held_to_the_cap():
-    spec = ParamSpec(type="string")
     value = "x" * (PARAM_PATTERN_VALUE_MAX_LENGTH + 1)
     assert coerce_param(value, spec, "p") == value
 
