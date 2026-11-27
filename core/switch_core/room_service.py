@@ -756,9 +756,14 @@ class RoomService:
         bridge_id: str,
         channel_type: ChannelType,
         owner_user_id: str | None,
+        *,
+        owner_optional: bool = False,
     ) -> ExternalUser | None:
         """The platform account of the person a new channel is for, to put in
         it; None when there is nobody to put in.
+
+        ``owner_optional`` is for a room an agent makes for people it names:
+        see `_private_channel_creator`.
 
         A public channel is open to anyone, so the person is added only for
         convenience: without a confirmed account, or on a platform where
@@ -772,7 +777,11 @@ class RoomService:
             accounts = await self._confirmed_accounts(bridge_id, owner_user_id)
             return accounts[0] if accounts else None
         return await self._private_channel_creator(
-            collaboration_core, bridge_id, channel_type, owner_user_id
+            collaboration_core,
+            bridge_id,
+            channel_type,
+            owner_user_id,
+            owner_optional=owner_optional,
         )
 
     async def _private_channel_creator(
@@ -781,6 +790,8 @@ class RoomService:
         bridge_id: str,
         channel_type: ChannelType,
         owner_user_id: str | None,
+        *,
+        owner_optional: bool = False,
     ) -> ExternalUser | None:
         """The platform account of the person a new private channel is for;
         None for any other kind of channel.
@@ -793,6 +804,13 @@ class RoomService:
         them its owner (Teams), is more than recognising them, so an
         unconfirmed claim is not enough. Refused before the platform is asked
         when there is no such account, so nothing is left behind.
+
+        ``owner_optional`` is set when an agent makes the room for people it
+        names: they are who gets in, and the owner's account is only a
+        fallback for when none of them can be added, so its absence is not a
+        refusal — the platform's own account (bot or admin) made the channel
+        and can let people in later. Not where the platform needs an owner
+        named as the channel is made (Teams), which still refuses.
         """
         if channel_type != "channel_private":
             return None
@@ -803,6 +821,8 @@ class RoomService:
         for candidate in candidates:
             if not needs_owner or adapter.can_own_channel(candidate.external_user_id):
                 return candidate
+        if owner_optional and not needs_owner:
+            return None
         if candidates:
             raise PrivateChannelOwnerMissing(
                 f"A private {platform} channel needs an owner, and the {platform} "
@@ -834,6 +854,7 @@ class RoomService:
         channel_type: ChannelType,
         *,
         owner_user_id: str | None,
+        owner_optional: bool = False,
     ) -> tuple[CreatedChannel, ExternalUser | None]:
         """Make a new channel for a room: the channel, and the account of the
         person it is for when they are to be put in it (`_channel_creator`).
@@ -843,7 +864,11 @@ class RoomService:
         the caller adds them, with `_add_creator_to_channel`, once the room is
         bound to the channel."""
         creator = await self._channel_creator(
-            collaboration_core, bridge_id, channel_type, owner_user_id
+            collaboration_core,
+            bridge_id,
+            channel_type,
+            owner_user_id,
+            owner_optional=owner_optional,
         )
         adapter = collaboration_core.adapter
         if (
@@ -936,6 +961,84 @@ class RoomService:
         ):
             return ChannelInUse(external_channel_id)
         return error
+
+    @classmethod
+    async def _add_people_to_new_channel(
+        cls,
+        collaboration_core: CollaborationCore,
+        room_id: str,
+        transport_room_id: str,
+        external_channel_id: str,
+        creator: ExternalUser | None,
+        channel_type: ChannelType,
+        user_names: list[str],
+        *,
+        creator_is_fallback: bool,
+    ) -> list[dict[str, Any]]:
+        """Put the people a new channel is for into it and into its room;
+        report, `failed_attachments`-shaped, whoever the platform or Switch
+        could not add.
+
+        Usually that is its creator (`_add_creator_to_channel`) and the people
+        named. With ``creator_is_fallback`` — a room an agent makes for people
+        it names — the creator, the agent's owner, is put in only when none of
+        the named people could be, so the channel is not left with only the
+        platform's own account in it. Where the creator was already made a
+        private channel's owner as it was made (Teams), they are in it either
+        way.
+        """
+        adapter = collaboration_core.adapter
+        owner_at_creation = (
+            channel_type == "channel_private" and adapter.private_channel_needs_owner
+        )
+        if not creator_is_fallback or owner_at_creation or not user_names:
+            failures = await cls._add_creator_to_channel(
+                collaboration_core,
+                room_id,
+                transport_room_id,
+                external_channel_id,
+                creator,
+                channel_type,
+            )
+            if user_names:
+                failures += await cls._add_users_to_channel(
+                    collaboration_core,
+                    external_channel_id,
+                    user_names,
+                    already_added=(
+                        {creator.external_user_id} if creator is not None else ()
+                    ),
+                )
+                await collaboration_core.ensure_users_in_room(
+                    room_id, transport_room_id, user_names
+                )
+            return failures
+
+        failures = await cls._add_users_to_channel(
+            collaboration_core, external_channel_id, user_names
+        )
+        await collaboration_core.ensure_users_in_room(
+            room_id, transport_room_id, user_names
+        )
+        missed = {failure["id"] for failure in failures}
+        if any(name not in missed for name in user_names):
+            return failures
+        logger.info(
+            "None of the %d people named for new %s %s could be added; adding "
+            "the room's owner instead",
+            len(set(user_names)),
+            channel_type,
+            external_channel_id,
+        )
+        failures += await cls._add_creator_to_channel(
+            collaboration_core,
+            room_id,
+            transport_room_id,
+            external_channel_id,
+            creator,
+            channel_type,
+        )
+        return failures
 
     @staticmethod
     async def _add_users_to_channel(
@@ -1070,6 +1173,11 @@ class RoomService:
                 if config.read_visibility == "public"
                 else "channel_private"
             )
+        # A room an agent makes for people it names is for them, not for the
+        # agent's owner: the owner stays the room's owner in Switch but is put
+        # in its channel and room only when none of the named people can be
+        # (`_add_people_to_new_channel`).
+        for_named_people = config.created_by_kind == "agent" and bool(config.user_names)
         # With no choice made, a private channel its creator cannot be put in
         # would be one nobody can open: it is made public instead, and said so.
         # Never for a template's room: a template run shows no choice before it
@@ -1088,6 +1196,7 @@ class RoomService:
                     bridge_id,  # type: ignore[arg-type]
                     channel_type,
                     config.owner_id,
+                    owner_optional=for_named_people,
                 )
             except PrivateChannelOwnerMissing:
                 platform = collaboration_core.adapter.platform_name
@@ -1173,6 +1282,7 @@ class RoomService:
                     config.description,
                     channel_type,
                     owner_user_id=config.owner_id,
+                    owner_optional=for_named_people,
                 )
                 external_channel_id = created.id
                 created_channel_name = created.name
@@ -1379,26 +1489,16 @@ class RoomService:
             await collaboration_core.adapter.add_agents_to_channel(
                 external_channel_id, agent_names
             )
-            unreachable_users = await self._add_creator_to_channel(
+            unreachable_users = await self._add_people_to_new_channel(
                 collaboration_core,
                 room.id,
                 transport_room_id,
                 external_channel_id,
                 creator,
                 channel_type,
+                config.user_names or [],
+                creator_is_fallback=for_named_people,
             )
-            if config.user_names:
-                unreachable_users += await self._add_users_to_channel(
-                    collaboration_core,
-                    external_channel_id,
-                    config.user_names,
-                    already_added=(
-                        {creator.external_user_id} if creator is not None else ()
-                    ),
-                )
-                await collaboration_core.ensure_users_in_room(
-                    room.id, transport_room_id, config.user_names
-                )
 
         if bridge_id is None:
             creator_id = (

@@ -11,6 +11,11 @@ including when two rooms race to the same channel.
 A public channel is made whether or not the owner has a confirmed link, and
 the owner is put in it when they have one, except on a platform where joining
 a public channel means joining more (Teams).
+
+A room an agent makes for people it names is theirs: the agent's owner stays
+the room's owner but is put in its channel only when none of the named people
+can be, and needs no linked account up front, except where the platform needs
+a private channel's owner named as it is made (Teams).
 """
 
 from __future__ import annotations
@@ -652,7 +657,7 @@ async def test_the_creator_is_put_in_their_new_private_channel_once(
     adapter = _FlowAdapter(needs_owner=False)
     core = _FlowCore(adapter, known={"ada": CHANNEL_ACCOUNT, "bob": "U-BOB"})
     config = _private(bridge_id, user_id).model_copy(
-        update={"user_names": ["ada", "bob"]}
+        update={"user_names": ["ada", "bob"], "created_by_kind": "user"}
     )
 
     result = await _flow_service(session_factory, bridge_id, core).create_room(config)
@@ -685,7 +690,7 @@ async def test_the_creator_is_put_in_their_new_public_channel_once(
     adapter = _FlowAdapter(needs_owner=False)
     core = _FlowCore(adapter, known={"ada": CHANNEL_ACCOUNT, "bob": "U-BOB"})
     config = _public(bridge_id, user_id).model_copy(
-        update={"user_names": ["ada", "bob"]}
+        update={"user_names": ["ada", "bob"], "created_by_kind": "user"}
     )
 
     result = await _flow_service(session_factory, bridge_id, core).create_room(config)
@@ -818,3 +823,343 @@ async def test_no_choice_with_a_linked_account_is_still_private(
     assert adapter.created[0]["channel_type"] == "channel_private"
     assert result.room.read_visibility == "private"
     assert result.failed_attachments == []
+
+
+# ── A room an agent makes for people it names ───────────────────────────────
+#
+# The room service branches on two adapter flags, never on the platform, so
+# the behaviour is tested on one platform per combination of flags, and a
+# table pins which combination each platform has. Slack's, Discord's and
+# Mattermost's channels are made by Switch's own account (bot or admin), which
+# is in the channel and can let people in later; a private Teams channel needs
+# a person named its owner as it is made; Telegram makes no channels at all.
+
+
+def _adapter_class(bridge: str) -> Any:
+    from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
+    from switch_core.bridges.collaboration.mattermost.adapter import (
+        MattermostAdapter,
+    )
+    from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
+    from switch_core.bridges.collaboration.teams.adapter import TeamsAdapter
+    from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
+
+    return {
+        "slack": SlackAdapter,
+        "discord": DiscordAdapter,
+        "mattermost": MattermostAdapter,
+        "teams": TeamsAdapter,
+        "telegram": TelegramAdapter,
+    }[bridge]
+
+
+@pytest.mark.parametrize(
+    ("bridge", "makes_channels", "needs_owner", "adds_creator_to_public"),
+    [
+        ("slack", True, False, True),
+        ("discord", True, False, True),
+        ("mattermost", True, False, True),
+        ("teams", True, True, False),
+        ("telegram", False, False, True),
+    ],
+)
+def test_what_each_platform_needs_of_a_new_channel(
+    bridge: str, makes_channels: bool, needs_owner: bool, adds_creator_to_public: bool
+) -> None:
+    cls = _adapter_class(bridge)
+    assert cls.supports_channel_creation is makes_channels
+    assert cls.private_channel_needs_owner is needs_owner
+    assert cls.adds_creator_to_public_channel is adds_creator_to_public
+
+
+class _BridgeAdapter(_FlowAdapter):
+    def __init__(self, bridge: str, *, refuses: Collection[str] = ()) -> None:
+        cls = _adapter_class(bridge)
+        super().__init__(needs_owner=cls.private_channel_needs_owner, refuses=refuses)
+        self.adds_creator_to_public_channel = cls.adds_creator_to_public_channel
+
+
+def _for_people(
+    bridge_id: str, owner_id: str, channel_type: str, user_names: list[str]
+) -> RoomCreateConfig:
+    return _private(bridge_id, owner_id).model_copy(
+        update={"channel_type": channel_type, "user_names": user_names}
+    )
+
+
+# Slack, Discord and Mattermost share their flags (see the table above).
+SELF_HOSTED = "slack"
+
+
+@pytest.mark.parametrize("channel_type", ["channel_private", "channel_public"])
+async def test_an_agents_room_for_named_people_leaves_its_owner_out(
+    session_factory: async_sessionmaker[AsyncSession],
+    channel_type: str,
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[(CHANNEL_ACCOUNT, True)])
+    adapter = _BridgeAdapter(SELF_HOSTED)
+    core = _FlowCore(adapter, known={"bob": "U-BOB"})
+
+    result = await _flow_service(session_factory, bridge_id, core).create_room(
+        _for_people(bridge_id, user_id, channel_type, ["bob"])
+    )
+
+    assert adapter.created == [
+        {"channel_type": channel_type, "owner_external_id": None}
+    ]
+    assert adapter.added == [["U-BOB"]]
+    assert core.in_room == ["U-BOB"]
+    assert result.room.owner_id == user_id
+    assert result.failed_attachments == []
+
+
+async def test_one_named_person_getting_in_is_enough_to_leave_the_owner_out(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[(CHANNEL_ACCOUNT, True)])
+    adapter = _BridgeAdapter(SELF_HOSTED)
+    core = _FlowCore(adapter, known={"bob": "U-BOB"})
+
+    result = await _flow_service(session_factory, bridge_id, core).create_room(
+        _for_people(bridge_id, user_id, "channel_private", ["bob", "carol"])
+    )
+
+    assert adapter.added == [["U-BOB"]]
+    assert CHANNEL_ACCOUNT not in core.in_room
+    assert [each["id"] for each in result.failed_attachments] == ["carol"]
+
+
+async def test_an_agents_private_room_for_named_people_needs_no_linked_owner(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[])
+    adapter = _BridgeAdapter(SELF_HOSTED)
+    core = _FlowCore(adapter, known={"bob": "U-BOB"})
+
+    result = await _flow_service(session_factory, bridge_id, core).create_room(
+        _for_people(bridge_id, user_id, "channel_private", ["bob"])
+    )
+
+    assert result.room.channel_type == "channel_private"
+    assert adapter.added == [["U-BOB"]]
+    assert core.in_room == ["U-BOB"]
+    assert result.failed_attachments == []
+
+
+@pytest.mark.parametrize("miss", ["unknown", "refused"])
+async def test_the_owner_is_the_fallback_when_nobody_named_gets_in(
+    session_factory: async_sessionmaker[AsyncSession],
+    miss: str,
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[(CHANNEL_ACCOUNT, True)])
+    adapter = _BridgeAdapter(SELF_HOSTED, refuses=["U-BOB"])
+    core = _FlowCore(adapter, known={"bob": "U-BOB"} if miss == "refused" else {})
+
+    result = await _flow_service(session_factory, bridge_id, core).create_room(
+        _for_people(bridge_id, user_id, "channel_private", ["bob"])
+    )
+
+    tried_bob = [["U-BOB"]] if miss == "refused" else []
+    assert adapter.added == [*tried_bob, [CHANNEL_ACCOUNT]]
+    assert CHANNEL_ACCOUNT in core.in_room
+    assert [each["id"] for each in result.failed_attachments] == ["bob"]
+
+
+async def test_with_nobody_to_fall_back_on_the_misses_are_reported(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # The platform's own account made the channel and can let people in
+    # later, so it is made, and the agent told who did not get in.
+    user_id, bridge_id = await _setup(session_factory, linked=[])
+    adapter = _BridgeAdapter(SELF_HOSTED)
+    core = _FlowCore(adapter, known={})
+
+    result = await _flow_service(session_factory, bridge_id, core).create_room(
+        _for_people(bridge_id, user_id, "channel_private", ["bob"])
+    )
+
+    assert adapter.created[0]["channel_type"] == "channel_private"
+    assert adapter.added == []
+    assert result.failed_attachments == [
+        {
+            "kind": "user",
+            "id": "bob",
+            "error": "no account with this name is known on the bridge",
+        }
+    ]
+
+
+async def test_an_agents_private_room_for_nobody_still_needs_a_linked_owner(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[])
+    adapter = _BridgeAdapter(SELF_HOSTED)
+    core = _FlowCore(adapter, known={})
+
+    with pytest.raises(PrivateChannelOwnerMissing):
+        await _flow_service(session_factory, bridge_id, core).create_room(
+            _for_people(bridge_id, user_id, "channel_private", [])
+        )
+    assert adapter.created == []
+
+
+async def test_a_persons_room_still_puts_them_in_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[(CHANNEL_ACCOUNT, True)])
+    adapter = _BridgeAdapter(SELF_HOSTED)
+    core = _FlowCore(adapter, known={"bob": "U-BOB"})
+    config = _for_people(bridge_id, user_id, "channel_private", ["bob"]).model_copy(
+        update={"created_by_kind": "user"}
+    )
+
+    await _flow_service(session_factory, bridge_id, core).create_room(config)
+
+    assert adapter.added == [[CHANNEL_ACCOUNT], ["U-BOB"]]
+    assert CHANNEL_ACCOUNT in core.in_room
+
+
+async def test_an_agents_room_from_a_template_leaves_its_owner_out_too(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # A template run by an agent makes its rooms as that agent: the people
+    # its `users:` names are who goes in.
+    from switch_core.agent_runs import AgentOrigin
+    from switch_core.bridges.resource.service import ResourceService
+    from switch_core.db.stores.agent_store import AgentStore
+    from switch_core.db.stores.document_store import DocumentStore
+    from switch_core.db.stores.external_user_store import ExternalUserStore
+    from switch_core.db.stores.package_store import PackageStore
+    from switch_core.db.stores.reference_store import ReferenceStore
+    from switch_core.db.stores.reference_type_store import ReferenceTypeStore
+    from switch_core.db.stores.room_group_store import RoomGroupStore
+    from switch_core.db.stores.room_link_store import RoomLinkStore
+    from switch_core.db.stores.room_role_store import RoomRoleStore
+    from switch_core.rooms_yaml import RoomYamlService
+    from tests.switch_core.test_rooms_yaml import _make_agent
+
+    user_id, bridge_id = await _setup(session_factory, linked=[(CHANNEL_ACCOUNT, True)])
+    async with session_factory() as session:
+        runner = await _make_agent(session, "runner", user_id)
+        await session.commit()
+    adapter = _BridgeAdapter(SELF_HOSTED)
+    core = _FlowCore(adapter, known={"bob": "U-BOB"})
+    rooms = _flow_service(session_factory, bridge_id, core)
+    yaml = RoomYamlService(
+        room_service=rooms,
+        resource_service=ResourceService(
+            reference_store=ReferenceStore(),
+            reference_type_store=ReferenceTypeStore(),
+            document_store=DocumentStore(),
+            package_store=PackageStore(),
+            room_link_store=RoomLinkStore(),
+            session_factory=session_factory,
+        ),
+        room_store=RoomStore(),
+        agent_store=AgentStore(),
+        bridge_store=CollaborationBridgeStore(),
+        external_user_store=ExternalUserStore(),
+        room_role_store=RoomRoleStore(),
+        session_factory=session_factory,
+        room_group_store=RoomGroupStore(),
+        telemetry=None,
+        console_rooms=None,
+    )
+    # The fixture's bridge is named "Teams"; this adapter has Slack's flags.
+    spec, _ = yaml.parse(
+        """
+        room:
+          name: "For Bob"
+          description: "made from a template"
+          bridge: "Teams"
+          channel_type: channel_private
+          users: [bob]
+        """
+    )
+
+    await yaml.provision(
+        spec,
+        user_id=user_id,
+        is_admin=False,
+        origin=AgentOrigin(
+            agent_id=runner.id,
+            agent_name=runner.name,
+            owner_id=user_id,
+            owner_name="ada",
+            parent_room_id=None,
+            run_id=None,
+        ),
+    )
+
+    assert adapter.added == [["U-BOB"]]
+    assert CHANNEL_ACCOUNT not in core.in_room
+
+
+async def test_teams_still_makes_the_owner_own_an_agents_private_channel(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[(DIRECTORY_ID, True)])
+    adapter = _BridgeAdapter("teams")
+    core = _FlowCore(adapter, known={"bob": "U-BOB"})
+
+    await _flow_service(session_factory, bridge_id, core).create_room(
+        _for_people(bridge_id, user_id, "channel_private", ["bob"])
+    )
+
+    assert adapter.created[0]["owner_external_id"] == DIRECTORY_ID
+    assert adapter.added == [["U-BOB"]]
+    assert DIRECTORY_ID in core.in_room and "U-BOB" in core.in_room
+
+
+async def test_teams_still_needs_a_linked_owner_for_an_agents_private_channel(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, bridge_id = await _setup(session_factory, linked=[])
+    adapter = _BridgeAdapter("teams")
+    core = _FlowCore(adapter, known={"bob": "U-BOB"})
+
+    with pytest.raises(PrivateChannelOwnerMissing):
+        await _flow_service(session_factory, bridge_id, core).create_room(
+            _for_people(bridge_id, user_id, "channel_private", ["bob"])
+        )
+    assert adapter.created == []
+
+
+@pytest.mark.parametrize("miss", ["named", "fallback"])
+async def test_teams_public_channels_never_add_the_owner(
+    session_factory: async_sessionmaker[AsyncSession],
+    miss: str,
+) -> None:
+    # A standard channel's members are the team's: Switch never adds the
+    # owner there, so there is no fallback to make either.
+    user_id, bridge_id = await _setup(session_factory, linked=[(DIRECTORY_ID, True)])
+    adapter = _BridgeAdapter("teams")
+    core = _FlowCore(adapter, known={"bob": "U-BOB"} if miss == "named" else {})
+
+    await _flow_service(session_factory, bridge_id, core).create_room(
+        _for_people(bridge_id, user_id, "channel_public", ["bob"])
+    )
+
+    assert adapter.added == ([["U-BOB"]] if miss == "named" else [])
+    assert DIRECTORY_ID not in core.in_room
+
+
+async def test_telegram_makes_no_channel_so_adds_nobody(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
+
+    class _Telegram(_FlowAdapter):
+        async def create_channel(self, *args: Any, **kwargs: Any) -> CreatedChannel:
+            raise ChannelCreationUnsupported("Telegram bots cannot create chats")
+
+    user_id, bridge_id = await _setup(session_factory, linked=[(CHANNEL_ACCOUNT, True)])
+    adapter = _Telegram(needs_owner=False)
+    core = _FlowCore(adapter, known={"bob": "U-BOB"})
+
+    with pytest.raises(ChannelCreationUnsupported):
+        await _flow_service(session_factory, bridge_id, core).create_room(
+            _for_people(bridge_id, user_id, "channel_public", ["bob"])
+        )
+    assert adapter.added == []
+    assert core.in_room == []

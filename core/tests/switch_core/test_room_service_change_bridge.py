@@ -280,7 +280,7 @@ def _owner_linked(svc: RoomService) -> None:
     """The room's owner has a confirmed account on the new bridge, which a new
     private channel there needs."""
 
-    async def owner(*_: Any) -> Any:
+    async def owner(*_: Any, **__: Any) -> Any:
         return SimpleNamespace(
             external_user_id="owner-account", external_username="ada"
         )
