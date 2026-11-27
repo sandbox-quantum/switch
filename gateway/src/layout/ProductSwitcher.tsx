@@ -53,7 +53,7 @@ function CardText({ title, description }: { title: string; description: string }
           fontSize: "0.8125rem",
           fontWeight: 500,
           letterSpacing: "-0.26px",
-          lineHeight: 1.4,
+          lineHeight: 1.33,
           color: "color-mix(in oklch, var(--sw-foreground) 70%, transparent)",
         }}
       >
@@ -121,7 +121,7 @@ export default function ProductSwitcher() {
             "aria-label": "Switch product",
             sx: {
               mt: 1,
-              width: 286,
+              width: 340,
               p: 2,
               display: "flex",
               flexDirection: "column",
@@ -149,7 +149,7 @@ export default function ProductSwitcher() {
               ...CARD_SX,
               borderColor: "var(--sw-brand-blue)",
               background:
-                "radial-gradient(ellipse 120% 150% at 100% 100%, color-mix(in oklch, var(--sw-brand-blue) 40%, transparent), color-mix(in oklch, var(--sw-card) 20%, transparent) 70%)",
+                "radial-gradient(ellipse 120% 150% at 100% 100%, color-mix(in oklch, var(--sw-brand-blue) 28%, transparent), color-mix(in oklch, var(--sw-card) 20%, transparent) 70%)",
             }}
           >
             <CardText title="Rooms" description="Put your team and any agents in one shared room" />
@@ -166,7 +166,7 @@ export default function ProductSwitcher() {
             sx={{
               ...CARD_SX,
               borderColor: "var(--sw-field-border)",
-              background: `radial-gradient(ellipse 120% 150% at 100% 100%, color-mix(in oklch, ${VIGILANT_FLAME} 20%, transparent), color-mix(in oklch, var(--sw-brand-flame) 20%, transparent) 35%, color-mix(in oklch, var(--sw-card) 20%, transparent) 70%)`,
+              background: `radial-gradient(ellipse 120% 150% at 100% 100%, color-mix(in oklch, ${VIGILANT_FLAME} 14%, transparent), color-mix(in oklch, var(--sw-brand-flame) 14%, transparent) 35%, color-mix(in oklch, var(--sw-card) 20%, transparent) 70%)`,
               "&:hover": { borderColor: "var(--sw-field-border-hover)" },
             }}
           >
