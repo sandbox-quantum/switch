@@ -59,6 +59,7 @@ NEW_ROUTES = {
     ("gateway", "POST", "/hosted-provisioner/actions/{action_id}/result"),
     ("gateway", "POST", "/hosted-provisioner/actions/{action_id}/steps"),
     ("gateway", "POST", "/hosted-provisioner/claim"),
+    ("gateway", "POST", "/hosted-network/report"),
     ("gateway", "GET", "/hosted-provisioner/pool/retiring"),
     ("gateway", "POST", "/hosted-provisioner/pool/{pool_box_id}/gone"),
     ("gateway", "POST", "/hosted-provisioner/removals/claim"),

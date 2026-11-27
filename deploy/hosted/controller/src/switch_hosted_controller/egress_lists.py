@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -182,6 +183,8 @@ def parse_egress(
             raise EgressConfigError(f"not a part a box can switch on: {part!r}")
     result: dict[str, BoxEgress] = {}
     gate = raw.pop("_gate", None)
+    raw.pop(HOST_RULES_KEY, None)  # read by parse_host_rules
+    raw.pop(HOST_POLICY_KEY, None)
     if gate is not None:
         hosts = gate.get("hosts") if isinstance(gate, dict) and set(gate) == {"hosts"} else None
         if not isinstance(hosts, list) or not 1 <= len(hosts) <= MAX_EXTRAS:
@@ -258,6 +261,146 @@ def parse_egress(
             for n, b in result.items()
         }
     return [result[n] for n in sorted(result)]
+
+
+# ---- host rules: one ordered list of hosts and addresses by category, and what each category gets ----
+
+HOST_RULES_KEY = "_host_rules"  # [[host or address, category], ...], first match wins
+HOST_POLICY_KEY = (
+    "_host_policy"  # {category: "block" | "watch" | "allow"}; a category it doesn't name is blocked
+)
+HOST_RULES_CONF = (
+    "_categories.conf"  # sorts before every box's file (and `_gate`, `_none`), so it applies first
+)
+CATEGORY_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+POLICIES = ("block", "watch", "allow")
+MAX_HOST_RULES = 20_000  # squid-boxes is one ConfigMap, at most 1 MiB with every box's files
+MAX_RULE_RUNS = 64  # each run is an acl excluding every earlier one
+
+
+@dataclass(frozen=True)
+class HostRules:
+    entries: tuple[
+        tuple[str, str], ...
+    ] = ()  # (squid's form of the host or address, category), in order
+    policy: tuple[tuple[str, str], ...] = ()  # (category, policy), sorted
+
+    def policy_of(self, category: str) -> str:
+        return dict(self.policy).get(category, "block")
+
+
+NO_RULES = HostRules()
+
+
+def _rule_target(value: object) -> str | None:
+    """A rule's host or address, as squid reads it: `example.com` (that host), `.example.com` (it and its
+    subdomains), or an address or range (`203.0.113.7`, `198.51.100.0/24`)."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    host = text[1:] if text.startswith(".") else text
+    if HOST_RE.fullmatch(host):
+        return text
+    try:
+        return str(ipaddress.ip_network(text, strict=False))
+    except ValueError:
+        return None
+
+
+def parse_host_rules(text: str) -> HostRules:
+    """`_host_rules` and `_host_policy` from the operator's egress settings. Repeats and overlaps are fine: a request
+    takes the category of the first entry that matches it. Refused whole if an entry isn't a host or address with a
+    category, or a policy isn't block, watch or allow, like the rest of the settings."""
+    try:
+        raw = json.loads(text)
+    except ValueError:
+        raise EgressConfigError("the egress settings are not JSON") from None
+    if not isinstance(raw, dict):
+        raise EgressConfigError("the egress file must be an object of namespace to settings")
+    rules = raw.get(HOST_RULES_KEY, [])
+    policy = raw.get(HOST_POLICY_KEY, {})
+    if not isinstance(rules, list) or len(rules) > MAX_HOST_RULES:
+        raise EgressConfigError(
+            f"{HOST_RULES_KEY} must be a list of at most {MAX_HOST_RULES} [host, category] pairs"
+        )
+    entries: list[tuple[str, str]] = []
+    for n, rule in enumerate(rules, 1):
+        target = _rule_target(rule[0]) if isinstance(rule, list) and len(rule) == 2 else None
+        category = rule[1] if isinstance(rule, list) and len(rule) == 2 else None
+        if target is None or not isinstance(category, str) or not CATEGORY_RE.fullmatch(category):
+            raise EgressConfigError(
+                f"{HOST_RULES_KEY}: entry {n} isn't [host or address, category] (a category is lowercase "
+                "letters, digits and dashes)"
+            )
+        entries.append((target, category))
+    if not isinstance(policy, dict) or not all(
+        isinstance(c, str) and CATEGORY_RE.fullmatch(c) and p in POLICIES for c, p in policy.items()
+    ):
+        raise EgressConfigError(
+            f"{HOST_POLICY_KEY} must map categories to one of {', '.join(POLICIES)}"
+        )
+    return HostRules(tuple(entries), tuple(sorted(policy.items())))
+
+
+def _is_address(target: str) -> bool:
+    return target[0].isdigit() or ":" in target
+
+
+def _squid_hosts(hosts: list[str]) -> list[str]:
+    """A run's hosts as one squid list: repeats dropped, and what a `.domain` entry covers (`example.com` or
+    `a.example.com` beside `.example.com`), which squid refuses in the same list."""
+    unique = list(dict.fromkeys(hosts))
+    wild = {h for h in unique if h.startswith(".")}
+    kept = []
+    for h in unique:
+        name = h.lstrip(".")
+        parents = [name.split(".", i)[-1] for i in range(name.count(".") + 1)]
+        if any("." + p in wild and "." + p != h for p in parents):
+            continue
+        kept.append(h)
+    return kept
+
+
+def host_rule_files(rules: HostRules) -> dict[str, str]:
+    """squid's rules for the host rules, as `squid-boxes` keys: `_categories.conf` and one list per run of
+    consecutive entries with the same category and kind (hosts or addresses). Each run's acl excludes every
+    earlier run's, so a request has the category of its first matching entry; squid tags it
+    `<policy>:<category>` (`switch_category`, the last field of its box log) and refuses it where the policy
+    says block. They apply after a box's login and before any box's own rules. Nothing without rules."""
+    if not rules.entries:
+        return {}
+    runs: list[tuple[str, bool, list[str]]] = []
+    for target, category in rules.entries:
+        address = _is_address(target)
+        if runs and runs[-1][0] == category and runs[-1][1] == address:
+            runs[-1][2].append(target)
+        else:
+            runs.append((category, address, [target]))
+    if len(runs) > MAX_RULE_RUNS:
+        raise EgressConfigError(
+            f"{HOST_RULES_KEY}: more than {MAX_RULE_RUNS} runs of one category; group entries by category"
+        )
+    conf = [
+        "# host rules, from the egress settings: generated by the hosted controller, do not edit",
+        "acl switch_box_login proxy_auth REQUIRED",
+    ]
+    files: dict[str, str] = {}
+    earlier = ""
+    for n, (category, address, targets) in enumerate(runs, 1):
+        name = f"_rules-{n}.list"
+        listed = list(dict.fromkeys(targets)) if address else _squid_hosts(targets)
+        files[name] = "\n".join(listed) + "\n"
+        kind = "dst" if address else "dstdomain -n"
+        policy = rules.policy_of(category)
+        conf += [
+            f'acl switch_rule_{n} {kind} "{SQUID_BOXES_DIR}/{name}"',
+            f"note switch_category {policy}:{category} switch_rule_{n}{earlier}",
+        ]
+        if policy == "block":
+            conf.append(f"http_access deny switch_box_login switch_rule_{n}{earlier}")
+        earlier += f" !switch_rule_{n}"
+    files[HOST_RULES_CONF] = "\n".join(conf) + "\n"
+    return files
 
 
 # ---- SHA-512 crypt ($6$), as squid's basic_ncsa_auth reads it ----
@@ -460,9 +603,10 @@ def reconcile_once(
     proxy: str,
     make_password: Callable[[], str] = new_password,
     make_salt: Callable[[], str] = new_salt,
+    rules: HostRules = NO_RULES,
 ) -> EgressResult:
     result = EgressResult(boxes=len(boxes))
-    files: dict[str, str] = {}
+    files: dict[str, str] = host_rule_files(rules)
     passwd_lines: list[str] = []
     current = kube.boxes_files()
     current_passwd = kube.passwd()
@@ -835,13 +979,14 @@ def run(
     sleep: Callable[[float], None] = time.sleep,
     check: float = CHECK_S,
     clock: Callable[[], float] = time.monotonic,
+    load_rules: Callable[[], HostRules] = lambda: NO_RULES,
 ) -> None:
     """Reads the settings and box map every `check` (3 s): two `get`s by name. A full pass (each box's login,
     squid's files) runs at once when what they say changed, so a new or removed box reaches squid within
     seconds, and otherwise every `interval`, as before. A failed pass is retried after a wait that doubles
     from `check` up to `interval`. A read that is refused leaves squid's current files as they are: the error
     says which part, and nothing is rewritten; it is logged once, then again each `interval` while it lasts."""
-    last: list[BoxEgress] | None = None
+    last: tuple[list[BoxEgress], HostRules] | None = None
     last_pass: float | None = None
     retry_at = 0.0
     backoff = check
@@ -850,6 +995,7 @@ def run(
         now = clock()
         try:
             boxes = load()
+            rules = load_rules()
         except (EgressConfigError, ScalerConfigError, OSError, ValueError) as error:
             if refused_logged is None or now - refused_logged >= interval:
                 logger.error(
@@ -858,16 +1004,16 @@ def run(
                 refused_logged = now
         else:
             refused_logged = None
-            due = last_pass is None or boxes != last or now - last_pass >= interval
+            due = last_pass is None or (boxes, rules) != last or now - last_pass >= interval
             if due and now >= retry_at:
                 try:
-                    reconcile_once(kube, boxes, proxy)
+                    reconcile_once(kube, boxes, proxy, rules=rules)
                 except Exception as error:
                     logger.error("Egress: pass failed (%s); retrying", type(error).__name__)
                     retry_at = now + backoff
                     backoff = min(backoff * 2, interval)
                 else:
-                    last, last_pass, backoff, retry_at = boxes, now, check, 0.0
+                    last, last_pass, backoff, retry_at = (boxes, rules), now, check, 0.0
         sleep(check)
 
 
@@ -935,6 +1081,7 @@ def main(env: Mapping[str, str] | None = None, sa_dir: Path = SA_DIR) -> int:
         ),
         proxy,
         stop=lambda: stopping["now"],
+        load_rules=lambda: parse_host_rules(api.settings()),
     )
     return 0
 

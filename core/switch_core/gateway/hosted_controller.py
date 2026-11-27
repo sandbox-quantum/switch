@@ -1,5 +1,6 @@
 import logging
 import secrets
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal, NoReturn
@@ -73,6 +74,7 @@ from switch_core.providers.hosted import (
     HostedControllerSettings,
     open_to_all,
 )
+from switch_core.security_events import SecuritySignal, log_security_event
 from switch_core.telemetry import emit_after_commit
 from switch_core.tenant_context import no_tenant, tenant_scope
 from switch_core.visibility.alerts import (
@@ -898,6 +900,14 @@ class _UpstreamObservation(BaseModel):
     ) = None
 
 
+class BoxUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cpu_millicores: int = Field(ge=0, le=1_000_000)
+    memory_bytes: int = Field(ge=0, le=1 << 45)
+    cpu_limit_millicores: int | None = Field(default=None, ge=0, le=1_000_000)
+    memory_limit_bytes: int | None = Field(default=None, ge=0, le=1 << 45)
+
+
 class Observation(_UpstreamObservation):
     # v2 adds `box_missing`: the box scaler found a made box gone from the
     # cluster (`_box_missing`).
@@ -919,6 +929,11 @@ class Observation(_UpstreamObservation):
     # limit. A field, not a state: Core keeps the box provisioning and says
     # so in the owner's `start` (`start.waiting_for_room`).
     waiting_for_room: bool | None = None
+    # The box pod's CPU and memory now, and their limits, from the cluster's
+    # metrics API. Logged as a security event per observation
+    # (`hosted.box_usage`), so a box pinned at its CPU limit can be alerted on;
+    # not stored.
+    usage: BoxUsage | None = None
 
     @model_validator(mode="wrap")
     @classmethod
@@ -942,6 +957,27 @@ class Observation(_UpstreamObservation):
 _V2_OBSERVATION_FIELDS = frozenset(
     set(Observation.model_fields) - set(_UpstreamObservation.model_fields)
 )
+
+
+# A box's usage is logged at most once a minute per process, however often the
+# scaler observes it.
+USAGE_LOG_EVERY_S = 60.0
+_usage_logged_at: dict[str, float] = {}
+_monotonic = time.monotonic
+
+
+def usage_due(machine_id: str, now: float) -> bool:
+    last = _usage_logged_at.get(machine_id)
+    if last is not None and now - last < USAGE_LOG_EVERY_S:
+        return False
+    if len(_usage_logged_at) > 10_000:
+        _usage_logged_at.clear()
+    _usage_logged_at[machine_id] = now
+    return True
+
+
+def _ratio(used: int, limit: int | None) -> float | None:
+    return None if not limit else round(used / limit, 3)
 
 
 ERROR_REPLACING_STATES = {"error", "retained", "deleting", "deleted"}
@@ -996,6 +1032,25 @@ async def observe(
         # On this cluster a box only moves by eviction, so this is the agents view's `box_moved`,
         # remembered in memory for 15 minutes.
         recent_moves.record(machine.id, now)
+    if body.usage is not None and usage_due(machine.id, _monotonic()):
+        usage = body.usage
+        log_security_event(
+            SecuritySignal.HOSTED_BOX_USAGE,
+            tenant_id=None,
+            actor_user_id=machine.owner_id,
+            target_type="cloud_machine",
+            target_id=machine.id,
+            agent_id=None,
+            room_id=None,
+            details={
+                "cpu_millicores": usage.cpu_millicores,
+                "memory_bytes": usage.memory_bytes,
+                "cpu_limit_millicores": usage.cpu_limit_millicores,
+                "memory_limit_bytes": usage.memory_limit_bytes,
+                "cpu_ratio": _ratio(usage.cpu_millicores, usage.cpu_limit_millicores),
+                "memory_ratio": _ratio(usage.memory_bytes, usage.memory_limit_bytes),
+            },
+        )
     # Kept whatever the revision too: they describe the box as it is now.
     box_changed = bool(body.evictions or body.restarts or body.node is not None)
     if box_changed:

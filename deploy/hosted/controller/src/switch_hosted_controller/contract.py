@@ -88,7 +88,9 @@ CLUSTER_VPC_CIDR = "198.51.100.0/22"
 CLUSTER_SERVICE_CIDR = "203.0.113.0/24"
 KUBERNETES_SERVICE_IP = "203.0.113.1"
 ZONE = "xx-example-1a"
-PROXY_HOST = "squid.egress-proxy.svc"
+# squid's Service address, inside the service range: boxes have no DNS, so they reach squid by address.
+SQUID_IP = "203.0.113.53"
+PROXY_HOST = SQUID_IP
 PROXY_PORT = 3128
 STORAGE_CLASS = "gp3"
 MANAGED_SETTINGS = '{"permissions": {}}'
@@ -172,6 +174,7 @@ def fills() -> dict[str, Any]:
         "__PREVIOUS_BOX_IMAGE_2__": IMAGE["box_previous_2"],
         "__PREVIOUS_BOX_IMAGE_3__": IMAGE["box_previous_3"],
         "__SERVER_IP__": SERVER_IP,
+        "__SQUID_IP__": SQUID_IP,
         "__ZONE__": ZONE,
         "kubernetes_service_ip": KUBERNETES_SERVICE_IP,
     }
@@ -623,6 +626,8 @@ def run_services() -> Cluster:
     with cluster.acting(ACCOUNT["controller"], "scaler: a box looked at"):
         scaler.scale(base)
         scaler.box_pods(base)
+        # No metrics yet (they can't be set up as an object), but it's still the call RBAC must grant.
+        scaler.box_metrics(base)
         scaler.events(base)
     with cluster.acting(ACCOUNT["controller"], "scaler: a box held without its proxy login"):
         scaler.write_egress_held({base})
@@ -993,7 +998,7 @@ def _controller_mounts_agents_disk(s: dict) -> None:
 
 
 def _egress_port(s: dict) -> None:
-    _body(s)["spec"]["egress"][2]["ports"][0]["port"] = 3129
+    _body(s)["spec"]["egress"][1]["ports"][0]["port"] = 3129
 
 
 def _reap(name: str, in_owners: bool) -> Callable[[dict], None]:

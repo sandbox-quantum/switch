@@ -130,19 +130,19 @@
                 },
                 {
                   "name": "HTTPS_PROXY",
-                  "value": "http://squid.egress-proxy.svc:3128"
+                  "value": "http://203.0.113.53:3128"
                 },
                 {
                   "name": "https_proxy",
-                  "value": "http://squid.egress-proxy.svc:3128"
+                  "value": "http://203.0.113.53:3128"
                 },
                 {
                   "name": "HTTP_PROXY",
-                  "value": "http://squid.egress-proxy.svc:3128"
+                  "value": "http://203.0.113.53:3128"
                 },
                 {
                   "name": "http_proxy",
-                  "value": "http://squid.egress-proxy.svc:3128"
+                  "value": "http://203.0.113.53:3128"
                 },
                 {
                   "name": "NO_PROXY",
@@ -578,19 +578,19 @@
                   },
                   {
                     "name": "HTTPS_PROXY",
-                    "value": "http://squid.egress-proxy.svc:3128"
+                    "value": "http://203.0.113.53:3128"
                   },
                   {
                     "name": "https_proxy",
-                    "value": "http://squid.egress-proxy.svc:3128"
+                    "value": "http://203.0.113.53:3128"
                   },
                   {
                     "name": "HTTP_PROXY",
-                    "value": "http://squid.egress-proxy.svc:3128"
+                    "value": "http://203.0.113.53:3128"
                   },
                   {
                     "name": "http_proxy",
-                    "value": "http://squid.egress-proxy.svc:3128"
+                    "value": "http://203.0.113.53:3128"
                   },
                   {
                     "name": "NO_PROXY",
@@ -1039,32 +1039,6 @@
         },
         "spec": {
           "egress": [
-            {
-              "ports": [
-                {
-                  "port": 53,
-                  "protocol": "UDP"
-                },
-                {
-                  "port": 53,
-                  "protocol": "TCP"
-                }
-              ],
-              "to": [
-                {
-                  "namespaceSelector": {
-                    "matchLabels": {
-                      "kubernetes.io/metadata.name": "kube-system"
-                    }
-                  },
-                  "podSelector": {
-                    "matchLabels": {
-                      "k8s-app": "kube-dns"
-                    }
-                  }
-                }
-              ]
-            },
             {
               "ports": [
                 {

@@ -20,7 +20,7 @@ import json
 import logging
 import ssl
 import time
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -193,6 +193,7 @@ class Core(Protocol):
         restarts: int | None = None,
         node: str | None = None,
         error_code: str | None = None,
+        usage: dict[str, int] | None = None,
     ) -> None: ...
 
 
@@ -355,6 +356,76 @@ def _observe(
         )
 
 
+_CPU_UNITS = {"n": 1e-6, "u": 1e-3, "m": 1.0, "": 1000.0}
+_MEMORY_UNITS = {
+    "": 1,
+    "k": 10**3,
+    "M": 10**6,
+    "G": 10**9,
+    "Ki": 2**10,
+    "Mi": 2**20,
+    "Gi": 2**30,
+    "Ti": 2**40,
+}
+
+
+def _millicores(quantity: str) -> int | None:
+    number = quantity.rstrip("num")
+    try:
+        return round(float(number) * _CPU_UNITS[quantity[len(number) :]])
+    except (KeyError, ValueError):
+        return None
+
+
+def _bytes(quantity: str) -> int | None:
+    for suffix in ("Ki", "Mi", "Gi", "Ti", "k", "M", "G"):
+        if quantity.endswith(suffix):
+            number, unit = quantity[: -len(suffix)], suffix
+            break
+    else:
+        number, unit = quantity, ""
+    try:
+        return int(float(number) * _MEMORY_UNITS[unit])
+    except ValueError:
+        return None
+
+
+def box_usage(kube: Any, namespace: str, pods: list[Mapping[str, Any]]) -> dict[str, int] | None:
+    """The box pod's CPU and memory, summed over its containers, and their limits from its spec, for the
+    observation's `usage`. None when the cluster has no metrics for it, or anything doesn't read as a quantity:
+    usage is reported or not, never guessed."""
+    if not hasattr(kube, "box_metrics"):
+        return None
+    try:
+        metrics = kube.box_metrics(namespace)
+    except Exception as exc:
+        logger.warning("Box usage not read (%s).", type(exc).__name__)
+        return None
+    if not metrics:
+        return None
+    cpu = memory = 0
+    for container in metrics.get("containers") or []:
+        c = _millicores(str((container.get("usage") or {}).get("cpu", "")))
+        m = _bytes(str((container.get("usage") or {}).get("memory", "")))
+        if c is None or m is None:
+            return None
+        cpu, memory = cpu + c, memory + m
+    usage = {"cpu_millicores": cpu, "memory_bytes": memory}
+    limits_cpu = limits_memory = 0
+    for pod in pods[:1]:
+        for container in (pod.get("spec") or {}).get("containers") or []:
+            limits = (container.get("resources") or {}).get("limits") or {}
+            c = _millicores(str(limits.get("cpu", ""))) if "cpu" in limits else None
+            m = _bytes(str(limits.get("memory", ""))) if "memory" in limits else None
+            limits_cpu += c or 0
+            limits_memory += m or 0
+    if limits_cpu:
+        usage["cpu_limit_millicores"] = limits_cpu
+    if limits_memory:
+        usage["memory_limit_bytes"] = limits_memory
+    return usage
+
+
 def reconcile_once(
     core: Core,
     kube: Kube,
@@ -506,6 +577,9 @@ def reconcile_once(
                     pods = watch.last_pods[machine_id]
                     box_facts.see(machine_id, pods)
                     facts = {"restarts": box_facts.unreported(machine_id), "node": box_node(pods)}
+                    usage = box_usage(kube, namespace, pods)
+                    if usage is not None:
+                        facts["usage"] = usage
             error = None
             error_code = None
             waiting_for_room = False
@@ -758,6 +832,20 @@ class KubeApi:
             raise
         return [pod]
 
+    def box_metrics(self, namespace: str) -> dict[str, Any] | None:
+        """The box pod's CPU and memory now, from the cluster's metrics API (metrics-server), read by the pod's
+        fixed name; None when it has none yet (a pod just started, or no metrics-server)."""
+        if not NAMESPACE_RE.fullmatch(namespace):
+            raise ValueError("not a user box namespace")
+        try:
+            return self._call(
+                "GET", f"/apis/metrics.k8s.io/v1beta1/namespaces/{namespace}/pods/{BOX_POD}"
+            )
+        except HTTPError as exc:
+            if exc.code in (403, 404, 503):
+                return None
+            raise
+
     def events(self, namespace: str) -> list[dict[str, Any]]:
         if not NAMESPACE_RE.fullmatch(namespace):
             raise ValueError("not a user box namespace")
@@ -907,6 +995,7 @@ class CoreApi:
         node: str | None = None,
         error_code: str | None = None,
         waiting_for_room: bool = False,
+        usage: dict[str, int] | None = None,
     ) -> None:
         self._call(
             f"/machines/{machine_id}/observation",
@@ -915,6 +1004,7 @@ class CoreApi:
                 **({"evictions": evictions} if evictions is not None else {}),
                 **({"restarts": restarts} if restarts is not None else {}),
                 **({"node": node} if node is not None else {}),
+                **({"usage": usage} if usage is not None else {}),
                 **({"waiting_for_room": True} if waiting_for_room else {}),
                 "state": state,
                 "revision": revision,

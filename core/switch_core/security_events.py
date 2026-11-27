@@ -78,6 +78,13 @@ class SecuritySignal(StrEnum):
     ATTACHMENT_UPLOADED = "attachment.uploaded"
     ATTACHMENT_DOWNLOADED = "attachment.downloaded"
     SERVICE_TOKEN_ISSUED = "service_token.issued"
+    # Hosted agents v2 boxes: where a box connected through squid, summed per
+    # box and host over the reporter's window (`gateway/hosted_network.py`);
+    # requests squid logged without a box login; and a box's CPU and memory
+    # as the box scaler last observed them (`gateway/hosted_controller.py`).
+    HOSTED_BOX_NETWORK = "hosted.box_network"
+    HOSTED_BOX_NETWORK_UNATTRIBUTED = "hosted.box_network_unattributed"
+    HOSTED_BOX_USAGE = "hosted.box_usage"
 
 
 @dataclass(frozen=True)
