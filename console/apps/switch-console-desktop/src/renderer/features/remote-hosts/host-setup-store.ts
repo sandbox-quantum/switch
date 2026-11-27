@@ -18,8 +18,8 @@ import { log } from '@renderer/utils/logger';
 import {
   hostSetupActivityEventChannel,
   hostSetupPlanEventChannel,
-  type HostSetupPlan,
-} from '@shared/core/remote-hosts/setup';
+} from '@shared/core/remote-hosts/remoteHostEvents';
+import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';
 
 function activityKey(sshHost: string, stepId: string): string {
   return `${sshHost}\u0000${stepId}`;

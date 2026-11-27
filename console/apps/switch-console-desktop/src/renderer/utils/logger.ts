@@ -1,3 +1,4 @@
+import { rendererLogChannel } from '@shared/events/rendererLogEvents';
 import { createLogger, serializeLogValue, type LogSinkEntry } from '@shared/logger';
 
 /**
@@ -15,6 +16,6 @@ export const log = createLogger({
       source: entry.source,
       context: entry.context,
     };
-    window.electronAPI?.eventSend('switch-console:renderer-log', safe);
+    window.electronAPI?.eventSend(rendererLogChannel.name, safe);
   },
 });

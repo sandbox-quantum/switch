@@ -5288,6 +5288,10 @@ version of their own to them without also giving them a release of their own.
   process.** Its bridge passed any channel name through; it now refuses every
   channel but those the app registers for its requests.
 
+- **The app window can send and listen to only the app's own events.** Its
+  bridge passed any channel name through for events too; it now refuses every
+  channel but those of the events the app defines.
+
 - **On Windows, a command for a `.cmd` or `.bat` CLI with a line break in an
   argument is refused.** Such a CLI runs through cmd.exe, which treats a line
   break as the end of one command and the start of the next whatever the
