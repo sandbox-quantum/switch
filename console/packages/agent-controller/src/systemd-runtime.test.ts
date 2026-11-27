@@ -11,7 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { silentLogger } from './log';
 import type { SeparateUsersConfig } from './separate-users';
 import { ControllerStore } from './store';
@@ -341,6 +341,38 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     await start('agent-1');
     expect(existsSync(join(config.agentsDir, 'released', 'unknown-1000', 'workspace'))).toBe(true);
     expect(existsSync(join(dir, 'escaped'))).toBe(false);
+  });
+
+  it('sets aside a directory whose marker cannot be read, rather than refusing to start', async () => {
+    const warn = vi.spyOn(silentLogger, 'warn');
+    const root = join(config.agentsDir, '01');
+    const marker = join(root, '.switch-agent-id');
+    const secret = join(dir, 'secret');
+    writeFileSync(secret, 'SECRET\n');
+    const unreadable: Array<[string, () => void]> = [
+      ['a link', () => symlinkSync(secret, marker)],
+      ['a directory', () => mkdirSync(marker)],
+      ['too large', () => writeFileSync(marker, 'x'.repeat(2048))],
+    ];
+    for (const [kind, make] of unreadable) {
+      mkdirSync(join(root, 'workspace'), { recursive: true });
+      rmSync(marker, { recursive: true, force: true });
+      make();
+      warn.mockClear();
+      await start('agent-1');
+      expect(
+        existsSync(join(config.agentsDir, 'released', 'unknown-1000', 'workspace')),
+        kind
+      ).toBe(true);
+      expect(readFileSync(marker, 'utf8').trim(), kind).toBe('agent-1');
+      expect(warn, kind).toHaveBeenCalledWith(
+        'An agent directory’s marker cannot be read; setting it aside',
+        expect.objectContaining({ directory: root })
+      );
+      expect(JSON.stringify(warn.mock.calls), kind).not.toContain('SECRET');
+      rmSync(join(config.agentsDir, 'released'), { recursive: true, force: true });
+    }
+    warn.mockRestore();
   });
 
   it('refuses an agent id that could name a path', async () => {

@@ -8246,8 +8246,8 @@ tags; see RELEASING.md.
   Running agents as users of their own, the controller set aside and gave back
   agent directories under `released/` by agent id, and by whatever id the
   directory's marker file held, without checking either; an id with `..` or a
-  separator is now refused, and a marker that holds one is set aside as an
-  unknown agent's.
+  separator is now refused, and a marker that holds one, or cannot be read
+  (a link, a folder, too large), is set aside as an unknown agent's.
 - **Cancelling an attachment upload checks the id**, and **an agent host's
   control port starts only its own agent's sessions**, as on the sidecar.
 - **Reads what an agent can write without following links, and never repeats

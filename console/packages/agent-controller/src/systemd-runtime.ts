@@ -445,11 +445,22 @@ export class SystemdRuntime implements AgentRuntime {
     const slot = this.claim(agentId);
     const root = agentRoot(this.deps.config, slot);
     if (await isDirectory(root)) {
-      const marker = await readUntrusted(join(root, AGENT_MARKER), {
+      // The agent's user can write in this directory, so a marker it cannot be
+      // read from (a link, a directory, too large) only sets the directory
+      // aside: refusing to start would let it block the slot for good.
+      const holder = await readUntrusted(join(root, AGENT_MARKER), {
         maxBytes: MAX_MARKER_BYTES,
         within: root,
-      });
-      const holder = marker?.trim() ?? '';
+      }).then(
+        (marker) => marker?.trim() ?? '',
+        (error: unknown) => {
+          this.deps.log.warn('An agent directory’s marker cannot be read; setting it aside', {
+            directory: root,
+            error: errorMessage(error),
+          });
+          return '';
+        }
+      );
       if (holder !== agentId) {
         if (holder && !isSafeId(holder))
           this.deps.log.warn('An agent directory’s marker names no agent id; setting it aside', {
