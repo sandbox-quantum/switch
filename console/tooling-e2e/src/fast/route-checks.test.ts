@@ -66,38 +66,31 @@ describe('isHtml', () => {
 });
 
 describe('probeSessionRoutes', () => {
-  // A hosted agents v2 route answers 404 with v2 off, before any session check,
-  // as a route that doesn't exist; `/feature-flags` lists `hosted_v2` only with v2 on.
+  // A box route answers 404 on a server with no box cluster configured, before any
+  // session check, as a route that doesn't exist. `box_cluster` is the snapshot's
+  // label for it; `/feature-flags` never lists it.
   const surface = {
     operations: [],
     gatewayRoutes: [
       { route: 'GET /gateway/rooms', auth: 'session', flags: [] },
-      { route: 'GET /gateway/shared-cloud/overview', auth: 'session', flags: ['hosted_v2'] },
+      { route: 'GET /gateway/shared-cloud/overview', auth: 'session', flags: ['box_cluster'] },
     ],
   } as unknown as ServerSurface;
 
-  function client(flags: string[], v2On: boolean): SwitchClient {
+  function client(flags: string[]): SwitchClient {
     return {
       enabledFeatureFlags: async () => new Set(flags),
       statusWithoutCredentials: async (_method: string, path: string) =>
-        path.includes('shared-cloud') && !v2On
+        path.includes('shared-cloud')
           ? { status: 404, contentType: 'application/json' }
           : { status: 401, contentType: 'application/json' },
     } as unknown as SwitchClient;
   }
 
-  it("counts a route behind hosted_v2 as not mounted when the server doesn't list it", async () => {
-    expect(await probeSessionRoutes(client([], false), surface)).toEqual({
+  it('never probes a box route: it counts as not mounted', async () => {
+    expect(await probeSessionRoutes(client([]), surface)).toEqual({
       probed: 1,
       notMounted: 1,
-      wrong: [],
-    });
-  });
-
-  it('probes it, and expects the 401, when the server lists hosted_v2 as on', async () => {
-    expect(await probeSessionRoutes(client(['hosted_v2'], true), surface)).toEqual({
-      probed: 2,
-      notMounted: 0,
       wrong: [],
     });
   });
