@@ -46,10 +46,8 @@ def test_a_parked_or_waking_session_reads_resting_or_back_in_a_moment():
     [
         (StopReason.PAUSED_BY_SWITCH, {"paused": True}),
         (StopReason.TURNED_OFF_BY_ADMIN, {"turned_off": True}),
-        (StopReason.MEMORY_GUARD, {"memory_stopped": True}),
         (StopReason.LOGIN_NEEDED, {}),
         (StopReason.CANT_REACH, {}),
-        (StopReason.DAILY_CAP_REACHED, {"reset_at": "2026-10-30T00:00:00+00:00"}),
     ],
 )
 def test_the_reasons_that_change_the_card_make_it_unavailable(code, flags):
@@ -105,7 +103,7 @@ def test_only_fixed_fields_ever_leave():
     )
     assert "planted marker" not in str(shown)
     assert set(shown) <= {
-        "agent_id", "state", "last_reply_at", "needs_restart", "needs_check", "memory_stopped",
+        "agent_id", "state", "last_reply_at", "needs_restart", "needs_check",
         "waiting_for_room", "box_stopped", "box_starting", "paused", "turned_off", "stop_reason",
         "reset_at",
     }  # fmt: skip
@@ -140,10 +138,12 @@ def test_only_fixed_fields_ever_leave():
             ("stopped", "stopped", "turned_off"),
             "unavailable",
         ),
+        # An agent a box made before the memory guard went had stopped: that
+        # stop is no longer a state of its own.
         (
             running(process="stopped", reason="out_of_memory"),
             ("ready", "running", None),
-            "unavailable",
+            "idle",
         ),
         (running(), ("provisioning", "running", None), "idle"),
     ],

@@ -27,7 +27,7 @@ class AgentStopReason:
     since: (
         datetime | None
     )  # None where Core holds no start time (a budget: only its reset)
-    reset_at: datetime | None = None  # the daily cap and budgets only
+    reset_at: datetime | None = None  # budgets only
 
 
 @dataclass(frozen=True)
@@ -41,17 +41,10 @@ class ReasonInputs:
         None  # the agent's provider reports `provider_login_missing`
     )
     controller_offline_since: datetime | None = None  # the connection ledger
-    capped_since: datetime | None = (
-        None  # `machine.gateway_capped` in the status report
-    )
-    cap_resets_at: datetime | None = None
     budget_reached: bool = (
         False  # `BudgetGuard`'s standings: a budget covering it is used up
     )
     budget_resets_at: datetime | None = None
-    memory_stopped_since: datetime | None = (
-        None  # the agent's process: stopped, reason: out_of_memory
-    )
     let_go_at: datetime | None = None  # the box let a message go for waiting too long
     moved_at: datetime | None = None  # the cluster's placement-move report
     restart_notice_at: datetime | None = (
@@ -78,14 +71,8 @@ def stop_reason(inputs: ReasonInputs) -> AgentStopReason | None:
     # After can't reach: a box Core can't reach has a stale provider report.
     if inputs.login_needed_since is not None:
         return AgentStopReason(StopReason.LOGIN_NEEDED, inputs.login_needed_since)
-    if inputs.capped_since is not None:
-        return AgentStopReason(
-            StopReason.DAILY_CAP_REACHED, inputs.capped_since, inputs.cap_resets_at
-        )
     if inputs.budget_reached:
         return AgentStopReason(StopReason.BUDGET_REACHED, None, inputs.budget_resets_at)
-    if inputs.memory_stopped_since is not None:
-        return AgentStopReason(StopReason.MEMORY_GUARD, inputs.memory_stopped_since)
     # The three below clear once the agent works again.
     if _after_last_work(inputs.let_go_at, inputs):
         assert inputs.let_go_at is not None
@@ -115,11 +102,6 @@ class ReasonWords:
 
 
 WORDS: dict[StopReason, ReasonWords] = {
-    StopReason.MEMORY_GUARD: ReasonWords(
-        "Stopped: this agent used too much memory",
-        "Send again; try a smaller task",
-        restart_helps=True,
-    ),
     StopReason.BOX_RESTARTED: ReasonWords(
         "Your cloud restarted", "Send again if a reply was cut off"
     ),
@@ -128,9 +110,6 @@ WORDS: dict[StopReason, ReasonWords] = {
     ),
     StopReason.WAITING_TOO_LONG: ReasonWords(
         "Still waiting for room after {minutes} minutes", "Try again later"
-    ),
-    StopReason.DAILY_CAP_REACHED: ReasonWords(
-        "Today's AI limit reached", "It resets at the time shown"
     ),
     StopReason.BUDGET_REACHED: ReasonWords(
         "A budget for this agent has been reached",
@@ -152,19 +131,15 @@ WORDS: dict[StopReason, ReasonWords] = {
     ),
 }
 
-# The room lines Core posts, as the agent. `memory_guard` and `waiting_too_long` are posted by the box, which
+# The room lines Core posts, as the agent. `waiting_too_long` is posted by the box, which
 # knows first; `budget_reached` is BudgetGuard's existing refusal; `box_moved` only when a reply was cut off.
 # The owner is named as the existing auto-replies do ("my owner (@handle)", or "my owner" with no handle on
-# the room's bridge); `{resets}` is a UTC time. Both are filled by Core: never agent text.
+# the room's bridge), filled by Core: never agent text.
 ROOM_LINES: dict[StopReason, str] = {
     StopReason.BOX_RESTARTED: "I was restarted while working on this and lost my reply. Please send it again.",
     StopReason.BOX_MOVED: (
         "My cloud moved to another machine while I was working on this, and my reply was cut off. "
         "Please send it again."
-    ),
-    StopReason.DAILY_CAP_REACHED: (
-        "{owner_ref} has reached today's AI limit, so I can't start on this. It resets at {resets}. "
-        "Send it again after that."
     ),
     StopReason.PAUSED_BY_SWITCH: (
         "Switch has paused hosted agents for {owner_ref_lower}, so I can't answer. This message won't be "
@@ -184,9 +159,7 @@ ROOM_LINE_EVERY_BY_CODE: dict[StopReason, timedelta] = {
     StopReason.TURNED_OFF_BY_ADMIN: timedelta(hours=1),
 }
 # `login_needed` is the box's existing start-failure line, posted by the box.
-BOX_POSTS = frozenset(
-    {StopReason.MEMORY_GUARD, StopReason.WAITING_TOO_LONG, StopReason.LOGIN_NEEDED}
-)
+BOX_POSTS = frozenset({StopReason.WAITING_TOO_LONG, StopReason.LOGIN_NEEDED})
 
 
 def heading(code: StopReason, wait_limit_minutes: int = 10) -> str:
@@ -194,9 +167,7 @@ def heading(code: StopReason, wait_limit_minutes: int = 10) -> str:
     return WORDS[code].heading.format(minutes=wait_limit_minutes)
 
 
-def room_line(
-    code: StopReason, owner_handle: str | None, resets_at: datetime | None = None
-) -> str | None:
+def room_line(code: StopReason, owner_handle: str | None) -> str | None:
     """The line Core posts for a reason, or None where the box or BudgetGuard posts it instead.
     `owner_handle` is the owner's handle on the room's bridge (no "@"), or None, as `owner_handle_in`
     gives it."""
@@ -204,11 +175,7 @@ def room_line(
     if template is None:
         return None
     ref = f"my owner (@{owner_handle})" if owner_handle else "my owner"
-    # The gateway counts calls per UTC day, so the cap always resets at 00:00 UTC.
-    resets = resets_at.strftime("%H:%M UTC") if resets_at is not None else "00:00 UTC"
-    return template.format(
-        owner_ref=ref[0].upper() + ref[1:], owner_ref_lower=ref, resets=resets
-    )
+    return template.format(owner_ref=ref[0].upper() + ref[1:], owner_ref_lower=ref)
 
 
 def room_line_due(

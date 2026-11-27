@@ -376,13 +376,13 @@ def memory_total_bytes(machine: CloudMachine) -> int | None:
     return total
 
 
-def box_awake(reports: list[dict], now: datetime) -> AwakeCount | None:
+def box_awake(reports: list[dict]) -> AwakeCount | None:
     """Sessions awake on the box out of its limit, from each workspace
     controller's last report (as the owner's Your cloud reads it): running
     added up, the limit the box's own. Null when no controller reports both."""
     counts = [
         figures
-        for figures in (your_cloud(report, now)["awake"] for report in reports)
+        for figures in (your_cloud(report)["awake"] for report in reports)
         if figures is not None
     ]
     if not counts:
@@ -505,7 +505,7 @@ async def shared_cloud_overview(
                 memory_used_bytes=memory_used_bytes(box),
                 restarts_today=restarts_today(box, now),
                 memory_total_bytes=memory_total_bytes(box),
-                awake=box_awake(reports, now),
+                awake=box_awake(reports),
                 active_at=_iso(box.active_at),
                 heartbeat_at=_iso(box.heartbeat_at),
                 running_observed_at=_iso(box.running_observed_at),

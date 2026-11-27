@@ -568,17 +568,15 @@ machine: `vm` for a v1 machine, `box` for a hosted agents v2 box.
   report older than 3 minutes is left out rather than reported as it was.
 - Agents, stopped agents, sessions, machines expected and reporting, memory
   and disk used, provider logins and provisioning time are reported for both
-  kinds, by `backend`. The rest (restarts, out-of-memory kills, waiting for
-  room, the valve, the gateway, evictions, guard stops and valve parks) are
-  boxes' only, with no `backend`.
+  kinds, by `backend`. The rest (restarts, waiting for room, the valve, the
+  gateway, evictions and valve parks) are boxes' only, with no `backend`.
 - A v1 machine reports no session state, so `switch.hosted.agents` always has
   `session:none` for it: chart it by `process`.
 - `switch.hosted.box_memory_used` is recorded once per machine report: a
   machine serving several workspaces sends its memory in each workspace's
   report, and only the first fresh one, by workspace id, is counted.
-- `switch.hosted.guard_stops` and `switch.hosted.valve_parks` are counts of the
-  rise in each box's since-start figures, so a controller restart reads as a
-  reset, not a drop.
+- `switch.hosted.valve_parks` counts the rise in each box's since-start
+  figure, so a controller restart reads as a reset, not a drop.
 - **A silent machine** is `switch.hosted.boxes_reporting` below
   `switch.hosted.boxes_expected`. Machines stopped by their owner or for
   idleness, and boxes paused or turned off, are not expected, so they don't
@@ -680,8 +678,7 @@ machine: `vm` for a v1 machine, `box` for a hosted agents v2 box.
   service isn't restarted for that (exit codes 3 and 6), so each revoked
   controller adds about one refusal: 30 is well above a normal day, and
   reached only by a large revoke or by someone trying credentials.
-- Two box alerts, low urgency: 3 or more memory guard stops, and 3 or more
-  evictions, in 30 minutes.
+- A box alert, low urgency: 3 or more evictions in 30 minutes.
 - `switch.hosted.alerts_open` counts the operator alerts open now, by condition
   only. Which box, machine or service is on the operator's Alerts tab, never
   in Datadog.

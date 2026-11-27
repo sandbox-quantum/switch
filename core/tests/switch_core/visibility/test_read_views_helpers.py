@@ -259,7 +259,7 @@ def test_awake_adds_up_each_controller_and_keeps_the_box_s_limit() -> None:
         {"machine": {"sessions_running": 2, "sessions_max": 12}},
         {"machine": {"sessions_running": 1, "sessions_max": 12}},
     ]
-    assert box_awake(reports, NOW) == AwakeCount(running=3, max=12)
+    assert box_awake(reports) == AwakeCount(running=3, max=12)
 
 
 @pytest.mark.parametrize(
@@ -273,7 +273,7 @@ def test_awake_adds_up_each_controller_and_keeps_the_box_s_limit() -> None:
     ],
 )
 def test_awake_is_null_without_a_sound_report(reports) -> None:
-    assert box_awake(reports, NOW) is None
+    assert box_awake(reports) is None
 
 
 # --- each box's disk on the operator's overview ------------------------------------------------

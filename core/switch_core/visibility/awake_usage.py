@@ -1,5 +1,4 @@
-"""Hosted usage from status reports: awake minutes per agent,
-and the box's AI calls (display only).
+"""Hosted usage from status reports: awake minutes per agent.
 
 On each status report Core accepts from a hosted box, every agent the report
 shows awake (`session` active or waking) is counted the minute boundaries
@@ -26,7 +25,7 @@ splits every hosted box).
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -88,102 +87,3 @@ async def record_awake_minutes(
             amount=minutes,
         )
     return minutes
-
-
-# ── Hosted AI calls (display only) ──────────────────────────────────────────
-
-# The most one report may add when the box reports no daily cap. A box reports
-# every ~20 s, so this is far above any honest rise.
-MAX_CALLS_PER_REPORT = 1_000
-
-
-def _count(machine: Mapping[str, Any] | None, key: str) -> int | None:
-    value = (machine or {}).get(key)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return None
-    return value
-
-
-def calls_rise(
-    *,
-    previous_seen_at: datetime | None,
-    seen_at: datetime,
-    previous: int | None,
-    current: int | None,
-    daily_cap: int | None,
-) -> int:
-    """The calls to count for this report: the rise in the box's count for
-    today, counted from 0 on a new UTC day or when the count falls (a
-    controller restart), and clamped to the day's cap, or to a fixed bound
-    where the box reports none. The box reports this figure, so Core only
-    shows it, never enforces it."""
-    if current is None or previous_seen_at is None:
-        return 0
-    same_day = previous_seen_at.astimezone(UTC).date() == seen_at.astimezone(UTC).date()
-    if previous is None or not same_day or current < previous:
-        rise = current
-    else:
-        rise = current - previous
-    bound = (
-        daily_cap if daily_cap is not None and daily_cap > 0 else MAX_CALLS_PER_REPORT
-    )
-    return max(0, min(rise, bound))
-
-
-def _agent_counts(
-    agents: Iterable[Mapping[str, Any]] | None, bound: Mapping[str, str]
-) -> dict[str, int]:
-    """Client id → `ai_calls_today`, for the bound agents that report one."""
-    counts: dict[str, int] = {}
-    for entry in agents or []:
-        agent_id = entry.get("agent_id")
-        client_id = bound.get(agent_id) if isinstance(agent_id, str) else None
-        value = _count(entry, "ai_calls_today")
-        if client_id and value is not None:
-            counts[client_id] = value
-    return counts
-
-
-async def record_hosted_ai_calls(
-    session: AsyncSession,
-    *,
-    tenant_id: str,
-    previous_seen_at: datetime | None,
-    seen_at: datetime,
-    previous_status: Mapping[str, Any] | None,
-    status: Mapping[str, Any] | None,
-    bound: Mapping[str, str],
-    usage: UsageStore | None = None,
-) -> int:
-    """Count this report's AI calls, per agent, under each agent's own
-    `client_id`, from `agents[].ai_calls_today`. Returns the calls counted.
-
-    Only the per-agent count is used. A box can serve several workspaces, and
-    its box-wide `gateway_calls_today` covers all of them, so filing that under
-    any one workspace would count the same calls in each. A report
-    without per-agent counts adds nothing.
-    """
-    store = usage or UsageStore()
-    daily_cap = _count((status or {}).get("machine"), "gateway_daily_cap")
-    current = _agent_counts((status or {}).get("agents"), bound)
-    previous = _agent_counts((previous_status or {}).get("agents"), bound)
-    total = 0
-    for client_id, count in current.items():
-        rise = calls_rise(
-            previous_seen_at=previous_seen_at,
-            seen_at=seen_at,
-            previous=previous.get(client_id),
-            current=count,
-            daily_cap=daily_cap,
-        )
-        if rise:
-            await store.record(
-                session,
-                tenant_id=tenant_id,
-                metric=UsageMetric.HOSTED_AI_CALLS,
-                client_id=client_id,
-                model="",
-                amount=rise,
-            )
-            total += rise
-    return total

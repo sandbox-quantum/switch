@@ -781,8 +781,11 @@ class TestManagedAgents:
                 "restarts_10m": 0,
                 "oom_kills": 1,
                 "since": "2026-01-01T00:00:00Z",
+                # What a box made before the memory guard went reports for an
+                # agent it stopped: no longer a reason of its own.
                 "reason": "out_of_memory",
                 "detail": "a planted marker phrase the owner's agent wrote",
+                "let_go": {"at": "2026-01-01T00:00:00Z", "reason": "timed_out"},
             }
             await report_status(
                 client, controller, 2, providers=[provider("claude")], agents=[stopped]
@@ -793,7 +796,7 @@ class TestManagedAgents:
         assert healthy.json()["stop_reason"] is None
         (entry,) = [a for a in listed.json() if a["agent_id"] == agent_id]
         assert entry["stop_reason"] == {
-            "code": "memory_guard",
+            "code": "waiting_too_long",
             "since": "2026-01-01T00:00:00+00:00",
             "reset_at": None,
         }

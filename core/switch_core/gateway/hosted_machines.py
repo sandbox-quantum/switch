@@ -1,5 +1,5 @@
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -122,7 +122,6 @@ def _usage(heartbeat: dict | None, key: str) -> dict | None:
 # the status schema's, so a figure outside them reads as not reported.
 _MAX_BYTES = 1 << 50
 _MAX_SESSIONS = 1000
-_MAX_CALLS = 1_000_000_000
 
 
 def _bounded(value: object, top: int, *, low: int = 0) -> int | None:
@@ -131,25 +130,15 @@ def _bounded(value: object, top: int, *, low: int = 0) -> int | None:
     return value if low <= value <= top else None
 
 
-def next_utc_midnight(now: datetime) -> datetime:
-    """When the gateway's daily count resets: the next 00:00 UTC."""
-    today = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-    return today + timedelta(days=1)
-
-
-def your_cloud(status: dict | None, now: datetime) -> dict:
-    """Your cloud's figures, from the workspace
-    controller's last report: room to work, sessions awake, and AI calls today
-    against the cap. Each is null when the report doesn't carry it."""
+def your_cloud(status: dict | None) -> dict:
+    """Your cloud's figures, from the workspace controller's last report: room
+    to work and sessions awake. Each is null when the report doesn't carry it."""
     machine = (status or {}).get("machine")
     machine = machine if isinstance(machine, dict) else {}
     total = _bounded(machine.get("mem_total_bytes"), _MAX_BYTES, low=1)
     free = _bounded(machine.get("mem_free_bytes"), _MAX_BYTES)
     running = _bounded(machine.get("sessions_running"), _MAX_SESSIONS)
     most = _bounded(machine.get("sessions_max"), _MAX_SESSIONS)
-    cap = _bounded(machine.get("gateway_daily_cap"), _MAX_CALLS, low=1)
-    used = _bounded(machine.get("gateway_calls_today"), _MAX_CALLS)
-    capped = machine.get("gateway_capped")
     return {
         "room": None
         if total is None or free is None
@@ -157,14 +146,6 @@ def your_cloud(status: dict | None, now: datetime) -> dict:
         "awake": None
         if running is None or most is None
         else {"running": running, "max": most},
-        "ai_calls_today": None
-        if cap is None or used is None
-        else {
-            "used": used,
-            "cap": cap,
-            "capped": capped is True or used >= cap,
-            "resets_at": next_utc_midnight(now).isoformat(),
-        },
     }
 
 
@@ -252,11 +233,7 @@ async def machine_summary(
         # absent, as before v2.
         **({"start": start_summary(machine, state)} if v2 else {}),
         # Your cloud: from this workspace's controller only.
-        **(
-            your_cloud(None if controller is None else controller.status, now)
-            if v2
-            else {}
-        ),
+        **(your_cloud(None if controller is None else controller.status) if v2 else {}),
     }
 
 

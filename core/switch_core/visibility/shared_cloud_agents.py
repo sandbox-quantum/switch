@@ -22,7 +22,6 @@ from switch_core.visibility.stop_reasons import AgentStopReason
 _UNAVAILABLE_CODES = {
     StopReason.LOGIN_NEEDED,
     StopReason.CANT_REACH,
-    StopReason.DAILY_CAP_REACHED,
     StopReason.BUDGET_REACHED,
 }
 
@@ -53,8 +52,6 @@ def shared_cloud_agent(
             return unavailable(turned_off=True, stop_reason=code.value)
         if code in _UNAVAILABLE_CODES:
             return unavailable(stop_reason=code.value, reset_at=reset)
-        if code == StopReason.MEMORY_GUARD:
-            return unavailable(memory_stopped=True, stop_reason=code.value)
     entry = entry or {}
     process = entry.get("process")
     if process == "failed":
@@ -81,9 +78,6 @@ def shared_cloud_agent(
             return {**base, "state": "resting"}
         if box.desired_state == "running" and box.state != "ready":
             return {**base, "state": "waking", "box_starting": True}
-    if process == "stopped" and entry.get("reason") == "out_of_memory":
-        # The memory guard stopped only this agent, where no reason was passed.
-        return unavailable(memory_stopped=True)
     waiting = entry.get("waiting_for_room")
     if (
         isinstance(waiting, dict)

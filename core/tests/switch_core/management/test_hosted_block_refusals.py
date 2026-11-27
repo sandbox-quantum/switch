@@ -462,11 +462,7 @@ async def test_a_cloud_status_report_records_v2_usage_only_for_a_v2_box(
         recorded.append("awake")
         return 0
 
-    async def _calls(*_a, **_k) -> None:
-        recorded.append("calls")
-
     monkeypatch.setattr(service_module, "record_awake_minutes", _awake)
-    monkeypatch.setattr(service_module, "record_hosted_ai_calls", _calls)
     controller = await _cloud_controller(harness, f"usage-{on}-{backend}")
     await _on_machine(harness, controller, backend)
     async with harness.client() as client:
@@ -474,7 +470,7 @@ async def test_a_cloud_status_report_records_v2_usage_only_for_a_v2_box(
     assert response.status_code == 200, response.text
     v2_box = on and backend == "box"
     assert ("wait_limit_seconds" in response.json()) is v2_box
-    assert recorded == (["awake", "calls"] if v2_box else [])
+    assert recorded == (["awake"] if v2_box else [])
 
 
 # The five other guard sites: each door refuses a box's

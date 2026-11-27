@@ -4688,23 +4688,19 @@ class UsageMetric(StrEnum):
     # Hosted agents. Minutes an agent was awake, per agent,
     # from its controller's status reports; a budget may cap it.
     AWAKE_MINUTES = "awake_minutes"
-    # AI calls through a hosted box's gateway, from the count the box reports.
-    # A budget on it is the hosted daily cap, which the gateway enforces; Core
-    # never enforces it (`GATEWAY_ENFORCED_METRICS`), because the count comes
-    # from the box.
+    # AI calls through a hosted box's gateway, as boxes with a daily call cap
+    # counted them. Nothing counts them now; the value stays so usage and
+    # budget rows already stored still read (`RETIRED_METRICS`).
     HOSTED_AI_CALLS = "hosted_ai_calls"
 
 
-# Budgets on these are enforced where the work happens (the gateway), never by
-# `BudgetGuard` from usage a box reports.
-GATEWAY_ENFORCED_METRICS: frozenset[UsageMetric] = frozenset(
-    {UsageMetric.HOSTED_AI_CALLS}
-)
-# What the budgets API lets an admin create today. The hosted daily cap joins
-# it with the cap-from-budget set, once the gateway reads it; until then a
-# budget nothing enforces would only mislead.
+# Metrics nothing records or enforces any more: rows already stored read as
+# before, `BudgetGuard` never enforces a budget on one, and the budgets API
+# refuses a new one.
+RETIRED_METRICS: frozenset[UsageMetric] = frozenset({UsageMetric.HOSTED_AI_CALLS})
+# What the budgets API lets an admin create.
 BUDGET_METRICS: tuple[UsageMetric, ...] = tuple(
-    m for m in UsageMetric if m not in GATEWAY_ENFORCED_METRICS
+    m for m in UsageMetric if m not in RETIRED_METRICS
 )
 # What is counted per model; a budget on anything else names no model.
 PER_MODEL_METRICS: frozenset[UsageMetric] = frozenset(
@@ -4763,10 +4759,6 @@ class TenantUsage(TenantScoped, Base):
 # and the gateway's numbers from overflowing.
 MAX_BUDGET_PERIOD_HOURS = 8784
 MAX_BUDGET_AMOUNT = 2**53 - 1
-# The hosted daily AI cap set from a budget: a whole day, at
-# most this many calls. The gateway holds it again to its own floor and ceiling.
-DAILY_CAP_PERIOD_HOURS = 24
-MAX_DAILY_CAP = 1_000_000
 
 
 class UsageBudget(TenantScoped, Base):

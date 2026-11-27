@@ -1,7 +1,7 @@
 """Where the stop reasons come from: what Core already holds, gathered once per list of agents.
 
-- the controller row and its leases (already loaded for the list): offline since, the status report's agent entry
-  (a memory stop, a let-go for waiting too long) and its machine block (the daily cap);
+- the controller row and its leases (already loaded for the list): offline since, and the status report's agent
+  entry (a let-go for waiting too long);
 - `BudgetStore.standings`, one query for the tenant: a budget covering the agent that's used up;
 - `audit_events`, one query: the last restart notice per agent;
 - `session_activity_items`, one query: each agent's last finished reply;
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -179,11 +179,6 @@ def _login_missing_since(
     return None
 
 
-def _next_utc_midnight(now: datetime) -> datetime:
-    """The gateway counts calls per UTC day, so the daily cap resets at the next UTC midnight."""
-    return datetime(now.year, now.month, now.day, tzinfo=UTC) + timedelta(days=1)
-
-
 def _offline_on_purpose(box: CloudMachine | None) -> bool:
     """A box asleep after a quiet spell, stopped by its owner, or starting: its controller is
     offline on purpose, and the card says Resting or Back in a moment, never `cant_reach`."""
@@ -205,10 +200,6 @@ def reason_inputs(
 
     entry = agent_entry(controller, agent.id) or {}
     status = (controller.status or {}) if controller is not None else {}
-    # Bound to a name before the check, so the type narrows: a box could put anything here.
-    raw_machine = status.get("machine")
-    machine: dict[str, Any] = raw_machine if isinstance(raw_machine, dict) else {}
-    capped = machine.get("gateway_capped") is True
     raw_let_go = entry.get("let_go")
     let_go: dict[str, Any] = raw_let_go if isinstance(raw_let_go, dict) else {}
     exhausted = [
@@ -234,17 +225,8 @@ def reason_inputs(
             if reachable_check and controller and leases
             else None
         ),
-        # Core records no "capped since"; the report that says so is the nearest time it has.
-        capped_since=(_time(status.get("observed_at")) or now) if capped else None,
-        cap_resets_at=_next_utc_midnight(now) if capped else None,
         budget_reached=bool(exhausted),
         budget_resets_at=max((s.resets_at for s in exhausted), default=None),
-        memory_stopped_since=(
-            _time(entry.get("since")) or now
-            if entry.get("process") == "stopped"
-            and entry.get("reason") == "out_of_memory"
-            else None
-        ),
         let_go_at=_time(let_go.get("at"))
         if let_go.get("reason") == "timed_out"
         else None,

@@ -13,10 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.budgets import BudgetExceeded, BudgetGuard, enforce_awake_budgets
 from switch_core.db.models import TENANT_ZERO_ID, TenantUsage, UsageMetric
 from switch_core.db.stores.budget_store import BudgetStore
-from switch_core.visibility.awake_usage import (
-    record_awake_minutes,
-    record_hosted_ai_calls,
-)
+from switch_core.db.stores.usage_store import UsageStore
+from switch_core.visibility.awake_usage import record_awake_minutes
 from tests.switch_core.db.stores.test_budget_store import _agent
 
 T0 = datetime(2026, 10, 29, 12, 0, 30, tzinfo=UTC)
@@ -116,75 +114,12 @@ async def test_awake_minutes_trip_an_awake_time_budget(
             )
 
 
-async def test_hosted_ai_calls_are_counted_per_agent(
+async def test_core_never_enforces_an_old_hosted_ai_calls_budget(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Each agent's rise in `ai_calls_today` is filed under its own client id;
-    an unbound agent is ignored, and the box-wide count is never used."""
-    async with session_factory() as session:
-        a = await _agent(session, "calls-a")
-        b = await _agent(session, "calls-b")
-        bound = {a.id: a.client_id, b.id: b.client_id}
-        written = await record_hosted_ai_calls(
-            session,
-            tenant_id=TENANT_ZERO_ID,
-            previous_seen_at=T0,
-            seen_at=T0 + timedelta(seconds=20),
-            previous_status={
-                "agents": [{"agent_id": a.id, "ai_calls_today": 4}],
-                "machine": {"gateway_calls_today": 4},
-            },
-            status={
-                "agents": [
-                    {"agent_id": a.id, "ai_calls_today": 6},
-                    {"agent_id": b.id, "ai_calls_today": 1},
-                    {"agent_id": "not-bound", "ai_calls_today": 99},
-                ],
-                "machine": {"gateway_calls_today": 106, "gateway_daily_cap": 200},
-            },
-            bound=bound,
-        )
-        await session.commit()
-        rows = sorted(
-            (
-                await session.execute(
-                    select(TenantUsage.client_id, TenantUsage.amount).where(
-                        TenantUsage.metric == UsageMetric.HOSTED_AI_CALLS
-                    )
-                )
-            ).all()
-        )
-    assert written == 3
-    assert rows == sorted([(a.client_id, 2), (b.client_id, 1)])
-
-
-async def test_a_box_wide_count_alone_adds_nothing(
-    session_factory: async_sessionmaker[AsyncSession],
-) -> None:
-    """A box serving several workspaces reports one box-wide count; filing it
-    under any one of them would count the same calls in each, so only
-    per-agent counts are used."""
-    async with session_factory() as session:
-        written = await record_hosted_ai_calls(
-            session,
-            tenant_id=TENANT_ZERO_ID,
-            previous_seen_at=T0,
-            seen_at=T0 + timedelta(seconds=20),
-            previous_status={"machine": {"gateway_calls_today": 10}},
-            status={"machine": {"gateway_calls_today": 13, "gateway_daily_cap": 200}},
-            bound={},
-        )
-        await session.commit()
-        assert written == 0
-        assert (await session.execute(select(TenantUsage))).scalars().all() == []
-
-
-async def test_core_never_enforces_the_hosted_daily_cap(
-    session_factory: async_sessionmaker[AsyncSession],
-) -> None:
-    """A `hosted_ai_calls` budget is the gateway's daily cap. Even exhausted,
-    `BudgetGuard` ignores it: Core never enforces a count the box reports
-    (it stays a budget row on purpose)."""
+    """A `hosted_ai_calls` budget and the usage older boxes reported under it
+    are still stored and read, but nothing counts that metric any more, and
+    `BudgetGuard` never enforces it, however used up it reads."""
     store = BudgetStore()
     guard = BudgetGuard(store)
     async with session_factory() as session:
@@ -198,14 +133,13 @@ async def test_core_never_enforces_the_hosted_daily_cap(
             amount_limit=2,
             period_hours=24,
         )
-        await record_hosted_ai_calls(
+        await UsageStore().record(
             session,
             tenant_id=TENANT_ZERO_ID,
-            previous_seen_at=T0,
-            seen_at=T0 + timedelta(seconds=20),
-            previous_status={"agents": [{"agent_id": agent.id, "ai_calls_today": 0}]},
-            status={"agents": [{"agent_id": agent.id, "ai_calls_today": 9}]},
-            bound={agent.id: agent.client_id},
+            metric=UsageMetric.HOSTED_AI_CALLS,
+            client_id=agent.client_id,
+            model="",
+            amount=9,
         )
         await session.commit()
         [standing] = await store.standings(

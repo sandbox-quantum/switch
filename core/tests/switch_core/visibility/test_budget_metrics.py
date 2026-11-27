@@ -1,6 +1,5 @@
-"""Which budgets the API creates: awake minutes yes; the hosted daily
-cap (`hosted_ai_calls`) only as the gateway's cap (every agent, no model, 24
-hours, 1 to 1,000,000), which the gateway enforces and Core never does."""
+"""Which budgets the API creates: awake minutes yes; `hosted_ai_calls`, the
+removed daily AI cap's metric, never."""
 
 from __future__ import annotations
 
@@ -29,41 +28,23 @@ def test_an_awake_time_budget_is_accepted() -> None:
     assert _request("awake_minutes").metric is UsageMetric.AWAKE_MINUTES
 
 
-def _daily_cap(**changes: object) -> BudgetCreateRequest:
-    terms: dict[str, object] = {
-        "agent_id": None,
-        "metric": "hosted_ai_calls",
-        "model": "",
-        "amount_limit": 300,
-        "period_hours": 24,
-    }
-    terms.update(changes)
-    return BudgetCreateRequest(**terms)  # type: ignore[arg-type]
-
-
-def test_the_hosted_daily_cap_is_created_only_as_the_gateway_s_cap() -> None:
-    """Still never enforced by Core (not in BUDGET_METRICS),
-    but the admin can set it as one number a day for every agent."""
-    assert UsageMetric.HOSTED_AI_CALLS not in BUDGET_METRICS
-    assert _daily_cap().amount_limit == 300
-    assert _daily_cap(amount_limit=1_000_000).amount_limit == 1_000_000
-
-
 @pytest.mark.parametrize(
-    ("changes", "message"),
-    [
-        ({"agent_id": "agent-1"}, "every agent"),
-        ({"model": "claude-x"}, "every agent"),
-        ({"period_hours": 720}, "per day"),
-        ({"period_hours": 1}, "per day"),
-        ({"amount_limit": 1_000_001}, "1 to 1000000"),
-    ],
+    ("amount_limit", "period_hours"), [(300, 24), (1_000_000, 24), (600, 720)]
 )
-def test_anything_else_on_the_daily_cap_is_refused(
-    changes: dict[str, object], message: str
+def test_a_hosted_ai_calls_budget_is_refused(
+    amount_limit: int, period_hours: int
 ) -> None:
-    with pytest.raises(ValidationError, match=message):
-        _daily_cap(**changes)
+    """The daily AI cap is gone, so nothing would count or enforce such a
+    budget: the API refuses a new one, whatever its terms."""
+    assert UsageMetric.HOSTED_AI_CALLS not in BUDGET_METRICS
+    with pytest.raises(ValidationError, match="can't be set here"):
+        BudgetCreateRequest(
+            agent_id=None,
+            metric="hosted_ai_calls",  # type: ignore[arg-type]
+            model="",
+            amount_limit=amount_limit,
+            period_hours=period_hours,
+        )
 
 
 @pytest.mark.parametrize("metric", ["messages", "turns", "awake_minutes"])

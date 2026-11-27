@@ -78,7 +78,6 @@ from switch_core.db.stores.budget_store import (
     BudgetNotFound,
     BudgetStanding,
     BudgetStore,
-    bump_hosted_controllers,
 )
 from switch_core.db.stores.erasure_store import (
     ErasureAlreadyQueued,
@@ -197,7 +196,6 @@ from switch_core.gateway.schemas import (
     UnansweredRoom,
     UsageTotalResponse,
     WorkspaceCountsResponse,
-    daily_cap_problem,
 )
 from switch_core.gateway.service_connections import service_refusal
 from switch_core.gateway.workspace_creation import (
@@ -1000,29 +998,6 @@ async def _audit_budget(
     )
 
 
-def _nudge_controllers(
-    request: Request, tenant_id: str, revisions: dict[str, int]
-) -> None:
-    """After the commit: tell the workspace's hosted controllers their
-    assignment changed (the daily cap). The wiring in `switch_core.main`
-    hands the gateway this hook, so this module needn't import management."""
-    nudge = getattr(request.app.state, "assignment_nudge", None)
-    if nudge is None:
-        return
-    for controller_id, revision in revisions.items():
-        nudge(tenant_id, controller_id, revision)
-
-
-async def _daily_cap_changed(
-    session: AsyncSession, tenant_id: str, metric: str
-) -> dict[str, int]:
-    """Bump the workspace's hosted controllers when the daily AI cap changes.
-    With hosted agents v2 off, none, as before v2."""
-    if not process_hosted_v2() or metric != UsageMetric.HOSTED_AI_CALLS.value:
-        return {}
-    return await bump_hosted_controllers(session, tenant_id)
-
-
 async def _budget_row(
     session: AsyncSession, tenant_id: str, budget_id: str
 ) -> UsageBudget | None:
@@ -1059,7 +1034,6 @@ async def create_budget(
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     user: Annotated[User, Depends(require_tenant_admin)],
-    request: Request,
 ) -> BudgetResponse:
     """Add a budget to the bound tenant. Admins only.
 
@@ -1104,9 +1078,7 @@ async def create_budget(
         budget_id=budget.id,
         details={"after": _budget_terms(budget)},
     )
-    revisions = await _daily_cap_changed(session, tenant_id, budget.metric)
     await session.commit()
-    _nudge_controllers(request, tenant_id, revisions)
     return await _budget_standing(session, budget_store, tenant_id, budget.id)
 
 
@@ -1118,30 +1090,18 @@ async def update_budget(
     session: Annotated[AsyncSession, Depends(get_session)],
     budget_store: Annotated[BudgetStore, Depends(get_budget_store)],
     user: Annotated[User, Depends(require_tenant_admin)],
-    request: Request,
 ) -> BudgetResponse:
     """Change a budget's limit and period. Admins only. What it
     covers is fixed; to cover something else, add another budget."""
     _require_bound_tenant(tenant_id)
-    # Only v2 needs the row before the change (its audit entry, the daily cap
-    # and the nudge); with v2 off, no extra read, as before v2.
+    # Only v2 needs the row before the change (its audit entry); with v2 off,
+    # no extra read, as before v2.
     before = (
         await _budget_row(session, tenant_id, budget_id)
         if process_hosted_v2()
         else None
     )
     before_terms = None if before is None else _budget_terms(before)
-    if before is not None and before.metric == UsageMetric.HOSTED_AI_CALLS.value:
-        # The daily AI cap stays daily.
-        try:
-            daily_cap_problem(
-                agent_id=None,
-                model="",
-                amount_limit=body.amount_limit,
-                period_hours=body.period_hours,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         updated = await budget_store.update(
             session,
@@ -1160,9 +1120,7 @@ async def update_budget(
         budget_id=budget_id,
         details={"before": before_terms, "after": _budget_terms(updated)},
     )
-    revisions = await _daily_cap_changed(session, tenant_id, updated.metric)
     await session.commit()
-    _nudge_controllers(request, tenant_id, revisions)
     return await _budget_standing(session, budget_store, tenant_id, budget_id)
 
 
@@ -1173,12 +1131,11 @@ async def delete_budget(
     session: Annotated[AsyncSession, Depends(get_session)],
     budget_store: Annotated[BudgetStore, Depends(get_budget_store)],
     user: Annotated[User, Depends(require_tenant_admin)],
-    request: Request,
 ) -> Response:
     """Remove a budget. Admins only."""
     _require_bound_tenant(tenant_id)
-    # Only v2 needs the row before the change (its audit entry, the daily cap
-    # and the nudge); with v2 off, no extra read, as before v2.
+    # Only v2 needs the row before the change (its audit entry); with v2 off,
+    # no extra read, as before v2.
     before = (
         await _budget_row(session, tenant_id, budget_id)
         if process_hosted_v2()
@@ -1197,13 +1154,7 @@ async def delete_budget(
         budget_id=budget_id,
         details={"before": before_terms},
     )
-    revisions = (
-        {}
-        if before is None
-        else await _daily_cap_changed(session, tenant_id, before.metric)
-    )
     await session.commit()
-    _nudge_controllers(request, tenant_id, revisions)
     return Response(status_code=204)
 
 

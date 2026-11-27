@@ -1519,9 +1519,6 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     )
     # What deleting an account needs of it: revoking the person's machines.
     gateway_app.state.controller_revoker = management.service
-    # A budget route that changes the daily AI cap nudges the
-    # workspace's hosted controllers, without importing management itself.
-    gateway_app.state.assignment_nudge = management.service.signals.assignment_changed
     # Before the bridge serves: until Core knows which agents a controller
     # runs, their own keys would be let in and their presence misread.
     await management.load_bindings()

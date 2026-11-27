@@ -622,8 +622,8 @@ class TestCatalogueAdditions:
 
 
 # ── Hosted agents v2 boxes ───────────────────────────────────────────────────
-# What only a box reports (restarts, the memory guard, the valve, the provider
-# gateway), kept apart from v1 machines' counts.
+# What only a box reports (restarts, the valve, the provider gateway), kept
+# apart from v1 machines' counts.
 
 
 def _box_summary(machine: dict[str, Any], agents: list[Any]) -> dict[str, Any]:
@@ -683,11 +683,10 @@ class TestBoxOnlySummary:
                 sessions_max=10**12,
                 gateway_agents=True,
                 gateway_refused=-4,
-                guard_stops=3,
                 valve_parks=10**9,
             ),
             [
-                _box_agent(restarts_10m=10**12, oom_kills="7"),
+                _box_agent(restarts_10m=10**12),
                 _box_agent(restarts_10m=MAX_COUNT),
             ],
         )
@@ -695,14 +694,17 @@ class TestBoxOnlySummary:
         assert summary["gateway_agents"] == 0
         assert summary["gateway_refused"] == 0
         assert summary["restarts_10m"] == MAX_COUNT
-        assert summary["oom_kills"] == 0
-        assert summary["guard_stops"] == 3
         assert summary["valve_parks"] == MAX_COUNT
 
-    def test_missing_since_start_counts_stay_missing(self) -> None:
-        summary = _box_summary(_machine(), [])
-        assert summary["guard_stops"] is None
-        assert summary["valve_parks"] is None
+    def test_an_old_box_s_guard_and_cap_figures_are_not_kept(self) -> None:
+        summary = _box_summary(
+            _machine(guard_stops=3, gateway_capped=True),
+            [_box_agent(oom_kills=7)],
+        )
+        assert not {"guard_stops", "gateway_capped", "oom_kills"} & set(summary)
+
+    def test_a_missing_since_start_count_stays_missing(self) -> None:
+        assert _box_summary(_machine(), [])["valve_parks"] is None
 
     def test_a_v1_machine_keeps_no_box_only_field(self) -> None:
         summary = box_summary(
@@ -778,7 +780,12 @@ class TestBoxSnapshot:
         registry.register_observer(lambda: snapshot_readings(snap))
         # Collecting validates every name and attribute set against the catalogue.
         gauges = _points(registry)
-        assert ({"kind": "capped_boxes"}, 1.0) in gauges["switch.hosted.gateway"]
+        assert {a["kind"] for a, _v in gauges["switch.hosted.gateway"]} == {
+            "agents",
+            "refused",
+        }
+        assert "switch.hosted.guard_stops" not in gauges
+        assert "switch.hosted.agent_oom_kills" not in gauges
         assert ({"state": "unprotected"}, 1.0) in gauges[
             "switch.hosted.boxes_valve_memory"
         ]
@@ -795,50 +802,45 @@ def _sampler() -> HostedSampler:
 
 
 class TestRises:
-    def _rises(
+    def _parks(
         self, registry: MetricsRegistry, sampler: HostedSampler, **counts
-    ) -> dict:
+    ) -> float:
         sampler._record_rises(counts)
         points = _points(registry)
-        return {
-            "guard": sum(v for _a, v in points.get("switch.hosted.guard_stops", [])),
-            "parks": sum(v for _a, v in points.get("switch.hosted.valve_parks", [])),
-        }
+        assert "switch.hosted.guard_stops" not in points
+        return sum(v for _a, v in points.get("switch.hosted.valve_parks", []))
 
     def test_the_first_sight_is_a_baseline(self, registry: MetricsRegistry) -> None:
         sampler = _sampler()
-        assert self._rises(registry, sampler, a=(5, 9)) == {"guard": 0, "parks": 0}
+        assert self._parks(registry, sampler, a=9) == 0
 
     def test_a_rise_is_counted_once(self, registry: MetricsRegistry) -> None:
         sampler = _sampler()
-        self._rises(registry, sampler, a=(5, 9))
-        assert self._rises(registry, sampler, a=(7, 10)) == {"guard": 2, "parks": 1}
-        assert self._rises(registry, sampler, a=(7, 10)) == {"guard": 0, "parks": 0}
+        self._parks(registry, sampler, a=9)
+        assert self._parks(registry, sampler, a=10) == 1
+        assert self._parks(registry, sampler, a=10) == 0
 
     def test_a_controller_restart_reads_as_a_reset(
         self, registry: MetricsRegistry
     ) -> None:
         sampler = _sampler()
-        self._rises(registry, sampler, a=(5, 9))
-        assert self._rises(registry, sampler, a=(1, 0)) == {"guard": 1, "parks": 0}
+        self._parks(registry, sampler, a=9)
+        assert self._parks(registry, sampler, a=2) == 2
 
     def test_a_box_that_went_silent_starts_again_from_a_baseline(
         self, registry: MetricsRegistry
     ) -> None:
         sampler = _sampler()
-        self._rises(registry, sampler, a=(5, 9))
-        self._rises(registry, sampler)
-        assert self._rises(registry, sampler, a=(8, 9)) == {"guard": 0, "parks": 0}
+        self._parks(registry, sampler, a=9)
+        self._parks(registry, sampler)
+        assert self._parks(registry, sampler, a=9) == 0
 
-    def test_a_box_without_the_counts_adds_nothing(
+    def test_a_box_without_the_count_adds_nothing(
         self, registry: MetricsRegistry
     ) -> None:
         sampler = _sampler()
-        self._rises(registry, sampler, a=(None, None))
-        assert self._rises(registry, sampler, a=(None, None)) == {
-            "guard": 0,
-            "parks": 0,
-        }
+        self._parks(registry, sampler, a=None)
+        assert self._parks(registry, sampler, a=None) == 0
 
 
 class TestBoxRecordedWhereTheyArrive:

@@ -58,7 +58,7 @@ async def test_summary_has_the_contract_shape(controller_app):  # noqa: F811
     # too. With v2 on, the summary also names the backend and carries the
     # cloud figures; with it off, it is exactly the fixture and none of them.
     # `start` is null here: a v1 machine, and asleep.
-    v2_only = ("room", "awake", "ai_calls_today", "start")
+    v2_only = ("room", "awake", "start")
     assert not set(v2_only) & set(expected)
     if process_hosted_v2():
         expected["backend"] = "vm"
@@ -112,13 +112,9 @@ async def test_a_machine_that_never_enrolled_reports_no_usage_or_agents(
     # Nothing for Your cloud without a controller report. With
     # hosted agents v2 off, the summary is as before v2, without those keys.
     if process_hosted_v2():
-        assert (summary["room"], summary["awake"], summary["ai_calls_today"]) == (
-            None,
-            None,
-            None,
-        )
+        assert (summary["room"], summary["awake"]) == (None, None)
     else:
-        assert not {"room", "awake", "ai_calls_today"} & set(summary)
+        assert not {"room", "awake"} & set(summary)
 
 
 async def test_the_summary_lists_the_agents_placed_on_its_controller(
@@ -219,8 +215,9 @@ async def test_the_disk_says_it_is_the_workspace_only_when_the_box_says_so(
 async def test_your_cloud_figures_come_from_this_workspace_s_controller(
     controller_app,  # noqa: F811
 ):
-    """Room to work, sessions awake and AI calls today,
-    from the last report of the controller the machine enrolled as here."""
+    """Room to work and sessions awake, from the last report of the controller
+    the machine enrolled as here. What an older box still says of its daily
+    call cap is not shown."""
     app = controller_app
     controller_id, _ = await enrolled(app, agents=1)
     async with app.factory() as session:
@@ -242,11 +239,7 @@ async def test_your_cloud_figures_come_from_this_workspace_s_controller(
     summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
     assert summary["room"] == {"used_bytes": 6 * 1024**3, "total_bytes": 8 * 1024**3}
     assert summary["awake"] == {"running": 3, "max": 15}
-    calls = summary["ai_calls_today"]
-    assert (calls["used"], calls["cap"], calls["capped"]) == (40, 200, False)
-    resets = datetime.fromisoformat(calls["resets_at"])
-    assert (resets.hour, resets.minute, resets.utcoffset()) == (0, 0, timedelta(0))
-    assert resets > datetime.now(UTC)
+    assert "ai_calls_today" not in summary
 
 
 async def test_other_owners_machines_read_as_missing(controller_app):  # noqa: F811

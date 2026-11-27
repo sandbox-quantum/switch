@@ -104,14 +104,11 @@ def test_v2_off_a_new_budget_is_refused_exactly_as_upstream(v2, body: dict) -> N
     )
 
 
-@pytest.mark.parametrize(
-    "metric", [UsageMetric.AWAKE_MINUTES, UsageMetric.HOSTED_AI_CALLS]
-)
-def test_v2_on_its_budget_metrics_are_accepted(v2, metric: UsageMetric) -> None:
+def test_v2_on_its_budget_metric_is_accepted(v2) -> None:
     v2(True)
     body = {
         "agent_id": None,
-        "metric": metric.value,
+        "metric": UsageMetric.AWAKE_MINUTES.value,
         "model": "",
         "amount_limit": 300,
         "period_hours": 24,
@@ -126,7 +123,7 @@ async def test_the_budget_is_read_before_a_change_only_with_v2_on(
     v2, monkeypatch, on: bool, change: str
 ) -> None:
     """With v2 off, no extra `usage_budgets` read before an
-    update or delete, as upstream; only v2's audit, cap and nudge need it."""
+    update or delete, as upstream; only v2's audit needs it."""
     v2(on)
     monkeypatch.setattr(tenants, "record_audit_event", AsyncMock())
     row = AsyncMock(return_value=None)
@@ -142,7 +139,6 @@ async def test_the_budget_is_read_before_a_change_only_with_v2_on(
         "session": AsyncMock(),
         "budget_store": store,
         "user": SimpleNamespace(id="u"),
-        "request": SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace())),
     }
     with tenant_scope("t"):
         if change == "update":
@@ -182,20 +178,6 @@ async def test_v2_on_a_budget_change_is_audited(v2, monkeypatch) -> None:
         details={},
     )
     record.assert_awaited_once()
-
-
-@pytest.mark.parametrize("on", [False, True])
-async def test_the_daily_cap_nudges_controllers_only_with_v2_on(
-    v2, monkeypatch, on: bool
-) -> None:
-    v2(on)
-    bump = AsyncMock(return_value={"c": 2})
-    monkeypatch.setattr(tenants, "bump_hosted_controllers", bump)
-    changed = await tenants._daily_cap_changed(
-        AsyncMock(), "t", UsageMetric.HOSTED_AI_CALLS.value
-    )
-    assert changed == ({"c": 2} if on else {})
-    assert bump.await_count == (1 if on else 0)
 
 
 def _notice(route: str) -> str:
@@ -342,7 +324,6 @@ def test_v2_off_a_status_report_is_read_as_upstream(v2) -> None:
         assert dumped["machine"][key] == value
     for key, value in _LOOSE_AGENT.items():
         assert dumped["agents"][0][key] == value
-    assert report.machine._dropped_old_note is False
 
 
 @pytest.mark.parametrize("value", ["system", "workspace", 7])

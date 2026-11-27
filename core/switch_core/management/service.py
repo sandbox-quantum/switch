@@ -82,7 +82,6 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
-from switch_core.db.stores.budget_store import hosted_daily_cap
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
@@ -129,7 +128,6 @@ from switch_core.providers.registry import (
 from switch_core.user_changes import MACHINE, MANAGED_AGENT, UserChangePublisher
 from switch_core.visibility.awake_usage import (
     record_awake_minutes,
-    record_hosted_ai_calls,
 )
 from switch_core.visibility.stop_reason_sources import (
     ReasonSignals,
@@ -139,25 +137,6 @@ from switch_core.visibility.stop_reason_sources import (
 
 _INSTALLS = TemplateInstallStore()
 logger = logging.getLogger(__name__)
-
-# Controllers whose old free-text memory note has been dropped, so each is
-# logged once per Core process rather than on every report.
-_OLD_NOTE_DROPPED: set[str] = set()
-
-
-def _note_dropped(controller_id: str) -> None:
-    """Count an older controller's dropped free-text memory note: its id only,
-    never the text, once per controller."""
-    if controller_id in _OLD_NOTE_DROPPED:
-        return
-    _OLD_NOTE_DROPPED.add(controller_id)
-    logger.info(
-        "Controller %s sent an old free-text memory note; it was dropped, not "
-        "stored (%d controllers so far)",
-        controller_id,
-        len(_OLD_NOTE_DROPPED),
-    )
-
 
 OPERATION_LEASE = timedelta(minutes=5)
 # An operation still open this long after it was created is expired rather
@@ -838,23 +817,13 @@ class ManagementService:
             session, principal.tenant_id, controller.id
         )
         archived = await is_archived(session, principal.tenant_id)
-        assignment: dict[str, Any] = {
+        return {
             "revision": controller.assignment_revision,
             "agents": [
                 assignment_entry(row, agent, workspace_archived=archived)
                 for row, agent in rows
             ],
         }
-        if controller.kind == "ec2" and await v2_box(
-            session, principal.tenant_id, controller.id
-        ):
-            # The workspace's daily AI cap for this box's gateway,
-            # or null with none set. A person's own computer never gets one.
-            # With hosted agents v2 off, absent, as before v2.
-            assignment["gateway_daily_cap"] = await hosted_daily_cap(
-                session, principal.tenant_id
-            )
-        return assignment
 
     async def assignment_revision(
         self, session: AsyncSession, principal: ControllerPrincipal
@@ -893,11 +862,8 @@ class ManagementService:
         # field kept as sent.
         v2 = process_hosted_v2()
         status = report.model_dump(mode="json", exclude_unset=True)
-        if report.machine._dropped_old_note:
-            _note_dropped(principal.controller_id)
         bound_clients: dict[str, str] = {}
         previous_seen_at: datetime | None = None
-        previous_status: dict[str, Any] | None = None
         seen_at = self.now()
         if v2:
             # A session state is kept only for agents bound to this controller,
@@ -919,10 +885,7 @@ class ManagementService:
                         principal.controller_id,
                         entry.get("agent_id"),
                     )
-            (
-                previous_seen_at,
-                previous_status,
-            ) = await self.controllers.lock_previous_report(
+            previous_seen_at, _ = await self.controllers.lock_previous_report(
                 session, principal.tenant_id, principal.controller_id
             )
         controller = await self._principal_controller(session, principal)
@@ -987,16 +950,6 @@ class ManagementService:
                 previous_seen_at=previous_seen_at,
                 seen_at=seen_at,
                 agents=status.get("agents", []),
-                bound=bound_clients,
-            )
-            # AI calls, as the day's rise, per agent (display only).
-            await record_hosted_ai_calls(
-                session,
-                tenant_id=principal.tenant_id,
-                previous_seen_at=previous_seen_at,
-                seen_at=seen_at,
-                previous_status=previous_status,
-                status=status,
                 bound=bound_clients,
             )
         await session.commit()

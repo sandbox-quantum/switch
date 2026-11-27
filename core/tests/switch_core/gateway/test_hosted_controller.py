@@ -1850,7 +1850,7 @@ async def test_v2_off_the_owners_summary_is_as_before(controller_app, v2_off):
     owned = await app.client.get("/hosted-machines")
     assert owned.status_code == 200, owned.text
     (machine,) = owned.json()["machines"]
-    assert not {"room", "awake", "ai_calls_today", "backend"} & set(machine)
+    assert not {"room", "awake", "backend"} & set(machine)
 
 
 @pytest.mark.usefixtures("hosted_v2_on")

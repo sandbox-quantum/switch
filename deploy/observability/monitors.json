@@ -1419,30 +1419,6 @@
     "priority": 4
   },
   {
-    "name": "[Switch REPLACE-WITH-ENV] Hosted boxes: memory guard stopping agents",
-    "type": "query alert",
-    "query": "sum(last_30m):default_zero(sum:switch.hosted.guard_stops{service:REPLACE-WITH-SERVICE}.as_count()) >= 3",
-    "message": "{{#is_alert}}The memory guard stopped {{value}} agents on hosted boxes in 30 minutes: boxes are running out of memory.\n\n**Check:** the boxes' memory and the out-of-memory panels on the dashboard, and the operator's Alerts tab for which boxes.{{/is_alert}}{{#is_recovery}}Recovered: the memory guard has stopped stopping agents.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
-    "tags": [
-      "service:REPLACE-WITH-SERVICE",
-      "env:REPLACE-WITH-ENV",
-      "team:switch",
-      "tier:now",
-      "category:ops"
-    ],
-    "options": {
-      "notify_no_data": false,
-      "renotify_interval": 60,
-      "notify_audit": false,
-      "require_full_window": false,
-      "include_tags": true,
-      "thresholds": {
-        "critical": 3
-      }
-    },
-    "priority": 3
-  },
-  {
     "name": "[Switch REPLACE-WITH-ENV] Hosted boxes pushed off their nodes",
     "type": "query alert",
     "query": "sum(last_30m):default_zero(sum:switch.hosted.box_evictions{service:REPLACE-WITH-SERVICE}.as_count()) >= 3",

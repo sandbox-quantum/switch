@@ -67,20 +67,15 @@ def test_a_healthy_agent_has_no_reason():
     assert code(None) is None
 
 
-def test_a_memory_stop_in_the_status_report_is_memory_guard_since_the_reported_time():
-    inputs = reason_inputs(
-        AGENT,
-        controller(agent={"process": "stopped", "reason": "out_of_memory"}),
-        None,
-        ReasonSignals(),
-        NOW,
-    )
-    assert inputs.memory_stopped_since == datetime(2026, 10, 29, 11, 0, tzinfo=UTC)
+def test_an_old_box_s_memory_stop_or_cap_is_no_reason_any_more():
+    """What a box made before the memory guard and the daily call cap went
+    still reports for them gives no reason of its own."""
     assert (
         code(controller(agent={"process": "stopped", "reason": "out_of_memory"}))
-        == "memory_guard"
+        is None
     )
     assert code(controller(agent={"process": "stopped", "reason": "owner"})) is None
+    assert code(controller(machine={"gateway_capped": True})) is None
 
 
 def test_a_let_go_for_timing_out_is_waiting_too_long():
@@ -92,21 +87,6 @@ def test_a_let_go_for_timing_out_is_waiting_too_long():
     assert (
         code(controller(agent=let_go), worked) is None
     )  # it worked since, so it's cleared
-
-
-def test_the_daily_cap_resets_at_the_next_utc_midnight():
-    view = agent_stop_reason(
-        AGENT, controller(machine={"gateway_capped": True}), None, ReasonSignals(), NOW
-    )
-    assert view == {
-        "code": "daily_cap_reached",
-        "since": "2026-10-29T11:58:00+00:00",
-        "reset_at": "2026-10-30T00:00:00+00:00",
-    }
-    assert code(controller(machine={"gateway_capped": False})) is None
-    assert (
-        code(controller(machine={"gateway_capped": "yes"})) is None
-    )  # only a real true counts
 
 
 def test_a_used_up_budget_covering_this_agent_counts_and_others_dont():
@@ -170,10 +150,6 @@ def test_a_controller_offline_for_over_a_minute_is_cant_reach():
 
 
 def test_a_box_cant_break_the_list_with_bad_times():
-    bad = controller(
-        agent={"process": "stopped", "reason": "out_of_memory", "since": "not a time"}
-    )
-    assert code(bad) == "memory_guard"  # falls back to now rather than failing
     assert code(controller(agent={"let_go": {"at": 12, "reason": "timed_out"}})) is None
     assert code(controller(agent={"let_go": "weird"})) is None
 

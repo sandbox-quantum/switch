@@ -2069,44 +2069,12 @@ class AgentRecipient:
             except BudgetExceeded as exc:
                 refusal = str(exc)
             else:
-                capped = (
-                    await self._daily_cap_refusal(session, agent, meta)
-                    if process_hosted_v2()
-                    else None
-                )
-                if capped is None:
-                    return _GateOutcome(addressed=True, refusal=None)
-                refusal = capped
+                return _GateOutcome(addressed=True, refusal=None)
         else:
             refusal = decision.refusal
         if self._triggered_by_auto_reply(event):
             return _GateOutcome(addressed=False, refusal=None)
         return _GateOutcome(addressed=False, refusal=refusal)
-
-    async def _daily_cap_refusal(
-        self, session: AsyncSession, agent: Agent, meta: RoomMeta
-    ) -> str | None:
-        """The cap line while this agent's box reports its daily AI limit used up, or None.
-
-        As with a budget, Core refuses the message rather than
-        letting the agent start a turn its gateway would refuse, so no provider error reaches
-        the room. It reads only this agent's own controller's last report, and a report it
-        can't read never blocks a message.
-
-        A courtesy, not the limit: the box's gateway is what enforces the cap. The
-        report comes from the box itself, so a box that over-reports only stops its own owner's
-        messages, and one that under-reports still has every call refused at its gateway."""
-        binding = self._connections.controllers.binding(self.agent.id)
-        if binding is None:
-            return None
-        controller = await session.get(AgentController, binding.controller_id)
-        status = (controller.status or {}) if controller is not None else {}
-        machine = status.get("machine") if isinstance(status, dict) else None
-        if not isinstance(machine, dict) or machine.get("gateway_capped") is not True:
-            return None
-        owner = await self.owner_handle_in(session, agent, meta.bridge_id)
-        # The gateway counts calls per UTC day, so the cap resets at the next 00:00 UTC.
-        return room_line(StopReason.DAILY_CAP_REACHED, owner)
 
     async def _hosted_block(self, session: AsyncSession, agent: Agent) -> str | None:
         """The pause or turn-off code blocking this agent, for an agent run on a Switch cloud
