@@ -5281,7 +5281,8 @@ version of their own to them without also giving them a release of their own.
   and listing files in a location checked only the path as written, so a
   symbolic link inside the folder to a place outside it was followed; links
   are now resolved first, a dangling one included, and one leading out of the
-  location is refused.
+  location is refused. Such a link can still be deleted: that removes the
+  link and leaves what it points to alone.
 
 - **The app window can call only the app's own requests into the main
   process.** Its bridge passed any channel name through; it now refuses every

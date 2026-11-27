@@ -225,13 +225,32 @@ export class LocalFileSystem implements FileSystemProvider {
   }
 
   /**
-   * Resolve a path relative to the location root, refusing one that leaves it:
-   * by `..` as written, or through a symbolic link anywhere on the way, the
-   * last name included. Containment is judged on real paths, the root's and
-   * the target's (see `realTarget`), so a link inside the location to a place
-   * outside it is refused even when the target does not exist yet.
+   * Resolve a path relative to the location root for an operation that goes
+   * through it (read, write, stat, list, copy), refusing one that leaves the
+   * location: by `..` as written, or through a symbolic link anywhere on the
+   * way, the last name included. Containment is judged on real paths, the
+   * root's and the target's (see `realTarget`), so a link inside the location
+   * to a place outside it is refused even when the target does not exist yet.
    */
   private resolvePath(relPath: string): string {
+    return this.contained(relPath, (fullPath) => realTarget(fullPath, relPath));
+  }
+
+  /**
+   * Resolve a path for an operation on the name itself, which never follows a
+   * link there (remove): only the directory holding it must really be inside
+   * the location, so a link in the location to a place outside it can still
+   * be deleted, and its target is left alone.
+   */
+  private resolveEntryPath(relPath: string): string {
+    return this.contained(relPath, (fullPath) =>
+      fullPath === this.rootPath
+        ? realTarget(fullPath, relPath)
+        : join(realTarget(dirname(fullPath), relPath), basename(fullPath))
+    );
+  }
+
+  private contained(relPath: string, real: (fullPath: string) => string): string {
     const normalizedRelPath = relPath.replace(/\\/g, '/').replace(/^\//, '');
     const fullPath = resolve(join(this.rootPath, normalizedRelPath));
     const escape = () =>
@@ -251,7 +270,7 @@ export class LocalFileSystem implements FileSystemProvider {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return fullPath;
       throw error;
     }
-    if (!isWithinOrSame(realRoot, realTarget(fullPath, relPath))) throw escape();
+    if (!isWithinOrSame(realRoot, real(fullPath))) throw escape();
     return fullPath;
   }
 
@@ -611,11 +630,13 @@ export class LocalFileSystem implements FileSystemProvider {
     path: string,
     options?: { recursive?: boolean }
   ): Promise<{ success: boolean; error?: string }> {
-    const fullPath = this.resolvePath(path);
+    const fullPath = this.resolveEntryPath(path);
 
+    // The entry itself, never what a link there points to: a link is removed
+    // as a file, and its target is left alone.
     let stat;
     try {
-      stat = await fs.stat(fullPath);
+      stat = await fs.lstat(fullPath);
     } catch {
       return { success: false, error: `File not found: ${path}` };
     }
@@ -637,8 +658,9 @@ export class LocalFileSystem implements FileSystemProvider {
       return { success: true };
     } catch (err: unknown) {
       const code = (err as NodeJS.ErrnoException).code;
-      // Attempt chmod retry on permission error
-      if (code === 'EACCES' || code === 'EPERM') {
+      // Attempt chmod retry on permission error; chmod follows a link, so never
+      // for one, whose target may be outside the location.
+      if ((code === 'EACCES' || code === 'EPERM') && !stat.isSymbolicLink()) {
         try {
           await fs.chmod(fullPath, 0o666);
           await fs.unlink(fullPath);
