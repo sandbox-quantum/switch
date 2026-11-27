@@ -35,6 +35,9 @@ vi.mock('./launch', () => ({
     (await readFile(join(root, 'running'), 'utf8').catch(() => null)) ? { build: 'b' } : null,
 }));
 
+/** What Console sends to start a new session of the host's agent: only the identity is read here. */
+const OWN_CONFIG = { session: { sessionId: 'fresh', agentId: 'agent' } };
+
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -128,12 +131,17 @@ it('relays requests to a session host and its events back', async () => {
   unsubscribe();
 
   expect(
-    await console.ensure({ config: {}, resuming: false, restart: false, startSource: 'room' })
+    await console.ensure({
+      config: OWN_CONFIG,
+      resuming: false,
+      restart: false,
+      startSource: 'room',
+    })
   ).toEqual({
     created: true,
   });
   expect(ensure).toHaveBeenCalledWith({
-    config: {},
+    config: OWN_CONFIG,
     resuming: false,
     restart: false,
     startSource: 'room',
@@ -255,6 +263,36 @@ it('never reads or commands a session of another agent', async () => {
   expect(forgot).not.toHaveBeenCalledWith('theirs');
 
   unbind();
+  console.close();
+  stop.abort();
+  await serving;
+});
+
+it('never starts or reattaches a session of another agent', async () => {
+  const { ensure, stop, serving, client } = await started();
+  const console = client();
+  await console.ready;
+  const ask = (config: unknown) =>
+    console.ensure({ config, resuming: false, restart: true, startSource: null });
+  const refused = 'not a session of agent agent';
+
+  // Another agent's saved session, asked for under that agent's name or this one's.
+  await expect(ask({ session: { sessionId: 'theirs', agentId: 'other' } })).rejects.toThrow(
+    refused
+  );
+  await expect(ask({ session: { sessionId: 'theirs', agentId: 'agent' } })).rejects.toThrow(
+    refused
+  );
+  // A new session made out to another agent.
+  await expect(ask({ session: { sessionId: 'new', agentId: 'other' } })).rejects.toThrow(refused);
+  // A configuration that names no session to check.
+  await expect(ask({})).rejects.toThrow('names no session and agent');
+  expect(ensure).not.toHaveBeenCalled();
+
+  await ask({ session: { sessionId: 'session', agentId: 'agent' } });
+  await ask({ session: { sessionId: 'new', agentId: 'agent' } });
+  expect(ensure).toHaveBeenCalledTimes(2);
+
   console.close();
   stop.abort();
   await serving;
@@ -437,13 +475,13 @@ it('still starts a session for a Console that sends no start source', async () =
   });
   socket.write(`${JSON.stringify({ token: control.token })}\n`);
   socket.write(
-    `${JSON.stringify({ id: 1, ensure: { config: {}, resuming: false, restart: false } })}\n`
+    `${JSON.stringify({ id: 1, ensure: { config: OWN_CONFIG, resuming: false, restart: false } })}\n`
   );
 
   await vi.waitFor(() =>
     expect(replies).toContainEqual({ id: 1, ok: true, value: { created: true } })
   );
-  expect(ensure).toHaveBeenCalledWith({ config: {}, resuming: false, restart: false });
+  expect(ensure).toHaveBeenCalledWith({ config: OWN_CONFIG, resuming: false, restart: false });
 
   socket.destroy();
   stop.abort();
@@ -522,10 +560,10 @@ it('carries a start source Console could not name as null, which a resume always
   const console = client();
   await console.ready;
 
-  await console.ensure({ config: {}, resuming: true, restart: false, startSource: null });
+  await console.ensure({ config: OWN_CONFIG, resuming: true, restart: false, startSource: null });
 
   expect(ensure).toHaveBeenCalledWith({
-    config: {},
+    config: OWN_CONFIG,
     resuming: true,
     restart: false,
     startSource: null,
@@ -552,7 +590,7 @@ it('starts a session whose start source is newer than this sidecar, as not known
   socket.write(
     `${JSON.stringify({
       id: 1,
-      ensure: { config: {}, resuming: false, restart: false, startSource: 'scheduled' },
+      ensure: { config: OWN_CONFIG, resuming: false, restart: false, startSource: 'scheduled' },
     })}\n`
   );
 
@@ -560,7 +598,7 @@ it('starts a session whose start source is newer than this sidecar, as not known
     expect(replies).toContainEqual({ id: 1, ok: true, value: { created: true } })
   );
   expect(ensure).toHaveBeenCalledWith({
-    config: {},
+    config: OWN_CONFIG,
     resuming: false,
     restart: false,
     startSource: null,

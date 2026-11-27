@@ -8233,7 +8233,8 @@ tags; see RELEASING.md.
   directory's marker file held, without checking either; an id with `..` or a
   separator is now refused, and a marker that holds one is set aside as an
   unknown agent's.
-- **Cancelling an attachment upload checks the id**, as on the sidecar.
+- **Cancelling an attachment upload checks the id**, and **an agent host's
+  control port starts only its own agent's sessions**, as on the sidecar.
 - **Reads what an agent can write without following links, and never repeats
   it.** An agent's health, failure and taken-over records, its configuration
   and its control file are opened only as small regular files, not through a
@@ -8718,6 +8719,11 @@ published on its own.
   attachment upload with an id such as `../x` could delete a file outside the
   upload folder; such ids, and conversation ids that are not file names, are
   now refused.
+- **An agent's control port starts only that agent's sessions.** Asking an
+  agent host to start or reattach a session checked nothing about whose it
+  was, so a connection to one agent's port could restart, reconfigure or
+  start a session of another agent on the same machine. It now refuses a
+  session made out to, or already saved for, another agent.
 - **The control socket compares its secret in constant time.**
 - **Shell setup can no longer add environment variables beyond the inherited
   allowlist**, as in Switch Console.
