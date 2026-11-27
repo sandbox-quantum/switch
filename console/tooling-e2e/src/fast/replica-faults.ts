@@ -44,11 +44,14 @@ const MARGIN_MS = 15_000;
 const ONCE_WINDOW_MS = 10_000;
 
 /**
- * Pause cycles the brief-pause scenario tries for one where the bridge hashes
- * to the replica started during the pause: each does with even odds, so all
- * missing is one run in 32.
+ * A replica frozen (`SIGSTOP`) with an outside request in flight, such as the
+ * fetch of an agent's bot icon a bridge starts as it is taken over, finds it
+ * timed out once it runs again.
  */
-const PAUSE_CYCLES = 5;
+const FROZEN_ICON_FETCH = /^\[BOT-ICON\] failed to set icon for /;
+
+/** What a process logs once its lease holds again after it suspended, as it claims its share back. */
+const HOLDS_AGAIN = /^This process's lease .* holds again; claiming its share of the work back/;
 
 const SUSPENDED = /^This process's lease .* was not renewed in time; stopping every piece of work it owns/;
 
@@ -137,12 +140,16 @@ async function postCopies(
 }
 
 /**
- * Wait until the bridge is held, on a live lease, by the process it hashes
- * to among the live ones, failing past `deadlineMs` from `sinceMs`.
+ * Wait until the bridge is claimed again after token `before`, and held, on a
+ * live lease, by the process it hashes to among the live ones, failing past
+ * `deadlineMs` from `sinceMs`. The new claim is what shows the hand-over
+ * happened: the row naming the rightful owner proves nothing while it is the
+ * claim from before the fault.
  */
 async function waitForRightfulHolder(
   replicas: Replicas,
   bridgeId: string | null,
+  before: number,
   sinceMs: number,
   deadlineMs: number,
   log: (message: string) => void
@@ -150,14 +157,15 @@ async function waitForRightfulHolder(
   let last: Holder | null = null;
   while (Date.now() - sinceMs < deadlineMs) {
     last = bridgeHolder((await replicas.ownership(BRIDGE)).holders, bridgeId);
-    if (last.live && last.processId !== null && last.processId === last.owner) {
+    if (last.token > before && last.live && last.processId !== null && last.processId === last.owner) {
       log(`${last.processId} holds the bridge it hashes to ${Date.now() - sinceMs}ms after the resume`);
       return last;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error(
-    `the bridge did not settle on the process it hashes to within ${deadlineMs}ms; last read: ${JSON.stringify(last)}`
+    `the bridge was not claimed again after token ${before} by the process it hashes to within ${deadlineMs}ms; ` +
+      `last read: ${JSON.stringify(last)}`
   );
 }
 
@@ -378,7 +386,7 @@ export const bridgeHolderStopped: FastScenario = {
  */
 export const bridgeHolderPaused: FastScenario = {
   header: header('replica-bridge-holder-paused'),
-  expectedServerErrors: [SUSPENDED],
+  expectedServerErrors: [SUSPENDED, FROZEN_ICON_FETCH],
   async run(context) {
     const { replicas, switchClient, names, log } = context;
     const setup = await setUp(context);
@@ -451,101 +459,109 @@ export const bridgeHolderPaused: FastScenario = {
 };
 
 /**
- * A pause shorter than the lease, with a replica added meanwhile: the case the
- * eventual-ownership model found. The other replica is stopped, so the holder
- * runs everything; the holder is paused for longer than half its lease but
- * not long enough for its lease to lapse, and the other replica starts during
- * the pause. The newcomer must claim nothing while the paused holder's lease
- * holds, though the bridge may now hash to it. Once the holder runs again,
- * the bridge must settle on whichever of the two it hashes to, within two
- * balances, held once throughout, and a message the agent sent during the
- * pause must be posted once. Repeated until a cycle where the bridge hashes
- * to the newcomer (`PAUSE_CYCLES`).
+ * A pause shorter than the lease, with a process joining meanwhile that the
+ * bridge belongs to: the case the eventual-ownership model found.
  *
- * Past half its lease the paused holder can no longer be sure of it, so once
- * resumed it stops its work and claims its share back (`Ownership`'s lapse
- * latch), and logs that it stopped.
+ * The bridge's rightful holder is paused past its lease, so the other replica
+ * takes the bridge over. The new holder is then paused for less than its
+ * lease, and the first is resumed during that pause: it rejoins at once, and
+ * the bridge hashes to it, as it did before. It must take nothing while the
+ * paused holder's lease holds. Once that holder runs again, past half its
+ * lease and so no longer sure of it, it must stop its work and let the bridge
+ * go (`Ownership`'s lapse latch), and the bridge must be claimed again, by
+ * the process it hashes to, within two balances. A message the agent sent
+ * during the short pause must be posted once.
  *
  * @property replica.single-owner
  * @property replica.ownership-eventual
  */
 export const bridgeHolderPausedBriefly: FastScenario = {
   header: header('replica-bridge-holder-paused-briefly'),
-  expectedServerErrors: [SUSPENDED],
+  expectedServerErrors: [SUSPENDED, FROZEN_ICON_FETCH],
   async run(context) {
     const { replicas, switchClient, names, log } = context;
     const setup = await setUp(context);
-    const { agent, bridged, holder, timers } = setup;
-    const newcomer = otherThan(holder);
+    const { agent, bridged, holder: rightful, timers } = setup;
+    const standIn = otherThan(rightful);
     await roundTrip(context, setup, 'before', 'settled', 60_000);
 
-    // Past half the lease, so the holder is sure to have stopped trusting it,
-    // and short of the lease less a renewal interval, since its last renewal
-    // may have been sent up to one interval before the pause: half way.
+    // The rightful holder away past its lease: the other takes the bridge.
+    const awayAt = Date.now();
+    replicas!.pause(rightful);
+    await replicas!.waitForRotation(rightful, 'DOWN', 10_000);
+    await waitForHolder(
+      replicas!,
+      bridged.room.bridgeId,
+      standIn,
+      awayAt,
+      (timers.leaseTtl + timers.balanceInterval) * 1000 + MARGIN_MS,
+      log
+    );
+
+    // Past half the lease, so the stand-in is sure to have stopped trusting
+    // it, and short of the lease less a renewal interval, since its last
+    // renewal may have been sent up to one interval before the pause: half way.
     const pauseMs = ((timers.leaseTtl / 2 + (timers.leaseTtl - timers.renewEvery)) / 2) * 1000;
+    const mark = replicas!.logMark(standIn);
+    const rejoinMark = replicas!.logMark(rightful);
+    const pausedAt = Date.now();
+    replicas!.pause(standIn);
+    replicas!.resume(rightful);
+    await replicas!.waitForRotation(rightful, 'UP', pauseMs);
+    await replicas!.waitForRotation(standIn, 'DOWN', pauseMs);
+
+    // Sent while the only replica holding the bridge is paused: it waits in
+    // the room until a copy of the bridge relays it.
+    const crossing = `crossing ${names.marker('crossing')}`;
+    const crossingSince = Date.now();
+    await switchClient.sendMessage(agent, bridged.room.id, crossing);
+
+    // Read once the rejoining replica has balanced with its lease holding
+    // again: its first balance only stops what it ran before its own pause,
+    // and its claims come with the next.
+    while (!replicas!.logSince(rightful, rejoinMark).some((record) => HOLDS_AGAIN.test(record.message))) {
+      if (Date.now() - pausedAt >= pauseMs) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const row = bridgeHolder((await replicas!.ownership(BRIDGE)).holders, bridged.room.bridgeId);
+    const elapsed = Date.now() - pausedAt;
+    if (elapsed >= pauseMs) {
+      replicas!.resume(standIn);
+      throw new Error(
+        `replica ${rightful} took ${elapsed}ms to rejoin, claim and be read, past the ${pauseMs}ms pause of replica ${standIn}`
+      );
+    }
+    expect(replicaOf(row.owner), `the bridge hashes to replica ${rightful} once it rejoins`).toBe(rightful);
+    expect(
+      replicaOf(row.processId),
+      `replica ${rightful} took the bridge back while replica ${standIn}'s lease still held: ${JSON.stringify(row)}`
+    ).toBe(standIn);
+    log(`replica ${rightful} rejoined ${elapsed}ms into a ${pauseMs}ms pause and took nothing`);
+
+    await new Promise((resolve) => setTimeout(resolve, pauseMs - elapsed));
+    const resumedAt = Date.now();
+    replicas!.resume(standIn);
+
     const settleMs = 2 * timers.balanceInterval * 1000 + MARGIN_MS;
-
-    // The newcomer's process id, and so where the bridge hashes, is drawn as
-    // it starts. A cycle where the bridge hashes to the holder checks all but
-    // the newcomer keeping off a key it wants, so cycles repeat, each with a
-    // newcomer of a new id, until one hashes to the newcomer.
-    for (let cycle = 1; cycle <= PAUSE_CYCLES; cycle += 1) {
-      await replicas!.stop(newcomer, 'SIGTERM');
-      await replicas!.waitForRotation(newcomer, 'DOWN', 10_000);
-
-      const mark = replicas!.logMark(holder);
-      const pausedAt = Date.now();
-      replicas!.pause(holder);
-      await Promise.all([replicas!.waitForRotation(holder, 'DOWN', pauseMs), replicas!.start(newcomer)]);
-      await replicas!.waitForRotation(newcomer, 'UP', pauseMs);
-
-      // Sent while the only replica that held the bridge is paused: it waits
-      // in the room until a copy of the bridge relays it.
-      const crossing = `crossing ${names.marker(`crossing${cycle}`)}`;
-      const crossingSince = Date.now();
-      await switchClient.sendMessage(agent, bridged.room.id, crossing);
-
-      const row = bridgeHolder((await replicas!.ownership(BRIDGE)).holders, bridged.room.bridgeId);
-      const elapsed = Date.now() - pausedAt;
-      if (elapsed >= pauseMs) {
-        replicas!.resume(holder);
+    while (!replicas!.logSince(standIn, mark).some((record) => SUSPENDED.test(record.message))) {
+      if (Date.now() - resumedAt > settleMs) {
         throw new Error(
-          `replica ${newcomer} took ${elapsed}ms to start and be read, past the ${pauseMs}ms pause; ` +
-            'the case needs it to start while the holder is paused'
+          `replica ${standIn} ran again after a pause past half its lease and never logged that it stopped its work`
         );
       }
-      const wanted = replicaOf(row.owner) === newcomer;
-      log(
-        `cycle ${cycle}: replica ${newcomer} started ${elapsed}ms into a ${pauseMs}ms pause; ` +
-          `the bridge hashes to ${wanted ? 'it' : `replica ${holder}`} (${row.owner})`
-      );
-      expect(
-        replicaOf(row.processId),
-        `replica ${newcomer} took the bridge while replica ${holder}'s lease still held: ${JSON.stringify(row)}`
-      ).toBe(holder);
-
-      await new Promise((resolve) => setTimeout(resolve, pauseMs - elapsed));
-      const resumedAt = Date.now();
-      replicas!.resume(holder);
-
-      const settled = await waitForRightfulHolder(replicas!, bridged.room.bridgeId, resumedAt, settleMs, log);
-      expect(replicaOf(settled.processId), 'the bridge settled where it hashes').toBe(wanted ? newcomer : holder);
-      expect(
-        replicas!.logSince(holder, mark).some((record) => SUSPENDED.test(record.message)),
-        `replica ${holder} ran again after a pause past half its lease and never logged that it stopped its work`
-      ).toBe(true);
-      await expectPostedOnce(context.mattermost!, bridged, agent, crossing, crossingSince, settleMs);
-      if (wanted) {
-        log(`the bridge moved to replica ${newcomer}`);
-        await roundTrip(context, setup, 'after', 'just-handed-over', 60_000);
-        return;
-      }
-      await roundTrip(context, setup, `stayed${cycle}`, 'settled', 60_000);
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
-    throw new Error(
-      `in ${PAUSE_CYCLES} cycles the bridge never hashed to the replica started during the pause, ` +
-        'so the case of a newcomer keeping off a key it wants was not reached'
+    const settled = await waitForRightfulHolder(
+      replicas!,
+      bridged.room.bridgeId,
+      row.token,
+      resumedAt,
+      settleMs,
+      log
     );
+    expect(replicaOf(settled.processId), 'the bridge went back where it hashes').toBe(rightful);
+    await expectPostedOnce(context.mattermost!, bridged, agent, crossing, crossingSince, settleMs);
+    await roundTrip(context, setup, 'after', 'just-handed-over', 60_000);
   },
 };
 

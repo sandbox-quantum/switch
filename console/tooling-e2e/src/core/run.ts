@@ -17,12 +17,14 @@ export const ARTIFACT_PREFIX = 'e2e-';
 
 /**
  * The whole shape of a name {@link NameScope.name} builds: the prefix, a
- * six-character run id, a scope character, then the role. The cleanup script
+ * six-character run id, a scope letter, then the role. A name in a digit
+ * scope (see `SCOPE_LETTERS`) does not match: widened to digits, the shape
+ * would match names people type, such as `e2e-test123-bot`. The cleanup script
  * deletes by this, not by the prefix alone: people name their own test
  * agents and rooms `e2e-…` on a shared deployment too, and those are not the
  * harness's to remove.
  */
-const ARTIFACT_NAME = /^e2e-[a-z0-9]{6}[a-z0-9]-[a-z0-9._-]+$/;
+const ARTIFACT_NAME = /^e2e-[a-z0-9]{6}[a-z]-[a-z0-9._-]+$/;
 
 export function isHarnessArtifact(name: string): boolean {
   return ARTIFACT_NAME.test(name);
@@ -44,6 +46,9 @@ export function shortId(): string {
 
 // One character each, so every name is as long whichever scope it is in: a
 // longer scope would take from the role what a Mattermost username allows.
+// The letters come first; a run of more scenarios than letters goes on to
+// the digits, whose names the scheduled wipe does not recognise
+// (`NameScope.wipeable`), so only a stack thrown away after the run may.
 const SCOPE_LETTERS = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 export class RunContext {
@@ -67,6 +72,11 @@ export class RunContext {
     return new NameScope(this.runId, letter);
   }
 
+  /** How many scopes this run has handed out. */
+  get scopesTaken(): number {
+    return this.scopes;
+  }
+
   /** Whether a name belongs to this run. */
   owns(name: string): boolean {
     return name.startsWith(`${ARTIFACT_PREFIX}${this.runId}`);
@@ -81,6 +91,15 @@ export class NameScope {
   constructor(runId: string, letter: string) {
     this.runId = runId;
     this.letter = letter;
+  }
+
+  /**
+   * Whether the scheduled wipe recognises this scope's names
+   * (`isHarnessArtifact`): false for a digit scope, whose leftovers only a
+   * stack thrown away after the run clears.
+   */
+  get wipeable(): boolean {
+    return /^[a-z]$/.test(this.letter);
   }
 
   /**

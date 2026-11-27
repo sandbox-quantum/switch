@@ -651,14 +651,17 @@ In this order, each checker shown to fail on a planted bug:
       Then two more on the bridge, and two on the connections clients hold
       (`src/fast/replica-connections.ts`, with an agent's socket and a
       controller's held open by the harness and answering pings):
-      - the case the eventual-ownership model found: the other replica
-        stopped, the holder paused for less than its lease (past half of it,
-        short of the lease less one renewal interval, both from the timers),
-        and the other started during the pause. It must take nothing while
-        the holder's lease holds, and the bridge must settle where it hashes
-        within two balances. Where the bridge hashes is drawn with the new
-        process's id, so the cycle repeats, up to five times, until it hashes
-        to the newcomer;
+      - the case the eventual-ownership model found: a process the key
+        belongs to joins while its holder is paused for less than its lease.
+        The bridge's rightful holder is paused past its lease, so the other
+        takes it over; that one is paused for less than its lease (past half
+        of it, short of the lease less one renewal interval, both from the
+        timers), and the first resumed meanwhile, rejoining at once. It must
+        take nothing while the paused holder's lease holds, and get the
+        bridge back, under a new claim, within two balances of that holder
+        running again. A first version started a replica during the pause
+        instead, but a start took from 4 to 17 seconds against a pause of
+        10, and where the bridge hashed was drawn with the new process's id;
       - the holder taken out of HAProxy's rotation, which keeps the bridge;
       - `presence.online-iff-lease`: an agent's socket claims a room and its
         holder is killed. The survivor must read the agent offline within the

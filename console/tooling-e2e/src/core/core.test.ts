@@ -102,12 +102,15 @@ describe('run naming', () => {
     expect(run.owns('e2e-zzz999a-snd')).toBe(false);
   });
 
-  it('has 36 scopes, each a distinct name the cleanup recognises', () => {
+  it('has 36 scopes of distinct names, the wipe recognising the 26 letter ones', () => {
     const run = new RunContext('abc123');
-    const names = Array.from({ length: 36 }, () => run.scope().name('controller'));
+    const scopes = Array.from({ length: 36 }, () => run.scope());
+    const names = scopes.map((scope) => scope.name('controller'));
     expect(new Set(names).size).toBe(36);
     expect(names.at(-1)).toBe('e2e-abc1239-controller');
-    expect(names.every((name) => isHarnessArtifact(name) && isValidMattermostUsername(name))).toBe(true);
+    expect(names.every(isValidMattermostUsername)).toBe(true);
+    expect(scopes.map((scope) => scope.wipeable)).toEqual([...Array(26).fill(true), ...Array(10).fill(false)]);
+    expect(names.map(isHarnessArtifact)).toEqual(scopes.map((scope) => scope.wipeable));
     expect(() => run.scope()).toThrow(/ran out of name scopes/);
   });
 
@@ -268,6 +271,8 @@ describe('cleanup scope', () => {
       'e2e-hub-shared',
       'e2e-k3x9q2a',
       'my-e2e-k3x9q2a-x',
+      'e2e-test123-bot',
+      'e2e-build12-agent',
     ]) {
       expect(isHarnessArtifact(name)).toBe(false);
     }

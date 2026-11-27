@@ -167,11 +167,11 @@ fault scenarios. Five fault the replica that holds the Mattermost bridge
 - `replica-bridge-holder-paused` (`SIGSTOP` past its lease, then `SIGCONT`).
   The paused replica must stop its work, and drop what its sockets buffered,
   once it runs again.
-- `replica-bridge-holder-paused-briefly`: the other replica is stopped, the
-  holder paused for less than its lease, and the other started during the
-  pause. The newcomer must not take the bridge while the holder's lease holds,
-  and the bridge must then settle where it hashes. It repeats until a cycle
-  where the bridge hashes to the newcomer.
+- `replica-bridge-holder-paused-briefly`: the holder is paused past its lease,
+  so the other takes the bridge; the other is then paused for less than its
+  lease, and the first resumed meanwhile. The rejoining replica, which the
+  bridge hashes to, must not take it while the paused holder's lease holds,
+  and must get it back once that holder runs again.
 - `replica-bridge-holder-drained`: the holder is taken out of HAProxy's
   rotation. It keeps the bridge, and both directions work through the other.
 

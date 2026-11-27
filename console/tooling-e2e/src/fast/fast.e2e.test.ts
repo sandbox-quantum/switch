@@ -59,6 +59,13 @@ describe('fast lane', () => {
       }
 
       const names = run.scope();
+      if (!names.wipeable && env.environment !== 'ephemeral') {
+        throw new Error(
+          `${scenario.header.id} would be scenario number ${run.scopesTaken} of this run, past the ` +
+            `letters the scheduled wipe recognises; on '${env.environment}' what it leaves behind ` +
+            'would never be cleared. Run fewer scenarios at once.'
+        );
+      }
       const fixtures = new Fixtures(env, names, switchClient, mattermost);
       const log = (message: string): void => console.log(`[${scenario.header.id}] ${message}`);
       const replicas =
