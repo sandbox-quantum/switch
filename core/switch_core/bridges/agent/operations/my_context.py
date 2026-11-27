@@ -10,7 +10,9 @@ from the server's own data at the moment of asking.
 
 It shows what the agent's owner may see and nothing more: the workspace's
 messaging apps, which every member sees, and otherwise the owner's own
-connections, agents and machines.
+connections, agents and machines. Machines, and how Switch runs the owner's
+agents on them, are the agent-management surface, so only an agent its owner
+lets manage agents (`can_manage_agents`) is shown them.
 """
 
 from __future__ import annotations
@@ -54,8 +56,8 @@ async def get_my_context() -> dict[str, Any]:
     connections, agents and machines.
 
     Returns:
-        {you, person, workspace, server, messaging_apps, services, agents,
-        machines}.
+        {you, person, workspace, server, messaging_apps, services, agents},
+        and `machines` when you may manage agents (`you.can_manage_agents`).
 
         `you`: {name, can_manage_agents}, the agent making the call.
         `person`: your owner, {name, email, workspace_role, workspace_admin,
@@ -120,8 +122,9 @@ async def get_my_context() -> dict[str, Any]:
         when this server has service connections off.
 
         `agents`: your owner's agents, each {id, name, display_name,
-        who_can_talk, can_manage_agents, services, managed}. `who_can_talk`
-        is "owner_only", "owner_and_owner_agents", "anyone" or "custom".
+        who_can_talk, can_manage_agents, services}, and `managed` when you may
+        manage agents. `who_can_talk` is "owner_only",
+        "owner_and_owner_agents", "anyone" or "custom".
         `managed` is null for an agent Switch does not run on a machine, else
         {machine, desired_state, auto_mode, auto_approve, process}.
         `auto_mode` is whether the provider's automatic review decides which
@@ -129,7 +132,8 @@ async def get_my_context() -> dict[str, Any]:
         without asking anyone whatever `auto_mode` says.
 
         `machines`: your owner's machines as `list_machines` reports them, or
-        null when this server does not run agent management.
+        null when this server does not run agent management. Left out, like
+        each agent's `managed`, unless you may manage agents.
     """
     protocol = get_protocol()
     tenant_id = require_tenant_id()
@@ -208,20 +212,18 @@ async def get_my_context() -> dict[str, Any]:
         )
 
     admin = role == "admin" or owner.role == "admin"
-    port = management_port()
-    managed = (
+    agent_entries: list[dict[str, Any]] = [
         {
-            entry["agent_id"]: entry
-            for entry in await port.list_managed_agents(tenant_id, owner.id)
+            "id": agent.id,
+            "name": agent.name,
+            "display_name": agent.display_name,
+            "who_can_talk": policy_kind(agent.addressing_policy),
+            "can_manage_agents": agent.can_manage_agents,
+            "services": grants[agent.id],
         }
-        if port is not None
-        else {}
-    )
-    machines = (
-        await port.list_machines(tenant_id, owner.id) if port is not None else None
-    )
-
-    return {
+        for agent in agents
+    ]
+    context: dict[str, Any] = {
         "you": {"name": caller.name, "can_manage_agents": caller.can_manage_agents},
         "person": {
             "name": owner.name,
@@ -264,32 +266,37 @@ async def get_my_context() -> dict[str, Any]:
             "how_to_add": _how_to_add(protocol),
         },
         "services": services,
-        "agents": [
-            {
-                "id": agent.id,
-                "name": agent.name,
-                "display_name": agent.display_name,
-                "who_can_talk": policy_kind(agent.addressing_policy),
-                "can_manage_agents": agent.can_manage_agents,
-                "services": grants[agent.id],
-                "managed": (
-                    {
-                        "machine": managed[agent.id].get("machine"),
-                        "desired_state": managed[agent.id].get("desired_state"),
-                        "auto_mode": managed[agent.id].get("auto_mode"),
-                        "auto_approve": managed[agent.id].get("auto_approve"),
-                        "process": (managed[agent.id].get("actual") or {}).get(
-                            "process"
-                        ),
-                    }
-                    if agent.id in managed
-                    else None
-                ),
-            }
-            for agent in agents
-        ],
-        "machines": machines,
+        "agents": agent_entries,
     }
+    if not caller.can_manage_agents:
+        return context
+
+    port = management_port()
+    managed = (
+        {
+            entry["agent_id"]: entry
+            for entry in await port.list_managed_agents(tenant_id, owner.id)
+        }
+        if port is not None
+        else {}
+    )
+    for entry in agent_entries:
+        run = managed.get(entry["id"])
+        entry["managed"] = (
+            {
+                "machine": run.get("machine"),
+                "desired_state": run.get("desired_state"),
+                "auto_mode": run.get("auto_mode"),
+                "auto_approve": run.get("auto_approve"),
+                "process": (run.get("actual") or {}).get("process"),
+            }
+            if run is not None
+            else None
+        )
+    context["machines"] = (
+        await port.list_machines(tenant_id, owner.id) if port is not None else None
+    )
+    return context
 
 
 def _how_to_add(protocol: Any) -> list[dict[str, Any]]:

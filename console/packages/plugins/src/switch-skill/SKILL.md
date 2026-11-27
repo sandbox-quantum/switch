@@ -1196,7 +1196,8 @@ ui-avatars.com is not accepted.
     it is confirmed or still waiting for its code), and their username on each
     app;
   - the services they connected and which agents use them;
-  - their agents and machines.
+  - their agents and, when you have "can manage agents", their machines and
+    how each agent runs on them (left out otherwise).
 
   Call it before helping someone set something up, rather than guessing. It
   shows only what your owner may see.
