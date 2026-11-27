@@ -29,7 +29,7 @@ RUN npm install --global --prefix /opt/switch/providers \
  && npm install --global --prefix /opt/switch/controller /tmp/controller.tgz \
  && rm -f /tmp/controller.tgz \
  && npm cache clean --force \
- && /opt/switch/controller/bin/switch-agent-controller --box --version \
+ && /opt/switch/controller/bin/switch-agent-controller --version \
  && /opt/switch/providers/bin/claude --version \
  && /opt/switch/providers/bin/codex --version
 
