@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import sys
+import tempfile
 import threading
 import uuid
 from dataclasses import replace
@@ -229,9 +230,19 @@ _HEALTH_PATH = Path("/tmp/switch-hosted-controller-health")
 
 
 def _touch_health() -> None:
-    temporary = _HEALTH_PATH.with_name(f"{_HEALTH_PATH.name}.{os.getpid()}")
-    temporary.write_text(f"{time()}\n")
-    temporary.replace(_HEALTH_PATH)
+    """Write the heartbeat whole, through a temporary file no other account can
+    have created first: `/tmp` is shared, and a name it could guess would let
+    it plant a link there for this to write through."""
+    descriptor, temporary = tempfile.mkstemp(
+        dir=_HEALTH_PATH.parent, prefix=f"{_HEALTH_PATH.name}."
+    )
+    try:
+        with os.fdopen(descriptor, "w") as file:
+            file.write(f"{time()}\n")
+        os.replace(temporary, _HEALTH_PATH)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 def _health(max_age: float) -> int:
