@@ -151,6 +151,8 @@ async def enrollment_code(
     revision: int,
     keyring: Keyring,
     now: datetime,
+    *,
+    fresh: bool,
 ) -> str:
     """The code the machine's controller for the workspace enrolls with at the
     machine's `revision`: the same one for every retry of a revision while it
@@ -159,7 +161,20 @@ async def enrollment_code(
     15 minutes gets a fresh one, never a dead one). A new code makes the
     old unused one stop working, so a box has one live code at a time. Callers
     hold the machine's lock (`CloudMachineStore.locked`), so two at once can't
-    both mint. The caller commits."""
+    both mint. The caller commits.
+
+    `fresh=False` is a v1 machine's: the stored code for the revision is reused
+    as it is, and nothing is retired, as before boxes."""
+    if not fresh:
+        if (
+            workspace.enrollment_code_revision == revision
+            and workspace.enrollment_code_encrypted is not None
+        ):
+            return keyring.decrypt(workspace.enrollment_code_encrypted)
+        code = await cloud_enrollment().machine_enrollment_code(session, workspace, now)
+        workspace.enrollment_code_encrypted = keyring.encrypt(code)
+        workspace.enrollment_code_revision = revision
+        return code
     enrollment = cloud_enrollment()
     if (
         workspace.enrollment_code_revision == revision
@@ -804,8 +819,21 @@ async def wake_controller_machine(
     if found is None:
         return None
     machine, workspace = found
+    store = CloudMachineStore()
     if machine.backend != "box":
-        # A v1 cloud machine is never started or woken: v1 is retired.
+        # A v1 machine wakes as it always has: pause, turn-off and the rest
+        # are powers over boxes.
+        if idle_sleeping(machine):
+            store.start(machine, now)
+            emit_after_commit(
+                session,
+                current_telemetry(),
+                "cloud_machine_woken",
+                {"trigger": trigger},
+            )
+            record_machine_event(session, "woken", trigger, machine.backend)
+        elif machine.desired_state == "running":
+            machine.active_at = now
         return machine
     # Paused, or turned off in this controller's workspace: a
     # message or a placement never wakes the box for it.
@@ -821,7 +849,6 @@ async def wake_controller_machine(
         # it back, never a message or a placement, whatever stop reason it
         # was left with (a turn-off's included).
         return machine
-    store = CloudMachineStore()
     # A box stopped as `turned_off` for another workspace (its only one then,
     # since joined by this one) wakes for this one: that workspace's controller
     # stays revoked and refused, so only this workspace's agents come back.

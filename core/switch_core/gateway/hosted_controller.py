@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.accounts.suspension import owner_is_suspended
+from switch_core.box_cluster import box_cluster_on, require_box_cluster
 from switch_core.bridges.agent.refusals import (
     client_address,
     method_of,
@@ -291,7 +292,8 @@ def machine_item(machine: CloudMachine) -> dict:
         "expedite_deletion": machine.expedite_deletion,
         "bundle_revision": machine.revision,
     }
-    # `box`: the box side acts only on `box`.
+    # `vm` or `box`: the v1 controller acts only on `vm`, the box side only
+    # on `box`.
     item["backend"] = machine.backend
     if machine.backend == "box":
         # Whether the box may keep its proxy login: not while it's in error or
@@ -612,33 +614,36 @@ async def sweep_hosted_machines(
     settings: HostedControllerSettings,
     now: datetime,
 ) -> list[CloudMachine]:
-    """Switch's own lifecycle changes to boxes: the lifecycle sweep, spent
-    codes, expired box requests and boxes to ask for again. Run by the box
-    scaler's poll (`GET /machines`) and by Core's own loop (`hosted_sweep`), so
-    a box whose request expires is marked even when nothing polls. Returns the
-    boxes read at the start. A v1 cloud machine is never read or changed here:
-    v1 is retired. The caller commits."""
+    """Switch's own lifecycle changes to cloud machines: the lifecycle sweep of
+    every machine, v1's included, and with a box cluster the boxes' spent
+    codes, expired box requests and boxes to ask for again. Run by each
+    controller's poll (`GET /machines`) and, with a box cluster, by Core's own
+    loop (`hosted_sweep`), so a box whose request expires is marked even when
+    nothing polls. Returns the machines read at the start. The caller commits."""
     store = CloudMachineStore()
     candidates = list(
         await session.scalars(
             select(CloudMachine)
-            .where(CloudMachine.state != "deleted", CloudMachine.backend == "box")
+            .where(CloudMachine.state != "deleted")
             .order_by(CloudMachine.created_at)
         )
     )
-    # First, so a box whose request ran out is marked as not made before
-    # the lifecycle sweep could time it out as never scheduled: the same
-    # outcome whether Core's loop or the controller's poll gets there.
-    await expire_provisions(session, now)
-    await session.commit()
-    # A warm pool bind gets 30 seconds; then its claim fails.
-    owned: list[str] = []
-    await expire_binds(session, now, owned)
-    await session.commit()
-    await revoke_owned_box_controllers(factory, owned)
-    # A machine whose box is still being made is left alone: its start
-    # clocks run from the box's existence, not the claim.
-    being_made = await open_provision_machines(session, now)
+    boxes = box_cluster_on()
+    being_made: frozenset[str] = frozenset()
+    if boxes:
+        # First, so a box whose request ran out is marked as not made before
+        # the lifecycle sweep could time it out as never scheduled: the same
+        # outcome whether Core's loop or the controller's poll gets there.
+        await expire_provisions(session, now)
+        await session.commit()
+        # A warm pool bind gets 30 seconds; then its claim fails.
+        owned: list[str] = []
+        await expire_binds(session, now, owned)
+        await session.commit()
+        await revoke_owned_box_controllers(factory, owned)
+        # A machine whose box is still being made is left alone: its start
+        # clocks run from the box's existence, not the claim.
+        being_made = await open_provision_machines(session, now)
     for candidate in candidates:
         if candidate.id in being_made:
             continue
@@ -656,10 +661,14 @@ async def sweep_hosted_machines(
                 factory,
             )
         await session.commit()
+    if not boxes:
+        return candidates
     if _codes_due(now):
-        # Stored enrolment codes live no longer than the codes.
+        # Stored enrolment codes live no longer than the codes. A box's
+        # only: a v1 machine's are kept, as before.
         for candidate in candidates:
-            await clear_spent_codes(factory, candidate.id, now)
+            if candidate.backend == "box":
+                await clear_spent_codes(factory, candidate.id, now)
     await _ask_for_waiting_boxes(factory, candidates, being_made, config, settings, now)
     # The warm pool: retire what no claim should take, then refill.
     await sweep_pool(factory, config, now)
@@ -708,19 +717,21 @@ async def machines(
     reconciler_heard()
     now = datetime.now(UTC)
     await sweep_hosted_machines(session, factory, config, settings, now)
-    # Boxes only: a v1 cloud machine is never listed, so nothing acts on it.
     rows = await session.scalars(
         select(CloudMachine)
-        .where(CloudMachine.state != "deleted", CloudMachine.backend == "box")
+        .where(CloudMachine.state != "deleted")
         .order_by(CloudMachine.created_at)
         .execution_options(populate_existing=True)
     )
     listed = list(rows)
     response: dict = {"machines": [machine_item(machine) for machine in listed]}
-    # Which boxes the box scaler may report missing.
-    expected = await boxes_expected(session, listed)
-    for item in response["machines"]:
-        item["box_expected"] = item["machine_id"] in expected
+    if box_cluster_on():
+        # Which boxes the box scaler may report missing: on a box's entry
+        # only, so a v1 machine's entry stays as the v1 controller reads it.
+        expected = await boxes_expected(session, listed)
+        for item in response["machines"]:
+            if item["backend"] == "box":
+                item["box_expected"] = item["machine_id"] in expected
     # For the operator only (this route takes the controller's token): the
     # server lets every workspace and account claim a machine. Absent when
     # either list narrows it; owners' routes never carry it.
@@ -730,7 +741,7 @@ async def machines(
     return response
 
 
-@router.get("/pool")
+@router.get("/pool", dependencies=[Depends(require_box_cluster)])
 async def pool(
     session: Annotated[AsyncSession, Depends(box_controller_session)],
 ) -> dict:
@@ -757,9 +768,6 @@ async def pool(
 
 
 BOX_NOT_BOUND = "The box is still being handed to its person; try again shortly."
-# A v1 cloud machine asking to boot, enrol or report: v1 is retired, and Core
-# never starts, wakes or serves one again.
-V1_RETIRED = "v1 cloud machines are retired."
 
 
 async def _locked_machine(session: AsyncSession, machine_id: str) -> CloudMachine:
@@ -786,10 +794,7 @@ async def prepare(
     machine = await _locked_machine(session, machine_id)
     if machine.state == "deleted" or machine.desired_state == "deleted":
         raise HTTPException(409, "machine is deleted")
-    if machine.backend != "box":
-        # A v1 cloud machine never boots or enrols again: v1 is retired.
-        raise HTTPException(409, V1_RETIRED)
-    if not await owner_written(session, machine.id):
+    if machine.backend == "box" and not await owner_written(session, machine.id):
         # A warm pool box given to its person whose owner isn't written yet
         # (it could still go to the reaper): no code, so nothing can enrol.
         await session.commit()
@@ -810,8 +815,11 @@ async def prepare(
                     continue
                 # Paused, or turned off in this workspace: no
                 # controller and no enrollment code, so nothing new can connect.
-                blocked = await block_reason_in(
-                    scoped, machine.owner_id, workspace.tenant_id
+                # Box powers only: a v1 machine is never refused for them.
+                blocked = (
+                    await block_reason_in(scoped, machine.owner_id, workspace.tenant_id)
+                    if machine.backend == "box"
+                    else None
                 )
                 if blocked is not None:
                     logger.info(
@@ -835,6 +843,8 @@ async def prepare(
                             machine.revision,
                             config.keyring,
                             now,
+                            # Fresh codes after expiry: a box's only.
+                            fresh=machine.backend == "box",
                         )
                     )
                 except CloudEnrollmentUnavailable as error:
@@ -984,10 +994,6 @@ async def observe(
 ) -> dict:
     reconciler_heard()
     machine = await _locked_machine(session, machine_id)
-    if machine.backend != "box":
-        # Nothing a v1 cloud machine's controller observes is taken: v1 is retired.
-        await session.commit()
-        raise HTTPException(409, V1_RETIRED)
     # Counted once this answer's transaction commits. Every answer from here
     # is a 200 and commits, so the reconciler forgets only what was counted;
     # a batch counts twice only if Core's answer is lost after the commit.
@@ -1063,7 +1069,7 @@ async def observe(
         # and box facts are kept whichever branch ran, an ignored observation too.
         await session.commit()
         return machine_item(machine)
-    if body.error_code == BOX_MISSING:
+    if body.error_code == BOX_MISSING and machine.backend == "box":
         ask_again = await _box_missing(session, factory, config, settings, machine, now)
         await session.commit()
         if ask_again:
@@ -1272,7 +1278,7 @@ async def _capped_body(request: Request, cap: int) -> bytes:
     return b"".join(chunks)
 
 
-@router.post("/cluster")
+@router.post("/cluster", dependencies=[Depends(require_box_cluster)])
 async def cluster_report(
     request: Request,
     _session: Annotated[AsyncSession, Depends(box_controller_session)],

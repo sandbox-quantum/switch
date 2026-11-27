@@ -633,10 +633,10 @@ async def box_allowed(
     # The server's main switch, as `machines_enabled` reads it.
     if not config.hosted_agents_enabled or config.hosted_launch_capacity <= 0:
         return False
-    if not machines_user_allowed(settings, machine.owner_id):
+    if not machines_user_allowed(settings, machine.owner_id, for_v1=False):
         return False
     for workspace in await workspaces_on(factory, machine.id):
-        if not machines_tenant_allowed(settings, workspace.tenant_id):
+        if not machines_tenant_allowed(settings, workspace.tenant_id, for_v1=False):
             continue
         if await block_reason(factory, machine.owner_id, workspace.tenant_id) is None:
             return True
@@ -1086,9 +1086,9 @@ async def claim_pool_box(
     ):
         return None
     tenant_id = require_tenant_id()
-    if not machines_user_allowed(settings, owner_id) or not machines_tenant_allowed(
-        settings, tenant_id
-    ):
+    if not machines_user_allowed(
+        settings, owner_id, for_v1=False
+    ) or not machines_tenant_allowed(settings, tenant_id, for_v1=False):
         return None
     if await block_reason_in(session, owner_id, tenant_id) is not None:
         return None

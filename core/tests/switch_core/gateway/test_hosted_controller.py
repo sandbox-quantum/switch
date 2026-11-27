@@ -171,6 +171,11 @@ async def controller_app(session_factory):
         hosted_disk_retention_days=7,
         hosted_launch_capacity=2,
         hosted_agents_enabled=True,
+        # The rest of what a claim reads, at `SwitchConfig`'s defaults.
+        hosted_launch_capacity_per_workspace=0,
+        hosted_pool_size=0,
+        hosted_provisions_per_minute=5,
+        hosted_box_ceiling=50,
     )
     app = FastAPI()
     app.state.hosted_controller_settings = settings

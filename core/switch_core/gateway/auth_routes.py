@@ -391,7 +391,7 @@ async def signup(
             machine = SignupMachine(
                 status="unavailable", reason=MACHINE_AFTER_WORKSPACE
             )
-        elif config.hosted_pool_size > 0:
+        elif box_cluster_on() and config.hosted_pool_size > 0:
             # A warm pool: no box at sign-up. One is
             # taken from the pool, or made, at the person's first start, so
             # the pool's boxes go to people who use them. The answer says

@@ -1,6 +1,7 @@
 """A paused owner, or one turned off in this workspace, gets no
 new box, no controller and no enrolment code, and can't undo the block from
-their own machine page."""
+their own machine page. These are powers over boxes, so the fixture's
+machine is one: a v1 machine is never refused for them (`test_box_cluster`)."""
 
 from __future__ import annotations
 
@@ -20,6 +21,13 @@ from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
     prepare,
     update_machine,
 )
+
+
+@pytest.fixture(autouse=True)
+async def _a_box(controller_app):  # noqa: F811
+    await update_machine(
+        controller_app.factory, controller_app.machine_id, backend="box"
+    )
 
 
 async def _lifecycle(app: ControllerApp, action: str, revision: int):

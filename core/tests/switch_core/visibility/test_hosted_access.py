@@ -107,9 +107,15 @@ async def _world(rls_harness: RLSHarness, workspaces: int = 1):
 
 
 async def _box(
-    rls_harness: RLSHarness, user_id: str, tenants: list[str], *, state="ready"
+    rls_harness: RLSHarness,
+    user_id: str,
+    tenants: list[str],
+    *,
+    state="ready",
+    backend="box",
 ):
-    """The user's box, serving each workspace with a cloud controller."""
+    """The user's box (or, with `backend="vm"`, v1 machine), serving each
+    workspace with a cloud controller."""
     with tenant_scope(tenants[0]):
         async with rls_harness.owner() as session:
             machine = await seed_machine(
@@ -119,6 +125,7 @@ async def _box(
                 desired_state="running",
                 stop_reason=None,
                 revision=1,
+                backend=backend,
             )
             controllers = [(tenants[0], (await link_controller(session, machine)).id)]
             await session.commit()
@@ -527,6 +534,46 @@ async def test_turning_off_the_only_workspace_stops_the_box(
         await task
     machine = await _machine(rls_harness, machine_id)
     assert machine.desired_state == "stopped" and machine.stop_reason == "turned_off"
+
+
+async def test_a_pause_leaves_a_v1_machine_running_and_its_controllers_alone(
+    rls_harness: RLSHarness,
+) -> None:
+    """A pause is a power over boxes (freeze spec 2b): a v1 owner's mark is
+    set, but their v1 machine keeps running and no controller is revoked."""
+    user_id, operator_id, tenants = await _world(rls_harness, workspaces=2)
+    machine_id, _ = await _box(rls_harness, user_id, tenants, backend="vm")
+    revoker = FakeRevoker()
+    access = _access(rls_harness, revoker)
+    await access.pause(actor_id=operator_id, user_id=user_id, reason="Misuse")
+    for task in list(access.pending):
+        await task
+    machine = await _machine(rls_harness, machine_id)
+    assert (machine.desired_state, machine.stop_reason) == ("running", None)
+    assert (revoker.revoked, revoker.announced) == ([], [])
+
+
+async def test_turning_off_leaves_a_v1_machine_running_and_its_controllers_alone(
+    rls_harness: RLSHarness,
+) -> None:
+    """A turn-off is a power over boxes (freeze spec 2b), even in the v1
+    machine's only workspace."""
+    user_id, admin_id, [x] = await _world(rls_harness)
+    machine_id, _ = await _box(rls_harness, user_id, [x], backend="vm")
+    revoker = FakeRevoker()
+    access = _access(rls_harness, revoker)
+    await access.set_member(
+        actor_id=admin_id,
+        tenant_id=x,
+        user_id=user_id,
+        enabled=False,
+        reason="Left the team",
+    )
+    for task in list(access.pending):
+        await task
+    machine = await _machine(rls_harness, machine_id)
+    assert (machine.desired_state, machine.stop_reason) == ("running", None)
+    assert (revoker.revoked, revoker.announced) == ([], [])
 
 
 async def test_pause_wins_over_turning_on(rls_harness: RLSHarness) -> None:

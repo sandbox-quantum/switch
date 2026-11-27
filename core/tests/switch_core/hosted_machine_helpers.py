@@ -34,11 +34,13 @@ async def seed_machine(
     desired_state: str,
     stop_reason: str | None,
     revision: int,
+    backend: str = "vm",
 ) -> CloudMachine:
     now = datetime.now(UTC)
     machine = CloudMachine(
         id=str(uuid4()),
         owner_id=owner_id,
+        backend=backend,
         state=state,
         desired_state=desired_state,
         stop_reason=stop_reason,

@@ -13,6 +13,7 @@ from pydantic import (
     model_validator,
 )
 
+from switch_core.box_cluster import box_cluster_on
 from switch_core.secret_files import mounted_for_cores_group
 
 logger = logging.getLogger(__name__)
@@ -218,34 +219,47 @@ class HostedControllerSettings(BaseModel):
         return value.rstrip("/")
 
 
-def _admits(ids: list[str] | None, member: str) -> bool:
-    """The cloud-machine list rule: unset admits nobody, `"*"` everyone, and a
-    list whom it names."""
+def _admits(ids: list[str] | None, member: str, *, for_v1: bool) -> bool:
+    """The cloud-machine list rule: `"*"` admits everyone and a list whom it
+    names. Unset admits nobody to a box, and everyone to their existing v1
+    machine, as it did before boxes, so a server's v1 users aren't shut out
+    when it gains a box cluster."""
     if ids is None:
-        return False
+        return for_v1
     return EVERYONE in ids or member in ids
 
 
-def machines_tenant_allowed(settings: HostedControllerSettings, tenant_id: str) -> bool:
-    """Whether `allowed_tenant_ids` admits the workspace to cloud machines."""
-    return _admits(settings.allowed_tenant_ids, tenant_id)
+def machines_tenant_allowed(
+    settings: HostedControllerSettings, tenant_id: str, *, for_v1: bool
+) -> bool:
+    """Whether `allowed_tenant_ids` admits the workspace to cloud machines:
+    to the person's existing v1 machine (`for_v1`), or to a box."""
+    return _admits(settings.allowed_tenant_ids, tenant_id, for_v1=for_v1)
 
 
-def machines_user_allowed(settings: HostedControllerSettings, user_id: str) -> bool:
-    """Whether `allowed_user_ids` admits the account to cloud machines."""
-    return _admits(settings.allowed_user_ids, user_id)
+def machines_user_allowed(
+    settings: HostedControllerSettings, user_id: str, *, for_v1: bool
+) -> bool:
+    """Whether `allowed_user_ids` admits the account to cloud machines: to its
+    existing v1 machine (`for_v1`), or to a box."""
+    return _admits(settings.allowed_user_ids, user_id, for_v1=for_v1)
 
 
 def open_to_all(settings: HostedControllerSettings | None, capacity: int) -> bool:
     """Whether this server lets anyone at all claim a cloud machine: it can
-    run them, and both lists are `"*"`. Not wrong in itself, but worth saying
-    out loud."""
+    run them, and neither list narrows who may (`_admits`). Not wrong in
+    itself, but worth saying out loud."""
     return (
         settings is not None
         and capacity > 0
-        and settings.allowed_tenant_ids == [EVERYONE]
-        and settings.allowed_user_ids == [EVERYONE]
+        and _everyone(settings.allowed_tenant_ids)
+        and _everyone(settings.allowed_user_ids)
     )
+
+
+def _everyone(ids: list[str] | None) -> bool:
+    """For boxes when the server has a box cluster, else for v1 machines."""
+    return ids == [EVERYONE] or (ids is None and not box_cluster_on())
 
 
 def warn_if_open_to_all(

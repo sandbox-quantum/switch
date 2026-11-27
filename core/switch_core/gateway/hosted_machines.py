@@ -87,18 +87,23 @@ def controller_settings(request: Request) -> HostedControllerSettings:
 
 
 def machines_enabled(
-    config: SwitchConfig, settings: HostedControllerSettings, user_id: str
+    config: SwitchConfig,
+    settings: HostedControllerSettings,
+    user_id: str,
+    *,
+    on_v1: bool,
 ) -> bool:
     """Whether this account, in the bound tenant, may use cloud machines on
-    this server: never without a box cluster. An account off `allowed_user_ids` gets the same answer as a
+    this server. An account off `allowed_user_ids` gets the same answer as a
     workspace off `allowed_tenant_ids`, so neither tells it which list it
-    missed."""
+    missed. `on_v1` is whether the person has a live v1 machine, which the lists
+    read as before boxes (`_admits`). A person without one also needs a box
+    cluster (`ensure_machine`): no v1 machine is ever made."""
     return (
-        box_cluster_on()
-        and config.hosted_agents_enabled
+        config.hosted_agents_enabled
         and config.hosted_launch_capacity > 0
-        and machines_tenant_allowed(settings, require_tenant_id())
-        and machines_user_allowed(settings, user_id)
+        and machines_tenant_allowed(settings, require_tenant_id(), for_v1=on_v1)
+        and machines_user_allowed(settings, user_id, for_v1=on_v1)
     )
 
 
@@ -245,17 +250,47 @@ def _wire_stop_reason(machine: CloudMachine) -> str | None:
     return machine.stop_reason
 
 
-# What the owner of a v1 cloud machine is told: it's retired and never started
-# again, and a box can't be made for them until it is cleared away.
-V1_MACHINE_IN_THE_WAY = (
-    "Your cloud machine is from an earlier version of hosted agents, which has "
-    "been retired. A new one can be made for you once it has been cleared "
-    "away; ask your administrator."
-)
+# What a person with no cloud machine is told on a server with no box cluster:
+# no v1 machine is ever made, and there is nothing to make a box on yet.
+BOXES_NOT_YET = "Hosted agents aren't available here yet."
+
+
+def _on_v1(machine: CloudMachine | None) -> bool:
+    """Whether the person's live machine is a v1 one, which keeps serving them."""
+    return machine is not None and machine.backend == "vm"
 
 
 class MachineUnavailable(Exception):
     """This server offers the bound tenant no cloud machines; the message is the 503 detail."""
+
+
+async def _may_have(
+    session: AsyncSession,
+    config: SwitchConfig,
+    settings: HostedControllerSettings,
+    owner_id: str,
+    *,
+    on_v1: bool,
+) -> None:
+    """Refuse the person a machine the server doesn't offer them.
+
+    The box cluster is checked before the lists, so its answer says nothing
+    about them. A person with a live v1 machine keeps being served by it, on
+    v1's reading of the lists; anyone else needs a box, on the closed reading.
+    A v1 machine is never refused for a box power; a box turned off in this
+    workspace by its admin is. A pause is refused by the claim itself
+    (`claim_conflict`).
+    """
+    if not box_cluster_on() and not on_v1:
+        raise MachineUnavailable(BOXES_NOT_YET)
+    if not machines_enabled(config, settings, owner_id, on_v1=on_v1):
+        raise MachineUnavailable(MACHINES_DISABLED)
+    if (
+        not on_v1
+        and await block_reason_in(session, owner_id, require_tenant_id())
+        is StopReason.TURNED_OFF_BY_ADMIN
+    ):
+        raise CloudMachineConflict(MACHINE_TURNED_OFF)
 
 
 async def ensure_machine(
@@ -274,23 +309,18 @@ async def ensure_machine(
     machines and `CloudMachineConflict` when none can be had. The caller
     commits.
     """
-    if settings is None or not machines_enabled(config, settings, owner_id):
+    if settings is None:
         raise MachineUnavailable(MACHINES_DISABLED)
     machines = CloudMachineStore()
-    # Turned off in this workspace by its admin: no box for it.
-    # A pause is refused by the claim itself (`claim_conflict`).
-    if (
-        await block_reason_in(session, owner_id, require_tenant_id())
-        is StopReason.TURNED_OFF_BY_ADMIN
-    ):
-        raise CloudMachineConflict(MACHINE_TURNED_OFF)
+    on_v1 = _on_v1(await machines.live_for_owner(session, owner_id))
+    await _may_have(session, config, settings, owner_id, on_v1=on_v1)
     await lock_claims(session)
     existing = await machines.live_for_owner(session, owner_id)
     workspace = None
-    if existing is not None and existing.backend != "box":
-        # A v1 cloud machine is never claimed, joined, started or revived: v1
-        # is retired. Its owner gets no box over it until it is cleared away.
-        raise MachineUnavailable(V1_MACHINE_IN_THE_WAY)
+    if on_v1 and not _on_v1(existing):
+        # Again under the claims lock: a v1 machine deleted meanwhile leaves
+        # only a box, which v1's reading of the lists never grants.
+        await _may_have(session, config, settings, owner_id, on_v1=False)
     if existing is not None:
         existing = await machines.locked(session, existing.id)
         workspace = (
@@ -332,7 +362,7 @@ async def ensure_machine(
     if (
         claimed.change == "new"
         and claimed.machine.backend == "box"
-        and getattr(config, "hosted_pool_size", 0) > 0
+        and config.hosted_pool_size > 0
     ):
         record_pool_claim(session, "pool" if claimed.from_pool else "fallback")
     return claimed.machine, claimed.workspace
@@ -365,10 +395,13 @@ async def warm_after_sign_in(
     box goes to a person at their first start."""
     if not config.gateway_onboarding_enabled or settings is None or tenant_id is None:
         return
-    if config.hosted_pool_size > 0:
+    if box_cluster_on() and config.hosted_pool_size > 0:
         return
     async with tenant_session(factory, tenant_id) as session:
-        if not machines_enabled(config, settings, user_id):
+        on_v1 = _on_v1(await CloudMachineStore().live_for_owner(session, user_id))
+        if not (box_cluster_on() or on_v1) or not machines_enabled(
+            config, settings, user_id, on_v1=on_v1
+        ):
             return
         try:
             await ensure_machine(session, factory, user_id, config, settings)
@@ -392,8 +425,13 @@ async def owned_machines(
     workspace it is the same machine, joined from there. `available` says
     whether the bound workspace may claim one here at all, so a client can
     offer cloud agents only where claiming one can work."""
-    available = settings is not None and machines_enabled(config, settings, user.id)
     machine = await CloudMachineStore().live_for_owner(session, user.id)
+    on_v1 = _on_v1(machine)
+    available = (
+        settings is not None
+        and (box_cluster_on() or on_v1)
+        and machines_enabled(config, settings, user.id, on_v1=on_v1)
+    )
     workspace = None if machine is None else await workspace_on(session, machine.id)
     if machine is None or workspace is None:
         return {"available": available, "machines": []}
@@ -478,12 +516,13 @@ async def lifecycle(
         machine.state in RETIRED_STATES or machine.desired_state in RETIRED_STATES
     ):
         raise HTTPException(409, f"machine is {machine.desired_state}")
-    if machine.backend != "box":
-        # A v1 cloud machine takes no start, stop or retry: v1 is retired.
-        raise HTTPException(409, MACHINES_DISABLED)
     # Paused, or turned off here: every action is refused, so the owner can't
     # undo an operator's pause or an admin's switch.
-    blocked = await block_reason_in(session, user.id, workspace.tenant_id)
+    blocked = (
+        await block_reason_in(session, user.id, workspace.tenant_id)
+        if machine.backend == "box"
+        else None
+    )
     if blocked is StopReason.PAUSED_BY_SWITCH:
         raise HTTPException(409, MACHINE_PAUSED)
     if blocked is StopReason.TURNED_OFF_BY_ADMIN:

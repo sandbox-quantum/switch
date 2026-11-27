@@ -145,9 +145,10 @@ def _apps() -> dict[str, Any]:
     return {"gateway": gateway, "agent_bridge": bridge}
 
 
-# The upstream hosted controller routes, now box routes too: behind the gate at
-# their router, and served only to the box workers.
-BOX_UPSTREAM_ROUTES = {
+# The upstream hosted controller routes, which the v1 controller and the box
+# workers both call: never behind the box cluster gate, so a server's existing
+# v1 machines keep being managed with no box cluster (v1 is frozen, not removed).
+SHARED_ROUTES = {
     ("gateway", "GET", "/hosted-controller/machines"),
     ("gateway", "POST", "/hosted-controller/machines/{machine_id}/observation"),
     ("gateway", "POST", "/hosted-controller/machines/{machine_id}/prepare"),
@@ -165,12 +166,15 @@ def _new_routes() -> list[tuple[str, str, str, Any]]:
 
 
 def _box_routes() -> list[tuple[str, str, str, Any]]:
-    """Every route behind the box cluster gate: the new ones, and the upstream
-    hosted controller routes."""
-    found = _new_routes()
+    """Every route behind the box cluster gate: the new ones."""
+    return _new_routes()
+
+
+def _shared_routes() -> list[tuple[str, str, str, Any]]:
+    found = []
     for name, app in _apps().items():
         for method, path, route in _walk(app.routes):  # type: ignore[attr-defined]
-            if (name, method, path) in BOX_UPSTREAM_ROUTES:
+            if (name, method, path) in SHARED_ROUTES:
                 found.append((name, method, path, route))
     return found
 
@@ -178,13 +182,27 @@ def _box_routes() -> list[tuple[str, str, str, Any]]:
 def test_every_box_route_carries_the_box_cluster_gate() -> None:
     assert {(n, m, p) for n, m, p, _ in _new_routes()} == NEW_ROUTES
     box = _box_routes()
-    assert {(n, m, p) for n, m, p, _ in box} == NEW_ROUTES | BOX_UPSTREAM_ROUTES
     ungated = [
         (name, method, path)
         for name, method, path, route in box
         if not _gated(getattr(route, "dependant", None))
     ]
     assert ungated == []
+
+
+def test_the_routes_v1_shares_are_never_behind_the_gate() -> None:
+    """The v1 controller's routes stay up with no box cluster (today's
+    production): ungated, and answering, not 404."""
+    shared = _shared_routes()
+    assert {(n, m, p) for n, m, p, _ in shared} == SHARED_ROUTES
+    assert [
+        (n, m, p) for n, m, p, r in shared if _gated(getattr(r, "dependant", None))
+    ] == []
+    assert set_box_cluster(None, None) is False
+    app = _apps()["gateway"]
+    app.dependency_overrides[controller_settings] = _settings
+    for (method, path), resp in _answers(app, shared, "gateway").items():
+        assert resp.status_code != 404, (method, path)
 
 
 def test_nothing_upstream_serves_is_gone() -> None:
@@ -348,7 +366,7 @@ def test_with_no_box_cluster_every_box_route_answers_as_absent(
 def test_without_credentials_every_box_route_is_refused() -> None:
     """On a server with a box cluster configured, a caller who presents no
     credentials is refused on every box route (401 or 403), never served."""
-    box = _box_routes()
+    box = _box_routes() + _shared_routes()
     apps = _apps()
     assert set_box_cluster(_settings(), KEY) is True
     for name, app in apps.items():

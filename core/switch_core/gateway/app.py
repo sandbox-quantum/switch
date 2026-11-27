@@ -249,13 +249,10 @@ def create_gateway_app(
     app.include_router(
         operator_action_router, tags=["hosted-operator"], dependencies=box_only
     )
-    # The owner's own machine routes stay up: without a box cluster they say
-    # cloud machines aren't available. The hosted controller's routes are box
-    # routes.
+    # These two serve existing v1 machines whatever the server has, so they
+    # stay up; their box routes are gated one by one.
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
-    app.include_router(
-        hosted_controller_router, tags=["hosted-controller"], dependencies=box_only
-    )
+    app.include_router(hosted_controller_router, tags=["hosted-controller"])
     app.include_router(
         hosted_provisioner_router, tags=["hosted-provisioner"], dependencies=box_only
     )

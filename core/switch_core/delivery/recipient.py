@@ -1701,13 +1701,15 @@ class AgentRecipient:
             machine = await self._wake_cloud_machine(binding.controller_id)
             if machine is not None and machine.admin_stopped:
                 return _cloud_machine_admin_stopped_message(binding.controller_name)
-            if machine is None or not machine.box:
-                # An agent on its owner's own machine, or on a v1 cloud machine
-                # (never woken: v1 is retired): named as offline.
+            if machine is None:
+                # An agent on its owner's own machine: named as today.
                 return _machine_offline_message(binding.controller_name, owner)
             if machine.state == "error":
                 # A hosted box Switch can't reach: the agreed line, the same words the
-                # owner's Console shows for `cant_reach`.
+                # owner's Console shows for `cant_reach`. A v1 machine keeps its
+                # offline line.
+                if not machine.box:
+                    return _machine_offline_message(binding.controller_name, owner)
                 return room_line(StopReason.CANT_REACH, owner)
             if machine.owner_stopped:
                 return _cloud_machine_stopped_message(binding.controller_name, owner)
@@ -2070,6 +2072,8 @@ class AgentRecipient:
                 MachineWorkspace.tenant_id == self.tenant_id,
                 MachineWorkspace.controller_id == binding.controller_id,
                 CloudMachine.state != "deleted",
+                # Box powers only: a v1 machine's agents are never blocked.
+                CloudMachine.backend == "box",
             )
         )
         if owner_id is None:
