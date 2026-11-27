@@ -5283,6 +5283,11 @@ version of their own to them without also giving them a release of their own.
   are now resolved first, a dangling one included, and one leading out of the
   location is refused.
 
+- **On Windows, a command for a `.cmd` or `.bat` CLI with a line break in an
+  argument is refused.** Such a CLI runs through cmd.exe, which treats a line
+  break as the end of one command and the start of the next whatever the
+  quoting, so the rest of the argument would have run as a command of its own.
+
 - **Cancelling an attachment upload checks the id.** The session host deleted
   `<id>.part` for whatever id it was sent, so an id such as `../x` could delete
   a file outside its upload folder.

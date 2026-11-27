@@ -47,7 +47,7 @@ export function spawnProvider(
   });
 }
 
-export function execProvider(
+export async function execProvider(
   command: string,
   args: readonly string[],
   options: ExecFileOptions

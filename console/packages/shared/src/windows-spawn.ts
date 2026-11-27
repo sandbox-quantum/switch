@@ -59,10 +59,27 @@ export function getWindowsPathExts(
 }
 
 /** What cmd.exe treats specially on a command line. */
-const CMD_EXE_META = /([()\][%!^"`<>&|;, *?\r\n])/g;
+const CMD_EXE_META = /([()\][%!^"`<>&|;, *?])/g;
+
+/**
+ * cmd.exe ends a command at a line break, and no escaping, carets or quotes,
+ * stops it: what follows runs as a command of its own.
+ */
+const LINE_BREAK = /[\r\n]/;
+
+/** Thrown for a value that cannot be put on a cmd.exe command line safely. */
+export class CmdExeLineBreakError extends Error {
+  constructor(what: string) {
+    super(
+      `Refusing to run a Windows batch file with a line break in its ${what}: cmd.exe would run the rest as a separate command.`
+    );
+    this.name = 'CmdExeLineBreakError';
+  }
+}
 
 /** A program path for a cmd.exe command line: each metacharacter caret-escaped. */
 export function escapeCmdExeCommand(command: string): string {
+  if (LINE_BREAK.test(command)) throw new CmdExeLineBreakError('program path');
   return command.replace(CMD_EXE_META, '^$1');
 }
 
@@ -74,6 +91,7 @@ export function escapeCmdExeCommand(command: string): string {
  * is cross-spawn's algorithm, after https://qntm.org/cmd.
  */
 export function escapeCmdExeArgument(argument: string): string {
+  if (LINE_BREAK.test(argument)) throw new CmdExeLineBreakError('arguments');
   const quoted = `"${argument.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1')}"`;
   return quoted.replace(CMD_EXE_META, '^$1').replace(CMD_EXE_META, '^$1');
 }

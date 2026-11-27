@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CmdExeLineBreakError,
   getWindowsEnvValue,
   escapeCmdExeArgument,
   escapeCmdExeCommand,
@@ -35,9 +36,9 @@ describe('escapeCmdExeCommand', () => {
     );
   });
 
-  it('caret-escapes newline and carriage return in a program path', () => {
-    expect(escapeCmdExeCommand('C:\\app\nname.cmd')).toBe('C:\\app^\nname.cmd');
-    expect(escapeCmdExeCommand('C:\\app\r\nname.cmd')).toBe('C:\\app^\r^\nname.cmd');
+  it('refuses a program path with a line break, which no escaping neutralises', () => {
+    for (const command of ['C:\\app\nname.cmd', 'C:\\app\rname.cmd'])
+      expect(() => escapeCmdExeCommand(command)).toThrow(CmdExeLineBreakError);
   });
 });
 
@@ -47,9 +48,9 @@ describe('escapeCmdExeArgument', () => {
     expect(escapeCmdExeArgument('100%')).toBe('^^^"100^^^%^^^"');
   });
 
-  it('caret-escapes newline and carriage return characters', () => {
-    expect(escapeCmdExeArgument('test\ncalc.exe')).toBe('^^^"test^^^\ncalc.exe^^^"');
-    expect(escapeCmdExeArgument('test\r\ncalc.exe')).toBe('^^^"test^^^\r^^^\ncalc.exe^^^"');
+  it('refuses an argument with a line break, which cmd.exe reads as a new command', () => {
+    for (const argument of ['test\ncalc.exe', 'test\r\ncalc.exe', 'test\rcalc.exe'])
+      expect(() => escapeCmdExeArgument(argument)).toThrow(CmdExeLineBreakError);
   });
 
   it('escapes an embedded quote and the backslashes before it for the C runtime', () => {
@@ -152,22 +153,27 @@ describe('resolveExecFileSpawn', () => {
     expect(spawn.args[3]).toBe('"D:\\tools\\claude.cmd ^^^"--version^^^""');
   });
 
-  it('escapes newlines in batch arguments to prevent command injection', () => {
-    const spawn = resolveExecFileSpawn({
-      command: 'npm',
-      args: ['test\ncalc.exe'],
-      platform: 'win32',
-      env: WINDOWS_ENV,
-      fileExists: existsIn(['C:\\Program Files\\nodejs\\npm.cmd']),
-    });
+  it('refuses to build a batch command line from an argument with a line break', () => {
+    expect(() =>
+      resolveExecFileSpawn({
+        command: 'npm',
+        args: ['test\ncalc.exe'],
+        platform: 'win32',
+        env: WINDOWS_ENV,
+        fileExists: existsIn(['C:\\Program Files\\nodejs\\npm.cmd']),
+      })
+    ).toThrow(CmdExeLineBreakError);
+  });
 
-    expect(spawn.command).toBe('C:\\Windows\\System32\\cmd.exe');
-    expect(spawn.args).toEqual([
-      '/d',
-      '/s',
-      '/c',
-      '"C:\\Program^ Files\\nodejs\\npm.CMD ^^^"test^^^\ncalc.exe^^^""',
-    ]);
-    expect(spawn.windowsVerbatimArguments).toBe(true);
+  it('passes a line break through untouched where no cmd.exe is involved', () => {
+    expect(
+      resolveExecFileSpawn({
+        command: 'node',
+        args: ['-e', 'a\nb'],
+        platform: 'linux',
+        env: {},
+        fileExists: () => false,
+      }).args
+    ).toEqual(['-e', 'a\nb']);
   });
 });

@@ -116,13 +116,24 @@ export async function runLocalInstallCommand(
   shellProfile: ResolvedShellProfile
 ): Promise<Result<void, InstallCommandError>> {
   return new Promise((resolve) => {
-    const spec = resolveExecFileSpawn({
-      command: typeof command === 'string' ? shellProfile.executable : command.command,
-      args: typeof command === 'string' ? [...shellProfile.commandArgs, command] : command.args,
-      platform: process.platform,
-      env: process.env,
-      fileExists: existsSync,
-    });
+    let spec: ReturnType<typeof resolveExecFileSpawn>;
+    try {
+      spec = resolveExecFileSpawn({
+        command: typeof command === 'string' ? shellProfile.executable : command.command,
+        args: typeof command === 'string' ? [...shellProfile.commandArgs, command] : command.args,
+        platform: process.platform,
+        env: process.env,
+        fileExists: existsSync,
+      });
+    } catch (error) {
+      resolve(
+        err({
+          type: 'process-open-failed',
+          message: error instanceof Error ? error.message : String(error),
+        })
+      );
+      return;
+    }
     const child = spawn(spec.command, spec.args, {
       cwd: os.homedir(),
       env: process.env,
