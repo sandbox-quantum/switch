@@ -184,8 +184,15 @@ migration msg:
     uv run --project core alembic -c core/alembic.ini revision --autogenerate -m "{{ msg }}"
 
 # ── Run tests ──────────────────────────────────────────────────────────────────
+# Six workers by default, each with a Postgres container of its own: on a
+# 10-core machine more workers only wait on the databases sharing the cores
+# (13.7k tests took 9 min at 6, 10 at 10 and 14 at 14). `worksteal` lets an
+# idle worker take tests queued behind a slow one. SWITCH_TEST_WORKERS sets
+# the count, `0` runs in one process.
+test_workers := env("SWITCH_TEST_WORKERS", "6")
+
 test *args:
-    uv run --project core pytest -c core/pyproject.toml core/tests/ {{ args }}
+    uv run --project core pytest -c core/pyproject.toml core/tests/ -n {{ test_workers }} --dist worksteal {{ args }}
 
 # ── End-to-end proof for "follow the conversation" ─────────────────────────────
 # Plays every journey as two people in a fresh local Mattermost against

@@ -247,3 +247,6 @@ docs/bridges/teams-app/*.zip
 # Offline copy of the published docs (just docs)
 docs/llms-full.txt
 docs/llms-full.txt.tmp
+
+# pytest-split timings from `--store-durations`; CI deals tests out without them
+.test_durations
