@@ -946,6 +946,8 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: DECISION_TIMEOUT_SECONDS
   value: {{ . | quote }}
 {{- end }}
+- name: DECISION_AUTO_ROUTE_DEFAULT_ON
+  value: {{ .Values.switchCore.decision.autoRouteDefaultOn | toString | quote }}
 {{- if not (or .Values.gateway.enabled .Values.switchCore.serveDashboard) }}
 {{- fail "gateway.enabled and switchCore.serveDashboard are both off, so nothing serves the operator dashboard. Turn one of them on." }}
 {{- end }}

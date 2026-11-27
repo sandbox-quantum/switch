@@ -20,9 +20,15 @@ from switch_core.bridges.agent.commands import (
 from switch_core.db.models import Agent, ApiKey, Client, Room, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
-from switch_core.db.stores.room_store import FOLLOW_UPS_OFF_KEY, RoomStore
+from switch_core.db.stores.room_store import (
+    AUTO_ROUTE_ON_KEY,
+    FOLLOW_UPS_OFF_KEY,
+    RoomStore,
+)
+from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.room_policy import RoomDecision
 from switch_core.transport import RoomRef
 
@@ -52,7 +58,10 @@ async def _room(session_factory: async_sessionmaker[AsyncSession]) -> str:
 
 
 def _host(
-    session_factory: async_sessionmaker[AsyncSession], room_id: str
+    session_factory: async_sessionmaker[AsyncSession],
+    room_id: str,
+    *,
+    auto_route_default_on: bool = False,
 ) -> tuple[SimpleNamespace, list[str]]:
     posted: list[str] = []
 
@@ -74,6 +83,16 @@ def _host(
         client_store=ClientStore(),
         _connections=SimpleNamespace(live_connection_ids=lambda: set()),
         _follow_the_conversation_enabled=True,
+        _decision_availability=DecisionAvailability(
+            enabled=True,
+            server=ServerDefault(
+                endpoint_url="http://decision.test/decide",
+                api_key=None,
+                bedrock_enabled=False,
+            ),
+            store=DecisionSettingsStore(),
+            rooms_on_by_default=auto_route_default_on,
+        ),
     )
     return host, posted
 
@@ -264,7 +283,9 @@ class TestAssignAgent:
         async with session_factory() as session:
             store = RoomStore()
             assert await store.main_agent_id(session, room_id) == ids[manager]
-            assert not await store.auto_route_on(session, room_id)
+            room = await store.get(session, room_id)
+            assert room is not None
+            assert room.metadata_[AUTO_ROUTE_ON_KEY] is False
             # The triage agent is kept for when auto-route comes back on.
             assert await store.auto_route_fallback(session, room_id) == ids[manager]
 
@@ -279,6 +300,22 @@ class TestAssignAgent:
         await _assign(host, f"@{manager}", "@someone:test")
 
         assert "Automatic routing" not in posted[-1]
+
+    async def test_assigning_turns_off_auto_route_that_is_on_by_default(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        ids = await _agents(session_factory, room_id)
+        manager = next(n for n in ids if n.startswith("manager"))
+        host, posted = _host(session_factory, room_id, auto_route_default_on=True)
+
+        await _assign(host, f"@{manager}", "@someone:test")
+
+        assert "Automatic routing was on, so I turned it off" in posted[-1]
+        async with session_factory() as session:
+            room = await RoomStore().get(session, room_id)
+            assert room is not None
+            assert room.metadata_[AUTO_ROUTE_ON_KEY] is False
 
     async def test_by_alias(
         self, session_factory: async_sessionmaker[AsyncSession]

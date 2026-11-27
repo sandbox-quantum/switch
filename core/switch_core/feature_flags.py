@@ -53,7 +53,8 @@ SERVICE_CONNECTIONS = "service_connections"
 # messages reach nobody, as before.
 FOLLOW_THE_CONVERSATION = "follow_the_conversation"
 
-# Decision routing: in a room that turned it on (`!auto-route on`), a person's
+# Decision routing: in a room with auto-route on (`!auto-route on`, or
+# `DECISION_AUTO_ROUTE_DEFAULT_ON` in a room that has not chosen), a person's
 # message that no rule delivered to any agent is sent, once it is saved, to
 # the decision service its workspace uses (`decision/settings.py`: the
 # workspace's choice, else `DECISION_ENDPOINT_URL`), which picks the one agent

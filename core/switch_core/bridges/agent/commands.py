@@ -59,7 +59,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
-from switch_core.db.stores.room_store import auto_route_fallback_in, auto_route_on_in
+from switch_core.db.stores.room_store import auto_route_fallback_in
 from switch_core.db.stores.session_activity_store import (
     RETRYABLE_TURN_STATUSES,
     AgentSessionActivityStore,
@@ -1197,8 +1197,9 @@ async def _cmd_assign_agent(
             return
         await client._room_store.set_main_agent(session, meta.room_id, target.id)
         room_row = await session.get(Room, meta.room_id)
-        turned_off_auto_route = room_row is not None and auto_route_on_in(
-            room_row.metadata_
+        turned_off_auto_route = (
+            room_row is not None
+            and host._decision_availability.room_on(room_row.metadata_)
         )
         if turned_off_auto_route:
             await client._room_store.set_auto_route_on(session, meta.room_id, False)

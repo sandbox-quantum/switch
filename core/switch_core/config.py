@@ -264,6 +264,10 @@ class SwitchConfig(BaseSettings):
     # Whether a workspace may choose Haiku on Amazon Bedrock, which runs in the
     # server's decision service on the server's own AWS credentials.
     decision_bedrock_enabled: bool = False
+    # Whether auto-route is on in a room that has not turned it on or off
+    # itself (`!auto-route`). It acts only where the room's workspace has a
+    # decision service, and a room's own choice always wins.
+    decision_auto_route_default_on: bool = True
     # A message still waiting for a decision after this long (a restart, a
     # long outage) is dropped and logged rather than answered late.
     decision_pending_max_age_seconds: int = Field(default=120, ge=1, le=3600)

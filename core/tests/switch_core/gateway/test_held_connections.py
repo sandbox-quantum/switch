@@ -290,6 +290,7 @@ def _config() -> SimpleNamespace:
         decision_endpoint_url=None,
         decision_api_key=None,
         decision_bedrock_enabled=False,
+        decision_auto_route_default_on=False,
         **LOGIN_LIMIT_DEFAULTS,
     )
 

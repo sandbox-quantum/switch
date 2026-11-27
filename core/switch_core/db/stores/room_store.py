@@ -65,8 +65,9 @@ LINKED_CHANNEL_NAME_KEY = "linked_channel_name"
 FOLLOW_UPS_OFF_KEY = "follow_ups_off"
 # `!assign-agent @name`: the agent id every message in the room goes to.
 MAIN_AGENT_KEY = "main_agent_id"
-# `!auto-route on`: messages no rule delivers are sent to the decision
-# service. Absent by default, so automatic routing is off.
+# `!auto-route on` / `!auto-route off`: whether messages no rule delivers are
+# sent to the decision service. Absent until the room chooses, and then the
+# server's default (`DECISION_AUTO_ROUTE_DEFAULT_ON`) applies.
 AUTO_ROUTE_ON_KEY = "auto_route_on"
 # `!auto-route fallback @name`: the agent id that gets the messages auto-route
 # could not decide because the decision service failed. Absent by default.
@@ -87,9 +88,18 @@ def main_agent_in(metadata: dict | None) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def auto_route_on_in(metadata: dict | None) -> bool:
-    """Whether a room's metadata turns automatic routing on."""
-    return (metadata or {}).get(AUTO_ROUTE_ON_KEY) is True
+def auto_route_choice_in(metadata: dict | None) -> bool | None:
+    """The room's own auto-route choice: True or False once someone turned it
+    on or off, None while the room has not chosen."""
+    value = (metadata or {}).get(AUTO_ROUTE_ON_KEY)
+    return value if isinstance(value, bool) else None
+
+
+def auto_route_on_in(metadata: dict | None, default_on: bool) -> bool:
+    """Whether a room's metadata leaves automatic routing on: the room's own
+    choice, or `default_on` (the server's default) while it has none."""
+    choice = auto_route_choice_in(metadata)
+    return default_on if choice is None else choice
 
 
 def auto_route_fallback_in(metadata: dict | None) -> str | None:
@@ -155,22 +165,13 @@ class RoomStore:
         for a room that does not exist."""
         await self._set_metadata_key(session, room_id, MAIN_AGENT_KEY, agent_id)
 
-    async def auto_route_on(self, session: AsyncSession, room_id: str) -> bool:
-        """Whether automatic routing is on in this room (`!auto-route`), off
-        unless someone turned it on."""
-        room = await session.get(Room, room_id)
-        if room is None:
-            return False
-        return auto_route_on_in(room.metadata_)
-
     async def set_auto_route_on(
         self, session: AsyncSession, room_id: str, on: bool
     ) -> None:
-        """Turn automatic routing on or off for a room. Raises ValueError for
-        a room that does not exist."""
-        await self._set_metadata_key(
-            session, room_id, AUTO_ROUTE_ON_KEY, True if on else None
-        )
+        """Record the room's choice to turn automatic routing on or off, which
+        then holds whatever the server's default. Raises ValueError for a room
+        that does not exist."""
+        await self._set_metadata_key(session, room_id, AUTO_ROUTE_ON_KEY, on)
 
     async def auto_route_fallback(
         self, session: AsyncSession, room_id: str

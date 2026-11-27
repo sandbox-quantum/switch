@@ -155,6 +155,7 @@ def _app(
                 bedrock_enabled=bedrock,
             ),
             store=DecisionSettingsStore(),
+            rooms_on_by_default=False,
         ),
         keyring=KEYRING,
         client=httpx.AsyncClient(transport=httpx.MockTransport(service.handle)),
@@ -1099,6 +1100,7 @@ def _offline_client(
                 endpoint_url=SERVER_URL, api_key="server-key", bedrock_enabled=False
             ),
             store=DecisionSettingsStore(),
+            rooms_on_by_default=False,
         ),
         keyring=KEYRING,
         client=httpx.AsyncClient(transport=httpx.MockTransport(refuse)),
