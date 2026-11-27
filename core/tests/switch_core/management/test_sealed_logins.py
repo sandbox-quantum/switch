@@ -301,3 +301,139 @@ class TestSealedLogins:
         assert revoked.status_code == 200, revoked.text
         assert listed.json() == []
         assert again.status_code == 409, again.text
+
+
+async def _on_box(harness: Harness, controller: EnrolledController) -> None:
+    """Put the controller on a Switch Cloud box, as its enrolment would."""
+    from sqlalchemy import select
+
+    from switch_core.db.models import TENANT_ZERO_ID, MachineWorkspace
+    from switch_core.db.session_scope import tenant_session
+    from tests.switch_core.hosted_machine_helpers import seed_machine
+
+    async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+        machine = await seed_machine(
+            session,
+            owner_id=controller.owner.id,
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+        )
+        machine.backend = "box"
+        workspace = await session.scalar(
+            select(MachineWorkspace).where(MachineWorkspace.machine_id == machine.id)
+        )
+        workspace.controller_id = controller.controller_id
+        await session.commit()
+    harness.controller_auth_cache.clear()
+
+
+def _credentials_path(controller: EnrolledController, provider: str) -> str:
+    return f"/v1/management/controllers/{controller.controller_id}/provider-credentials/{provider}"
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+class TestRenewedLogins:
+    """A box's controller renews a Codex ChatGPT sign-in itself and keeps each
+    rotation in place of the revision it came from, never over a newer one."""
+
+    async def test_a_box_keeps_a_renewal_in_place_of_the_revision_it_came_from(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        key = _b64(32)
+        renewed = _sealed(key)
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await _register_key(client, controller, key)
+            await _on_box(harness, controller)
+            await client.put(
+                _logins_path(controller, "codex"),
+                json={"sealed": _sealed(key)},
+                cookies=cookies_for(owner),
+            )
+            kept = await client.put(
+                _credentials_path(controller, "codex"),
+                json={"sealed": renewed, "replaces": 1},
+                headers=controller.headers,
+            )
+            stale = await client.put(
+                _credentials_path(controller, "codex"),
+                json={"sealed": _sealed(key), "replaces": 1},
+                headers=controller.headers,
+            )
+            fetched = await client.get(
+                _credentials_path(controller, "codex"), headers=controller.headers
+            )
+            pending = await client.get(
+                f"/v1/management/controllers/{controller.controller_id}/operations",
+                params={"state": "pending"},
+                headers=controller.headers,
+            )
+        assert kept.status_code == 200, kept.text
+        assert kept.json()["revision"] == 2
+        assert "ciphertext" not in kept.json()
+        # The owner gave another login meanwhile, or another renewal landed: refused.
+        assert stale.status_code == 409, stale.text
+        assert fetched.json() == {"provider": "codex", "revision": 2, "sealed": renewed}
+        # Renewing asks the controller to do nothing: no operation is queued for it.
+        assert [op["kind"] for op in pending.json()["operations"]] == ["provider.login"]
+
+    async def test_a_renewal_never_brings_back_a_withdrawn_login_or_a_foreign_key(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        key = _b64(32)
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await _register_key(client, controller, key)
+            await _on_box(harness, controller)
+            none_given = await client.put(
+                _credentials_path(controller, "codex"),
+                json={"sealed": _sealed(key), "replaces": 1},
+                headers=controller.headers,
+            )
+            await client.put(
+                _logins_path(controller, "codex"),
+                json={"sealed": _sealed(key)},
+                cookies=cookies_for(owner),
+            )
+            foreign = await client.put(
+                _credentials_path(controller, "codex"),
+                json={"sealed": _sealed(_b64(32)), "replaces": 1},
+                headers=controller.headers,
+            )
+            await client.delete(
+                _logins_path(controller, "codex"), cookies=cookies_for(owner)
+            )
+            withdrawn = await client.put(
+                _credentials_path(controller, "codex"),
+                json={"sealed": _sealed(key), "replaces": 1},
+                headers=controller.headers,
+            )
+            fetched = await client.get(
+                _credentials_path(controller, "codex"), headers=controller.headers
+            )
+        assert none_given.status_code == 409, none_given.text
+        assert foreign.status_code == 409, foreign.text
+        assert withdrawn.status_code == 409, withdrawn.text
+        assert fetched.status_code == 404, fetched.text
+
+    async def test_only_a_box_keeps_a_login_it_renewed(self, harness: Harness) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        key = _b64(32)
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await _register_key(client, controller, key)
+            await client.put(
+                _logins_path(controller, "codex"),
+                json={"sealed": _sealed(key)},
+                cookies=cookies_for(owner),
+            )
+            refused = await client.put(
+                _credentials_path(controller, "codex"),
+                json={"sealed": _sealed(key), "replaces": 1},
+                headers=controller.headers,
+            )
+        assert refused.status_code == 403, refused.text

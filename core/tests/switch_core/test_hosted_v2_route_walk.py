@@ -48,6 +48,11 @@ NEW_ROUTES = {
     ),
     (
         "agent_bridge",
+        "PUT",
+        "/v1/management/controllers/{controller_id}/provider-credentials/{provider}",
+    ),
+    (
+        "agent_bridge",
         "POST",
         "/v1/management/controllers/{controller_id}/agents/{agent_id}/restart-notice",
     ),

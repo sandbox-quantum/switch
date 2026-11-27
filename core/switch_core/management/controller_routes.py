@@ -96,7 +96,10 @@ from switch_core.management.schemas import (
     TokenRequest,
     wire_time,
 )
-from switch_core.management.sealed_logins import PutSealedLoginRequest
+from switch_core.management.sealed_logins import (
+    PutSealedLoginRequest,
+    ReplaceSealedLoginRequest,
+)
 from switch_core.management.service import ManagementService
 from switch_core.management.wake_replay import resume_cursors_after_wake
 
@@ -294,6 +297,25 @@ async def get_sealed_login(
     return JSONResponse(
         await management.own_sealed_login(session, principal, provider),
         headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.put(
+    "/v1/management/controllers/{controller_id}/provider-credentials/{provider}",
+    dependencies=[Depends(require_hosted_v2_here)],
+)
+async def replace_sealed_login(
+    provider: str,
+    body: ReplaceSealedLoginRequest,
+    principal: PathController,
+    management: Management,
+    session: Session,
+) -> dict[str, Any]:
+    """Keep a login this box's controller renewed itself, sealed to its own
+    key, in place of the revision it came from; 409 when Switch holds
+    another revision by then."""
+    return await management.replace_own_sealed_login(
+        session, principal, provider, body.sealed, body.replaces
     )
 
 

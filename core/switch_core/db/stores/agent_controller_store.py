@@ -324,6 +324,41 @@ class AgentControllerStore:
         await session.refresh(row)
         return row
 
+    async def replace_sealed_login(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        provider: str,
+        sealed: dict[str, Any],
+        replaces: int,
+    ) -> SealedProviderLogin | None:
+        """Store `sealed` under the next revision only while the login is still
+        at revision `replaces`, keeping who gave it; None when it isn't (another
+        login was given or it was withdrawn since)."""
+        result = await session.execute(
+            update(SealedProviderLogin)
+            .where(
+                SealedProviderLogin.tenant_id == tenant_id,
+                SealedProviderLogin.controller_id == controller_id,
+                SealedProviderLogin.provider == provider,
+                SealedProviderLogin.revision == replaces,
+            )
+            .values(
+                revision=SealedProviderLogin.revision + 1,
+                sealed=sealed,
+                updated_at=func.now(),
+            )
+            .returning(SealedProviderLogin.revision)
+            .execution_options(synchronize_session=False)
+        )
+        if result.scalar_one_or_none() is None:
+            return None
+        row = await self.sealed_login(session, tenant_id, controller_id, provider)
+        if row is not None:
+            await session.refresh(row)
+        return row
+
     async def delete_sealed_logins(
         self,
         session: AsyncSession,

@@ -104,3 +104,13 @@ class PutSealedLoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     sealed: SealedLogin
+
+
+class ReplaceSealedLoginRequest(BaseModel):
+    """A login the controller renewed itself, sealed to its own key, in place
+    of the revision it came from."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sealed: SealedLogin
+    replaces: int

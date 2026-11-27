@@ -1906,6 +1906,68 @@ class ManagementService:
         )
         return sealed_login_view(row)
 
+    async def replace_own_sealed_login(
+        self,
+        session: AsyncSession,
+        principal: ControllerPrincipal,
+        provider: str,
+        sealed: SealedLogin,
+        replaces: int,
+    ) -> dict[str, Any]:
+        """Keep a login a box's controller renewed itself (a Codex ChatGPT
+        sign-in, whose refresh token rotates and is refused once used), sealed
+        to its own key, in place of revision `replaces`, which it came from.
+        Refused (409) once the owner has given another login or withdrawn it,
+        so a renewal never overwrites a newer login. Only a box's controller:
+        no other renews a login for its agents."""
+        backend = await _controller_backend(
+            session, principal.tenant_id, principal.controller_id
+        )
+        _refuse_box_while_v2_off(backend)
+        if backend != "box":
+            raise ManagementError(
+                403,
+                reason_codes.VALIDATION_ERROR,
+                "Only a Switch Cloud box keeps a login it renewed itself.",
+            )
+        controller = await self.controllers.get(
+            session, principal.tenant_id, principal.controller_id
+        )
+        if controller is None or controller.public_key is None:
+            raise ManagementError(
+                409,
+                reason_codes.VALIDATION_ERROR,
+                "This device has no key registered to keep a login with.",
+            )
+        if sealed.key_id != key_id(controller.public_key["key"]):
+            raise ManagementError(
+                409,
+                reason_codes.VALIDATION_ERROR,
+                "The login is sealed to a key Switch does not hold for this device.",
+            )
+        row = await self.controllers.replace_sealed_login(
+            session,
+            principal.tenant_id,
+            principal.controller_id,
+            provider,
+            sealed.model_dump(),
+            replaces,
+        )
+        if row is None:
+            raise ManagementError(
+                409,
+                reason_codes.VALIDATION_ERROR,
+                f"The {provider} login is no longer at revision {replaces}.",
+            )
+        await session.commit()
+        logger.info(
+            "Agent controller %s kept the %s login it renewed (revision %s)",
+            principal.controller_id,
+            provider,
+            row.revision,
+        )
+        return sealed_login_view(row)
+
     async def withdraw_sealed_login(
         self,
         session: AsyncSession,
