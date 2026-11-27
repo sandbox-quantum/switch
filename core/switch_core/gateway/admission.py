@@ -46,7 +46,9 @@ import logging
 import secrets
 import time
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -130,26 +132,44 @@ class _Line:
 
 
 def caller_key(
-    scope: Scope, keyring: Keyring, controller_auth: bytes | None = None
+    scope: Scope,
+    keyring: Keyring,
+    controller_auth: Mapping[str, bytes] | None = None,
 ) -> str:
     """Who a request or socket is counted against: the person its session
-    cookie names, once the signature checks out, else the cloud controller
-    when it carries that controller's exact `Authorization` header, else the
-    address it came from. Any other bearer token counts as its address, so a
-    client can't make itself new callers by sending made-up tokens."""
+    cookie names, once the signature checks out, else a cloud controller when
+    it carries that controller's exact `Authorization` header (each its own
+    caller, by name), else the address it came from. Any other bearer token
+    counts as its address, so a client can't make itself new callers by
+    sending made-up tokens."""
     token = HTTPConnection(scope).cookies.get("switch_auth")
     if token:
         subject = session_subject(token, keyring)
         if subject is not None:
             return f"user:{subject}"
-    if controller_auth is not None:
+    if controller_auth:
         for name, value in scope.get("headers", []):
-            if name == b"authorization" and secrets.compare_digest(
-                value, controller_auth
-            ):
-                return "cloud-controller"
+            if name != b"authorization":
+                continue
+            found = None
+            for caller, expected in controller_auth.items():
+                if secrets.compare_digest(value, expected):
+                    found = caller
+            if found is not None:
+                return found
     client = scope.get("client")
     return f"address:{client[0] if client else 'unknown'}"
+
+
+def controller_bearers(settings: Any) -> dict[str, str]:
+    """The cloud controllers' bearers, by the caller each counts as: v1's
+    controller (`token`) and the box workers (`box_controller_token`)."""
+    if settings is None:
+        return {}
+    out = {"cloud-controller": settings.token.get_secret_value()}
+    if settings.box_controller_token is not None:
+        out["box-controller"] = settings.box_controller_token.get_secret_value()
+    return out
 
 
 async def writes_on_get() -> None:
@@ -179,15 +199,19 @@ class GatewayAdmission:
         read_timeout: str,
         keyring: Keyring,
         controller_token: str | None = None,
+        controller_tokens: Mapping[str, str] | None = None,
     ) -> None:
         self.app = app
         self.limit = limit
         self.per_caller = per_caller
         self.read_timeout = read_timeout
         self._keyring = keyring
-        self._controller_auth = (
-            f"Bearer {controller_token}".encode() if controller_token else None
-        )
+        tokens = dict(controller_tokens or {})
+        if controller_token:
+            tokens.setdefault("cloud-controller", controller_token)
+        self._controller_auth = {
+            caller: f"Bearer {value}".encode() for caller, value in tokens.items()
+        }
         self._process = _Line(limit)
         self._callers: dict[str, _Line] = {}
         self._named: dict[str, float] = {}

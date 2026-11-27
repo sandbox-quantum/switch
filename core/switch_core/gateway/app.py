@@ -35,7 +35,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.admission import GatewayAdmission
+from switch_core.gateway.admission import GatewayAdmission, controller_bearers
 from switch_core.gateway.agent_key_rotation import router as agent_key_rotation_router
 from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
@@ -332,10 +332,9 @@ def create_gateway_app(
         per_caller=config.gateway_requests_per_caller,
         read_timeout=config.gateway_read_statement_timeout,
         keyring=config.keyring,
-        # The only bearer token a gateway route takes (`hosted_controller.py`).
-        controller_token=app.state.hosted_controller_settings.token.get_secret_value()
-        if app.state.hosted_controller_settings
-        else None,
+        # The cloud controllers' bearers (`hosted_controller.py`): v1's
+        # controller and the box workers each get their own line.
+        controller_tokens=controller_bearers(app.state.hosted_controller_settings),
     )
 
     app.add_exception_handler(RequestValidationError, validation_error_response)
