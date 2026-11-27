@@ -9,3 +9,36 @@ f1eaba23f82611562b478aaed85687c1bd99e8e0:core/tests/switch_core/test_migration_h
 # A made-up token in a service-token expiry test, never issued by anything;
 # the test now uses one that is not token-shaped.
 ba77a51d9d28c70e0e37b29031983cf6fff477b5:console/packages/agent-providers/src/host/service-access.test.ts:generic-api-key:17
+
+# Hosted agents v2 (#2216): test fixtures only, none ever issued or used.
+# - split-runtime.test.ts: a made-up proxy token used only in tests.
+# - sealed-login.web.test.ts: a throwaway test key pair for a sealing test.
+# - upstream-packages.json: git blob ids of upstream files, flagged by file name.
+# - test_read_views_routes.py, test_box_operator.py: made-up keyed ids.
+# - k8s-fields.json: an EKS version label.
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/agent-controller-box/src/split-runtime.test.ts:generic-api-key:215
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/agent-controller-box/src/split-runtime.test.ts:generic-api-key:227
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/agent-controller-box/src/split-runtime.test.ts:generic-api-key:262
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/agent-providers-box/src/sealed-login.web.test.ts:generic-api-key:13
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/agent-providers-box/src/sealed-login.web.test.ts:generic-api-key:21
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:15
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:16
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:233
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:234
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:235
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:236
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:242
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:243
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:301
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:55
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:56
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:68
+06e57b3abfafbb1c07a749f2f86f370570e8264c:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:69
+0f705db7a250a5de4ef2d678d692fed080f91e97:deploy/hosted/controller/tests/fixtures/k8s-fields.json:generic-api-key:2
+0f705db7a250a5de4ef2d678d692fed080f91e97:deploy/hosted/controller/tests/test_box_operator.py:generic-api-key:283
+56a7ce1519a8fa0d383be8219dccec6af8eedf78:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:10
+56a7ce1519a8fa0d383be8219dccec6af8eedf78:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:56
+a0af1e0e4ca7c7e86e887f7cab9569f3b9d919a4:console/packages/agent-controller/src/box/split-runtime.test.ts:generic-api-key:216
+a0af1e0e4ca7c7e86e887f7cab9569f3b9d919a4:console/packages/agent-controller/src/box/split-runtime.test.ts:generic-api-key:228
+a0af1e0e4ca7c7e86e887f7cab9569f3b9d919a4:console/packages/agent-controller/src/box/split-runtime.test.ts:generic-api-key:263
+e19f3abf01f8b076a0ae2c1f43cb154701b6f00f:core/tests/switch_core/visibility/test_read_views_routes.py:generic-api-key:522
