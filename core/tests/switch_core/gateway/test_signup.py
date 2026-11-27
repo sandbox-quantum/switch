@@ -903,6 +903,25 @@ async def test_a_sign_in_warms_the_machine_where_getting_started_on_the_web_is_o
     assert (machine.owner_id, machine.desired_state) == (user.id, "running")
 
 
+async def test_with_a_warm_pool_a_sign_in_takes_no_box(signup_app) -> None:
+    """With v2's box provisioning on and a warm pool, a sign-in where getting
+    started on the web is on starts nothing, as a sign-up doesn't: pool boxes
+    go to people when they first start."""
+    app = signup_app
+    app.config.gateway_onboarding_enabled = True
+    app.config.hosted_box_provisioning = True
+    app.config.hosted_pool_size = 1
+    user = await _plain_user(app, "pool@example.com")
+    await hosted_machines.warm_after_sign_in(
+        app.factory,
+        user.id,
+        TENANT_ZERO_ID,
+        app.config,
+        app.app.state.hosted_controller_settings,
+    )
+    assert await _machines(app) == []
+
+
 async def test_a_sign_in_that_cannot_have_a_machine_still_signs_in(signup_app):
     app = signup_app
     app.config.gateway_onboarding_enabled = True

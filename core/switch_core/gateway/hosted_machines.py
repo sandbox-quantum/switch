@@ -386,8 +386,12 @@ async def warm_after_sign_in(
     where getting started on the web is on, so it is warming before the
     dashboard first loads. A sign-in with no workspace yet, or a workspace
     that may have none, starts nothing; one that cannot be had is logged and
-    never fails the sign-in, and the dashboard says why when it asks again."""
+    never fails the sign-in, and the dashboard says why when it asks again.
+    With v2's box provisioning on and a warm pool, a sign-in starts nothing,
+    as a sign-up doesn't: a pool box goes to a person at their first start."""
     if not config.gateway_onboarding_enabled or settings is None or tenant_id is None:
+        return
+    if box_provisioning_on(config) and getattr(config, "hosted_pool_size", 0) > 0:
         return
     async with tenant_session(factory, tenant_id) as session:
         if not machines_enabled(config, settings, user_id):
