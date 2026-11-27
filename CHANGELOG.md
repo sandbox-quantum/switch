@@ -57,6 +57,16 @@ version of their own to them without also giving them a release of their own.
   the machine runs.** Cloud machines have every provider installed, so a login
   nobody had given for a provider no agent used kept the "AI provider logins
   missing or expired on cloud machines" monitor alerting for good.
+- **Splitting a long message no longer hangs on crafted text.** A long run of
+  `~` or backticks with no safe place to cut it (Mattermost, Rocket.Chat,
+  Discord and Slack), or a code block whose language tag is longer than a
+  Google Chat message, put the splitter in a loop that never returned. Such a
+  run is now cut at the limit, and a piece that would start with a fence is
+  indented four spaces so it neither opens nor closes a code block. A reopened
+  Google Chat code block drops a language tag longer than 32 characters. A
+  block opened by a fence longer than a quarter of the limit is split like
+  plain text, with its fences indented, where before every part came out over
+  the limit and the platform refused the message.
 - **An agent's unread count no longer depends on how Postgres plans the
   query when several messages share a timestamp.** The message the count
   starts from is now picked by its timestamp and then its position in the
