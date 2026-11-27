@@ -16,11 +16,20 @@ each service's direct web URL (`services[].url`).
   (read or write), for example "and I'll give it read access to your GitHub". After they
   say yes and the agent is created, grant them with `set_agent_service`. Only your owner's
   own agents, and only after a yes to that: it hands over their access.
-- **Not connected:** say so in the proposal and link `services[].url` from
-  `get_my_context` (or `server.connectors_url` /
-  `[Connectors](switchdash://open/connections)` if there's no web URL) so they can connect
-  it, then grant it once it's "active". Don't create the agent expecting it to find its
-  own way in, and don't let it guess.
+- **Not connected:** say so in the proposal and link where to connect it, then grant it
+  once it's "active". Don't create the agent expecting it to find its own way in, and don't
+  let it guess.
+  - Keep **Settings → Connectors** (`switchdash://open/admin?tab=connectors`, where
+    workspace admins switch connectors on/off) distinct from the main **Connectors** page
+    (`server.connectors_url` or `[Connectors](switchdash://open/connections)`, where **Set
+    up** and account sign-in live). Never tell someone to look for "Set up" on the Settings
+    toggle page.
+  - Use `services[].url` from `get_my_context` (or `server.connectors_url` /
+    `[Connectors](switchdash://open/connections)` if there's no web URL). **Exception:**
+    Atlassian (and any connector whose web page says "Connect from Switch Console") can
+    currently only be signed into inside Switch Console — say so up front and link
+    `[Connectors](switchdash://open/connections)` instead of bouncing them through the
+    gateway web UI first.
 - **Needs their choice** (such as which GitHub repositories): link the agent's
   Connections, `switchdash://open/agent/<agent-id>?tab=connections`, once it exists.
 - **Not offered as a connector:** the machine's own access may cover it; see "Access the
@@ -68,8 +77,15 @@ granted it in Switch. Be clear about what that means:
 
 The server's address is plain `http://127.0.0.1`. Atlassian, Google and GitHub sign-ins
 work there with an up-to-date Switch Console and server, once the server's admin has set
-up the vendor app: on the web gateway's Connectors page, or, for a Switch running without
-Docker, "Set up" on its card in [Connector apps](switchdash://open/admin?tab=apps). GitHub
-takes that address because it is the computer's own; it refuses any other plain http one.
-For GitHub, the computer's own access ("Access the machine already has") needs no app at
-all.
+up the vendor app:
+- **When the server has a web gateway** (`server.dashboard_url` is set): open the main
+  **Connectors** page (`server.connectors_url` or `[Connectors](switchdash://open/connections)`)
+  and click **Set up** on the connector's card (or use Organization settings on the
+  gateway). Do **not** link "Connector apps" (`switchdash://open/admin?tab=apps`) on a
+  server with a gateway — that Settings tab only exists on gatewayless servers.
+- **When there is no web gateway** (`server.dashboard_url` is absent): click **Set up** on
+  its card in [Connector apps](switchdash://open/admin?tab=apps).
+
+GitHub takes `http://127.0.0.1` because it is the computer's own; it refuses any other
+plain http one. For GitHub, the computer's own access ("Access the machine already has")
+needs no app at all.

@@ -22,15 +22,15 @@ introducing multi-agent workflows.
    answer, so the form holds at most three suggestions and Skip for now, always as its
    last option. Something else: ask what they'd like and design it with them. Skip for
    now: the skip line, then stop suggesting; they can ask you any time.
-2. **Create what they pick**, after a yes to one proposal message: break the proposal into
-   2–3 short blocks separated by blank lines (what the agent does first, then the setup
-   details) rather than one dense bullet wall. Name the agent, its focused instructions,
-   where it runs (`.switch/skills/switch-buddy-hosting/SKILL.md`), its AI provider
-   (default to yours, and if `list_machines` shows other ready providers on that machine,
-   name them so they can pick another before creation), defaults for its folder and asking
-   before risky actions in plain words ("it'll ask you before anything risky"), never a
-   parameter's name or "bypass" / "auto mode", **the private room you'll create for it**
-   (name, where it lives, who's in it), and the concrete example question you'll ask it.
+2. **Create what they pick**, after a yes to one **tight** proposal message: break the
+   proposal into 2–3 short blocks separated by blank lines, aiming for 4–6 short lines
+   total (~60–80 words) — never a dense wall of prose, and don't repeat back every rule the
+   person just gave you. Cover: what the agent does in one crisp line, where it runs
+   (`.switch/skills/switch-buddy-hosting/SKILL.md`), its AI provider (default to yours; if
+   `list_machines` shows other ready providers on that machine, name them briefly in a
+   clause so they can swap before creation), defaults for its folder and asking before risky actions in plain words ("it'll ask you before anything risky", never
+   a parameter's name or "bypass" / "auto mode"), **the private room you'll create for it**
+   (name, where it lives, who's in it), and the first thing you'll ask it.
    Never bundle multiple setup questions (machine, repo, timezone, folder) into one
    message: ask one question at a time, or propose sensible defaults they can approve in
    one yes. For a recurring job (daily PR check, morning digest, weekly brief), **offer a
