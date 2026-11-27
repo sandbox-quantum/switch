@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { SealedLogin } from '@switch-console/agent-providers';
 import type { z } from 'zod';
 import { ConfigurationError } from './errors';
 import type { Logger } from './log';
@@ -18,6 +19,8 @@ import {
   errorEnvelopeSchema,
   type Operation,
   operationListSchema,
+  type OperationProgress,
+  operationProgressAnswerSchema,
   type OperationResult,
   operationSchema,
   type Provider,
@@ -584,11 +587,31 @@ export class ControllerClient {
     return parsed(response, operationSchema);
   }
 
-  async operationProgress(operationId: string, message: string): Promise<void> {
-    await this.request(`${this.base}/operations/${encodeURIComponent(operationId)}/progress`, {
-      method: 'POST',
-      body: { message },
-    });
+  /**
+   * Renews the operation's lease with a progress report. Answers the code its
+   * owner sent since the last one (a browser sign-in's), or null.
+   */
+  async operationProgress(
+    operationId: string,
+    progress: OperationProgress
+  ): Promise<{ code: string } | null> {
+    const response = await this.request(
+      `${this.base}/operations/${encodeURIComponent(operationId)}/progress`,
+      { method: 'POST', body: progress }
+    );
+    if (response.status === 204) return null;
+    return (await parsed(response, operationProgressAnswerSchema)).input;
+  }
+
+  /**
+   * Keeps the login a browser sign-in ended with, sealed to this machine's
+   * own key, as a login given to it: fetched and opened as any other.
+   */
+  async keepBrowserLogin(operationId: string, sealed: SealedLogin): Promise<void> {
+    await this.request(
+      `${this.base}/operations/${encodeURIComponent(operationId)}/provider-login`,
+      { method: 'PUT', body: { sealed } }
+    );
   }
 
   async operationResult(operationId: string, result: OperationResult): Promise<void> {

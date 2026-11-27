@@ -135,6 +135,8 @@ export function startBrowserSignIn(input: {
   let page: SignInPage | null = null;
   let child: ChildProcess | null = null;
   let entered: string | null = null;
+  /** What the CLI printed since the code was typed in; null until then. */
+  let sinceCode: string | null = null;
   let stop: (reason: string) => void = () => {};
   let cancelled: string | null = null;
   const done = run();
@@ -221,9 +223,11 @@ export function startBrowserSignIn(input: {
           .filter((line) => line !== '')
           .slice(-6)
           .join('\n');
-        if (entered) shown = shown.replaceAll(entered, '[code]');
-        return shown || '(it printed nothing)';
+        return hideCode(shown) || '(it printed nothing)';
       };
+      // The code as typed, and as Claude Code echoes it: masked but for its end.
+      const hideCode = (text: string) =>
+        (entered ? text.replaceAll(entered, '[code]') : text).replace(/\*{3,}\S*/g, '[code]');
       stop = (reason) => finish({ error: new Error(reason) });
       if (cancelled !== null) return stop(cancelled);
       const timer = setTimeout(
@@ -269,6 +273,17 @@ export function startBrowserSignIn(input: {
             input.onPage(next);
           }
         }
+        if (sinceCode !== null)
+          sinceCode = (sinceCode + chunk.toString('utf8')).slice(-OUTPUT_LIMIT);
+        // It says why it refused a code, then waits for Enter to try again.
+        const refusal =
+          claude && sinceCode !== null
+            ? linesOf(terminalText(sinceCode)).find((line) => /\berror\b/i.test(line))
+            : undefined;
+        if (refusal && !setupTokenIn(text))
+          return finish({
+            error: new Error(`${what} did not take the code: ${hideCode(refusal.trim())}`),
+          });
         if (claude && !token) {
           token = setupTokenIn(text);
           // It may wait for a key before it exits; the token is all it gives.
@@ -357,6 +372,7 @@ export function startBrowserSignIn(input: {
       const stdin = child?.stdin;
       if (!stdin?.writable) throw new Error('The sign-in has already ended. Start it again.');
       entered = trimmed;
+      sinceCode = '';
       stdin.write(trimmed);
       // A TUI reads a burst ending in Enter as a paste; Enter on its own submits it.
       // Without a terminal (agy), a line is what is read.

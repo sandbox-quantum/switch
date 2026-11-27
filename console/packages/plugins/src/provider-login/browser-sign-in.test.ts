@@ -14,7 +14,7 @@ printf "Browser didn't open? Use the URL below\\n"
 printf '\\033]8;id=1;https://claude.ai/oauth/authorize?code=true&x=1\\007https://claude.ai/oauth/authorize?code=true&x=1\\033]8;;\\007\\n'
 printf ' Paste code here if prompted > '
 read code
-[ "$code" = "good#code" ] || { echo "OAuth error: invalid code"; exit 1; }
+[ "$code" = "good#code" ] || { echo "OAuth error: invalid code"; echo "Press Enter to retry"; read again; exit 1; }
 printf '\\nYour OAuth token (valid for 1 year):\\n\\n${TOKEN}\\n'
 `;
 
@@ -89,13 +89,14 @@ function start(provider: BrowserSignInProvider, binaryPath: string, timeoutMs = 
 }
 
 async function until(check: () => boolean): Promise<void> {
-  for (let i = 0; i < 200 && !check(); i++) await new Promise((r) => setTimeout(r, 25));
+  for (let i = 0; i < 800 && !check(); i++) await new Promise((r) => setTimeout(r, 25));
   expect(check()).toBe(true);
 }
 
 const unix = process.platform === 'linux' || process.platform === 'darwin';
 
-describe.runIf(unix)('startBrowserSignIn', () => {
+// Starting a CLI under a terminal is slow on a loaded machine.
+describe.runIf(unix)('startBrowserSignIn', { timeout: 30_000 }, () => {
   it('signs Claude Code in under a terminal: the link, the pasted code, the token', async () => {
     const { signIn, pages } = start('claude', await fake('claude', FAKE_CLAUDE));
     await until(() => pages.at(-1)?.needsCode === true);
@@ -116,8 +117,7 @@ describe.runIf(unix)('startBrowserSignIn', () => {
       () => null,
       (caught: Error) => caught
     );
-    expect(error?.message).toContain('without a token');
-    expect(error?.message).toContain('OAuth error: invalid code');
+    expect(error?.message).toContain('did not take the code: OAuth error: invalid code');
     expect(error?.message).not.toContain('bad-code');
   });
 

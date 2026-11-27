@@ -377,7 +377,23 @@ export type Operation = z.infer<typeof operationSchema>;
 
 export const operationListSchema = z.object({ operations: z.array(operationSchema) });
 
-export const operationProgressSchema = z.object({ message: z.string() });
+export const operationProgressSchema = z.object({
+  message: z.string(),
+  /** A browser sign-in's page, a code to type there, and whether one is pasted back. */
+  sign_in: z
+    .object({
+      url: z.string(),
+      user_code: z.string().optional(),
+      needs_code: z.boolean(),
+    })
+    .optional(),
+});
+export type OperationProgress = z.infer<typeof operationProgressSchema>;
+
+/** What the owner sent the operation since its last progress, answered once (200; else 204). */
+export const operationProgressAnswerSchema = z.object({
+  input: z.object({ code: z.string().min(1) }),
+});
 
 export const operationResultSchema = z.discriminatedUnion('outcome', [
   z.object({

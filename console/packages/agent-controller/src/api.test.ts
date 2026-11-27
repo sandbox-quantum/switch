@@ -512,7 +512,16 @@ describe('operations', () => {
       status: 409,
       code: 'already_claimed',
     });
-    await api.operationProgress('op-1', 'working');
+    expect(await api.operationProgress('op-1', { message: 'working' })).toBeNull();
+    core.signInCodes.set('op-1', 'abc#def');
+    expect(
+      await api.operationProgress('op-1', {
+        message: 'waiting',
+        sign_in: { url: 'https://claude.ai/oauth/authorize', needs_code: true },
+      })
+    ).toEqual({ code: 'abc#def' });
+    expect(await api.operationProgress('op-1', { message: 'checking' })).toBeNull();
+    expect(core.progress.get('op-1')).toHaveLength(3);
     await api.operationResult('op-1', { outcome: 'succeeded' });
     expect(core.results.get('op-1')).toEqual({ outcome: 'succeeded' });
     expect(core.requests.at(-1)!.headers['idempotency-key']).toBe('result-op-1');

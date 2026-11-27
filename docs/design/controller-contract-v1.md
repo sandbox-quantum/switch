@@ -213,8 +213,9 @@ Explicit actions that aren't part of the desired state. Created by the Manager U
 ```
 GET  /v1/management/controllers/{id}/operations?state=pending   → 200 { operations: Operation[] }
 POST /v1/management/operations/{op_id}/claim                    → 200 Operation (with lease) | 409 already_claimed | 410 cancelled
-POST /v1/management/operations/{op_id}/progress  { message: string }          → 204   // optional, renews the lease
+POST /v1/management/operations/{op_id}/progress  OperationProgress            → 204 | 200 { input: { code } }   // optional, renews the lease
 POST /v1/management/operations/{op_id}/result    OperationResult              → 204
+PUT  /v1/management/operations/{op_id}/provider-login  { sealed: SealedLogin } → 200 { provider, revision, key_id, updated_at }   // browser sign-in only
 ```
 
 ```ts
@@ -230,15 +231,26 @@ type Operation = {
 type OperationKind =
   | "agent.start" | "agent.stop" | "agent.restart"          // params: {}
   | "provider.recheck"                                      // params: { provider }
-  | "provider.login"                                        // params: { provider, method: "device_code" | "sealed" }
+  | "provider.login"                                        // params: { provider, method: "browser" | "sealed" }
   | "machine.collect_diagnostics"                           // params: {}
 
+type OperationProgress = {
+  message: string                       // at most 500 characters
+  sign_in?: {                           // a browser sign-in's page, while it runs
+    url: string                         // https only
+    user_code?: string                  // a device code to type on the page (≤ 64 characters)
+    needs_code: boolean                 // the CLI waits for the code the page shows, pasted back
+  }
+}
+
 type OperationResult =
-  | { outcome: "succeeded"; output?: Record<string, unknown> }  // e.g. provider.login → { verification_uri, user_code }
+  | { outcome: "succeeded"; output?: Record<string, unknown> }  // e.g. provider.login → { provider: ProviderStatus }
   | { outcome: "failed"; error: { code: ReasonCode; message: string } }
 ```
 
 Claim leases last 5 minutes and are renewed by `progress`. Every operation reaches a terminal result or expires. Nothing is left pending forever.
+
+Each `progress` replaces the operation's last report, which its owner reads as `progress` on the operation (`GET /gateway/management/operations`); a claim clears it. A `progress` answers `200 { input: { code } }` when the owner sent the operation something since (`POST /gateway/management/operations/{op_id}/sign-in-code`); it is handed over once, and only that it was taken is kept.
 
 ---
 
@@ -336,6 +348,7 @@ type SealedLogin = {
 - **The key.** The controller makes an X25519 keypair at enrollment and sends `public_key`. A controller enrolled before then registers it once with `PATCH /v1/management/controllers/{id}` `{ public_key }`. A different key afterwards is refused (409): the machine is enrolled again. A controller that keeps no secrets across starts (its credential handed over by a parent) registers none, and uses only the machine's own logins.
 - **Sealing.** The owner's client (Console) seals `{ kind: "api-key" | "setup-token" | "auth-json" | "vertex", credential }` to that key (a `vertex` login, Claude or Antigravity only, holds `{"v": 1, "project", "region", "credentials"}` as JSON, `credentials` being a Google service account key or `authorized_user` sign-in): an ephemeral X25519 key, `HKDF-SHA256(shared, salt = ephemeral public ‖ controller public, info = "switch provider login v1")`, and AES-256-GCM with `aad = "switch-provider-login-v1\n<controller id>\n<provider>"`. The server checks the envelope's shape and that `key_id` names the machine's current key, stores only the ciphertext, and can never open it. The same construction is in `core/switch_core/management/sealed_logins.py` (checks) and `@switch-console/agent-providers` `sealed-login.ts` (seal and open).
 - **On demand.** The owner gives a machine a login with `PUT /gateway/management/controllers/{id}/provider-logins/{provider}` `{ sealed }`, which answers `{ login: { provider, revision, key_id, updated_at }, operation }`. The operation is `provider.login` `{ provider, method: "sealed", revision }`: the controller fetches the login, opens it, checks the provider signs in with it, and reports `succeeded` with its provider status, or `failed` with `provider_login_missing`, `provider_login_expired` or `internal`. `GET …/provider-logins` lists what was given (never the ciphertext). `DELETE …/provider-logins/{provider}` takes it back and queues `provider.recheck`. Revoking the machine deletes its logins.
+- **Browser sign-in.** The owner has the machine sign a provider in itself with `POST /gateway/management/controllers/{id}/provider-logins/{provider}/browser`, which answers `{ operation }`: `provider.login` `{ provider, method: "browser" }`. Starting another for the same provider there cancels the one running. The controller runs the provider's own sign-in (Claude Code: `claude setup-token`, under a terminal; Codex: `codex login --device-auth`, with a `CODEX_HOME` of its own; OpenCode: `opencode auth login` with its ChatGPT device-code method, under XDG folders of its own; Cursor: `agent login`; Antigravity: `agy acp --login`) and reports `progress` every couple of seconds with `sign_in` once the CLI printed its page. The owner opens `url` in a browser; for Codex and OpenCode they type `user_code` there, for Cursor they only sign in, for Claude Code and Antigravity they paste the code the page shows (for Antigravity, or the page's full address) back with `POST /gateway/management/operations/{op_id}/sign-in-code` `{ code }` (the owner's alone, printable ASCII on one line, once per sign-in, and only while `needs_code`), which the controller types in when its next `progress` answers with it. The CLI ends with a setup token (Claude Code) or an `auth.json` (Codex and OpenCode, read and then removed): the controller seals it to its own key, keeps it with `PUT /v1/management/operations/{op_id}/provider-login` (only while it holds that operation), and then takes it up exactly as a login given on demand, reporting the result the same way. So it outlives the controller and is withdrawn with `DELETE …/provider-logins/{provider}`. Cursor and Antigravity keep the login inside their own CLI (the system keychain, or a file in the user's profile without one), the only place they read such a sign-in from: the controller keeps nothing with Switch, checks the provider, and reports the result; the machine is signed in as if by hand, and is signed out there, not from Switch. The sign-in is ended after 10 minutes, when the operation is cancelled, and when the controller stops; a code the CLI refuses fails it at once with the CLI's words. A cloud device (`kind: "ec2"`) is refused (422): Switch runs its controller, which has no browser sign-in, so it takes a login given on demand instead.
 - The controller **prefers a local login** (`auth_source: "local"`). It uses a sealed one (`auth_source: "sealed"`) only for a provider it has no local login for, and only once the provider signs in with it. An agent using one gets it with its relay credentials, and is restarted when the login changes or is withdrawn.
 - On Switch EC2, the same sealed logins apply: no KMS is involved.
 - When a CLI refreshes and rotates a login on the machine, the controller doesn't upload it back.

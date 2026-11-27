@@ -351,6 +351,54 @@ when there is none. From then on the provider is reported ready with
   key across starts, so it registers none and uses only the machine's own
   logins.
 
+#### Signing a provider in through a browser
+
+The owner can also have the machine sign Claude Code, Codex, OpenCode, Cursor
+or Antigravity in itself, from Switch's web dashboard ("Sign in with browser"),
+with no login to paste. Switch
+queues `provider.login` with `method: "browser"`, which runs beside the other
+operations rather than holding them up:
+
+- Claude Code: the controller runs `claude setup-token` under a terminal
+  (`script`, util-linux on Linux and BSD on macOS; Windows is not supported),
+  with a config folder of its own so nothing of the machine's changes. It
+  reports the authorize link; the owner signs in on it and pastes back the code
+  the page shows, which the controller types in. The CLI prints a long-lived
+  token.
+- Codex: the controller runs `codex login --device-auth` with a `CODEX_HOME` of
+  its own, and reports the page and the one-time code to type there. Once the
+  owner signs in, it reads the `auth.json` the CLI wrote and removes it.
+- OpenCode: the controller runs `opencode auth login --pure --provider openai
+  --method "ChatGPT Pro/Plus (headless)"` with XDG folders of its own: the same
+  ChatGPT page and one-time code as Codex. It reads the `auth.json` the CLI
+  wrote (it must hold a ChatGPT sign-in, as the CLI ends without an error
+  when it saved none) and removes it.
+- Cursor: the controller runs `agent login` (with `NO_OPEN_BROWSER`) and reports
+  the page; the CLI notices the owner signed in there by itself.
+- Antigravity: the controller runs Google's `agy acp --login` and reports the
+  Google page; the owner pastes back the code the page ends on (or its full
+  address), which the controller types in as a line. The retired
+  `antigravity-acp` wrapper is refused.
+
+The login Claude Code, Codex or OpenCode ends with is sealed to the machine's
+own key and kept by Switch as a login given to the machine, then taken up like
+any other: it is used and withdrawn the same way, and outlives the controller.
+Cursor and Antigravity keep the login inside their own CLI instead (the system
+keychain on macOS; `~/.config/cursor/auth.json` and
+`~/.gemini/antigravity-cli/antigravity-oauth-token` on a Linux machine without
+one), and read a Google or Cursor sign-in from nowhere else: Cursor takes no
+given login but an API key, and agy no token file. So their sign-in leaves the
+machine signed in as if done there by hand, in the controller user's own
+profile: Switch never holds it, it is not withdrawn from Switch (sign out on the
+machine), and agents that run as users of their own (`--separate-users`) do not
+see it. The controller then checks the provider and reports it. The controller
+reports the page as the operation's progress every couple of seconds (which
+renews its lease), never logs the login, and ends the sign-in, with the CLI,
+after ten minutes, when the operation is cancelled (starting another for the
+provider cancels it) and when it stops. A code Claude Code refuses fails the
+sign-in at once with the CLI's words. A controller that keeps no key across
+starts cannot keep the login, so it refuses.
+
 ### The controller credential
 
 `enroll --secret-store` says where the controller credential is kept, and the data
