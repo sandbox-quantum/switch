@@ -834,6 +834,7 @@ def test_a_real_channel_id_is_sent_as_it_is() -> None:
         recorder.last.url.raw_path.split(b"?")[0]
         == b"/v1.0/teams/t1/channels/19:abc_1-2@thread.tacv2"
     )
+    assert recorder.last.url.params["$select"] == "id,displayName,membershipType,layoutType"
 
 
 def test_a_failed_page_raises() -> None:
