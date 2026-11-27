@@ -29,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import User
+from switch_core.secret_files import mounted_for_cores_group
 from switch_core.tenant_context import no_tenant
 
 logger = logging.getLogger(__name__)
@@ -106,10 +107,12 @@ def _parse(path: Path) -> frozenset[str]:
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode):
             raise ValueError("the operator list is not a regular file")
-        if info.st_uid != os.getuid():
-            raise ValueError("the operator list is not owned by Core's user")
-        if info.st_mode & 0o077:
-            raise ValueError("the operator list can be read or changed by others")
+        # Core's own file, or a Secret volume mounted for Core's group (secret_files).
+        if not mounted_for_cores_group(info):
+            if info.st_uid != os.getuid():
+                raise ValueError("the operator list is not owned by Core's user")
+            if info.st_mode & 0o077:
+                raise ValueError("the operator list can be read or changed by others")
         if info.st_size > MAX_FILE_BYTES:
             raise ValueError("the operator list is too large")
         raw = handle.read(MAX_FILE_BYTES + 1)

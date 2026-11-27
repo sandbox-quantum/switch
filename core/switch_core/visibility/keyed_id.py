@@ -22,6 +22,8 @@ import stat
 from enum import StrEnum
 from pathlib import Path
 
+from switch_core.secret_files import mounted_for_cores_group
+
 # Stored or exported ids keep at least 12 hex characters; 16
 # leaves room. The 4-character form is for display only, never for actions.
 STORED_HEX = 16
@@ -110,14 +112,16 @@ def load_key(path: str | Path, version: str) -> KeyedIdKey:
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode):
             raise KeyedIdKeyError(f"the keyed-id key file {p} is not a regular file")
-        if info.st_uid != os.getuid():
-            raise KeyedIdKeyError(
-                f"the keyed-id key file {p} is not owned by Core's user"
-            )
-        if info.st_mode & 0o077:
-            raise KeyedIdKeyError(
-                f"the keyed-id key file {p} can be read by others; make it 0400"
-            )
+        # Core's own 0400 file, or a Secret volume mounted for Core's group (secret_files).
+        if not mounted_for_cores_group(info):
+            if info.st_uid != os.getuid():
+                raise KeyedIdKeyError(
+                    f"the keyed-id key file {p} is not owned by Core's user"
+                )
+            if info.st_mode & 0o077:
+                raise KeyedIdKeyError(
+                    f"the keyed-id key file {p} can be read by others; make it 0400"
+                )
         if info.st_size > MAX_KEY_BYTES + 64:
             raise KeyedIdKeyError(f"the keyed-id key file {p} is too large")
         secret = handle.read(MAX_KEY_BYTES + 65)

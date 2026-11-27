@@ -119,3 +119,41 @@ def test_only_one_trailing_newline_is_dropped(tmp_path: Path, ending: bytes) -> 
     assert key.keyed_id(KeyedIdKind.USER, "u") != KeyedIdKey(SECRET, "k1").keyed_id(
         KeyedIdKind.USER, "u"
     )
+
+
+def _mounted(st: os.stat_result, uid: int, gid: int, mode: int) -> os.stat_result:
+    values = list(st)
+    values[0], values[4], values[5] = mode, uid, gid
+    return os.stat_result(values)
+
+
+@pytest.mark.parametrize(
+    ("uid", "gid_is_mine", "mode", "read"),
+    [
+        (0, True, 0o100440, True),  # a Secret volume mounted for Core's group
+        (0, False, 0o100440, False),  # another group's
+        (0, True, 0o100444, False),  # anyone's
+        (0, True, 0o100460, False),  # the group may change it
+    ],
+)
+def test_load_key_reads_a_secret_mounted_for_cores_group_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    uid: int,
+    gid_is_mine: bool,
+    mode: int,
+    read: bool,
+) -> None:
+    from switch_core.visibility import keyed_id
+
+    real = os.fstat
+    gid = os.getgid() if gid_is_mine else os.getgid() + 12345
+    monkeypatch.setattr(
+        keyed_id.os, "fstat", lambda fd: _mounted(real(fd), uid, gid, mode)
+    )
+    path = _write(tmp_path, 0o400)
+    if read:
+        assert load_key(path, "k1").keyed_id(KeyedIdKind.BOX, "b")
+    else:
+        with pytest.raises(KeyedIdKeyError):
+            load_key(path, "k1")

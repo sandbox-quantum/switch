@@ -14,6 +14,8 @@ from pydantic import (
     model_validator,
 )
 
+from switch_core.secret_files import mounted_for_cores_group
+
 logger = logging.getLogger(__name__)
 
 # What a caller this server doesn't offer cloud machines to is told: the same
@@ -323,14 +325,19 @@ def load_hosted_settings(
         )
         if getattr(settings, name) is not None
     ]
-    if holds and Path(path).stat().st_mode & 0o077:
+    if (
+        holds
+        and (st := Path(path).stat()).st_mode & 0o077
+        and not mounted_for_cores_group(st)
+    ):
         # Box provisioning and the operator bearer: a file holding the
         # provisioner's or the operator's bearer is Core's alone. Only checked
         # when it holds one, so an existing config isn't refused for a
         # credential it doesn't carry.
         raise ValueError(
             "HOSTED_CONTROLLER_CONFIG_PATH holds the provisioner's or the operator's "
-            "credential, so it must be readable by Core's user only (0400 or 0600)."
+            "credential, so it must be readable by Core's user only (0400 or 0600, "
+            "or a mounted Secret readable by Core's group alone)."
         )
     return settings
 
