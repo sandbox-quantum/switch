@@ -573,7 +573,7 @@ class MattermostAdapter(PlatformAdapter):
                     f"credentials: {exc}"
                 ) from exc
             token = login.headers.get("Token")
-            if login.status_code != 200 or not token:
+            if not login.is_success or not token:
                 raise BridgeCredentialError(
                     f"Mattermost refused the sign-in for {config.admin_user}: "
                     f"{_mattermost_error(login)}. Check admin_user and admin_password."
@@ -594,6 +594,10 @@ class MattermostAdapter(PlatformAdapter):
                         f"Could not look up the Mattermost team "
                         f"{config.team_name!r}: {_mattermost_error(team)}"
                     )
+            except OutboundURLRefused as exc:
+                raise BridgeCredentialError(
+                    f"Switch may not connect to Mattermost at {config.url}: {exc}"
+                ) from exc
             except httpx.HTTPError as exc:
                 raise BridgeCredentialError(
                     f"Could not look up the Mattermost team {config.team_name!r}: {exc}"
@@ -601,7 +605,7 @@ class MattermostAdapter(PlatformAdapter):
             finally:
                 try:
                     await http.post("/users/logout", headers=auth)
-                except httpx.HTTPError:
+                except (httpx.HTTPError, OutboundURLRefused):
                     logger.warning(
                         "Could not sign out the Mattermost session opened to check "
                         "%s's credentials; it lasts until the server expires it",

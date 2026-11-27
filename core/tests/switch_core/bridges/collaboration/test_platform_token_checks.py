@@ -145,20 +145,33 @@ class TestDiscord:
 class _FakeMattermost:
     """The REST API `verify_credentials` signs in to, noting each request."""
 
-    def __init__(self, *, login_status: int, team_status: int) -> None:
+    def __init__(
+        self,
+        *,
+        login_status: int,
+        team_status: int,
+        refused_paths: frozenset[str] = frozenset(),
+    ) -> None:
         self.login_status = login_status
         self.team_status = team_status
+        # Paths whose connection the outbound guard refuses, as it does when a
+        # host re-resolves to a blocked address between requests.
+        self.refused_paths = refused_paths
         self.requests: list[tuple[str, str]] = []
         self.policies: list[OutboundPolicy] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append((request.method, request.url.path))
+        if request.url.path in self.refused_paths:
+            raise OutboundURLRefused("chat.example.invalid resolves to 10.0.0.5")
         if request.url.path == "/api/v4/users/login":
-            if self.login_status != 200:
+            if not 200 <= self.login_status < 300:
                 return httpx.Response(
                     self.login_status, json={"message": "Invalid credentials"}
                 )
-            return httpx.Response(200, json={}, headers={"Token": "session-token"})
+            return httpx.Response(
+                self.login_status, json={}, headers={"Token": "session-token"}
+            )
         if request.url.path.startswith("/api/v4/teams/name/"):
             assert request.headers["Authorization"] == "Bearer session-token"
             if self.team_status != 200:
@@ -209,6 +222,40 @@ class TestMattermost:
             ("POST", "/api/v4/users/logout"),
         ]
         assert server.policies == [policy]
+
+    async def test_a_sign_in_answered_201_is_accepted(self) -> None:
+        """Mattermost documents 201 for a successful sign-in."""
+        server = _FakeMattermost(login_status=201, team_status=200)
+        with server.serve():
+            await MattermostAdapter.verify_credentials(
+                dict(MATTERMOST), outbound_policy=OutboundPolicy.parse("")
+            )
+        assert ("GET", "/api/v4/teams/name/eng") in server.requests
+
+    async def test_a_refusal_on_the_team_lookup_is_a_credential_error(self) -> None:
+        server = _FakeMattermost(
+            login_status=200,
+            team_status=200,
+            refused_paths=frozenset({"/api/v4/teams/name/eng"}),
+        )
+        with server.serve():
+            with pytest.raises(BridgeCredentialError, match="may not connect"):
+                await MattermostAdapter.verify_credentials(
+                    dict(MATTERMOST), outbound_policy=OutboundPolicy.parse("")
+                )
+
+    async def test_a_refused_sign_out_keeps_the_team_lookup_error(self) -> None:
+        server = _FakeMattermost(
+            login_status=200,
+            team_status=404,
+            refused_paths=frozenset({"/api/v4/users/logout"}),
+        )
+        with server.serve():
+            with pytest.raises(BridgeCredentialError, match="no team named 'eng'"):
+                await MattermostAdapter.verify_credentials(
+                    dict(MATTERMOST), outbound_policy=OutboundPolicy.parse("")
+                )
+        assert server.requests[-1] == ("POST", "/api/v4/users/logout")
 
     async def test_an_address_the_policy_blocks_is_not_signed_in_to(self) -> None:
         with pytest.raises(BridgeCredentialError, match="may not connect"):
