@@ -115,3 +115,24 @@ def test_a_same_size_rewrite_is_seen(tmp_path: Path) -> None:
     os.replace(replacement, path)
     assert path.stat().st_size == before.st_size
     assert ops.is_operator("ub") and not ops.is_operator("ua")
+
+
+@pytest.mark.parametrize(("gid_is_mine", "listed"), [(True, True), (False, False)])
+def test_a_secret_mounted_for_cores_group_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gid_is_mine: bool, listed: bool
+) -> None:
+    """A Kubernetes Secret volume with an fsGroup: root's, 0440, Core's group. Another group's isn't."""
+    from switch_core.visibility import operators
+
+    real = os.fstat
+    gid = os.getgid() if gid_is_mine else os.getgid() + 12345
+
+    def mounted(fd: int) -> os.stat_result:
+        values = list(real(fd))
+        values[0], values[4], values[5] = 0o100440, 0, gid
+        return os.stat_result(values)
+
+    monkeypatch.setattr(operators.os, "fstat", mounted)
+    path = tmp_path / "operators.json"
+    _write(path, {"operators": ["u1"]}, mode=0o400)
+    assert OperatorList(path).is_operator("u1") is listed

@@ -362,7 +362,7 @@ def test_a_secret_mounted_for_cores_group_is_read(
     body = {**BASE_FILE, "operator_token": OPERATOR}
     path = _write(tmp_path, body, 0o400)
     mounted = _stat_as(
-        path, st_mode=0o100440, st_uid=os.getuid() + 1, st_gid=os.getgid()
+        path, st_mode=0o100440, st_uid=0, st_gid=os.getgid()
     )
     monkeypatch.setattr(Path, "stat", lambda self, **_: mounted)
     settings = load_hosted_settings(path)
@@ -396,7 +396,7 @@ def test_a_mounted_secret_readable_beyond_cores_group_is_refused(
     me, mine = os.getuid(), os.getgid()
     resolved = {
         "st_mode": fields["st_mode"],
-        "st_uid": me if fields["st_uid"] == 0 else me + 1,
+        "st_uid": me if fields["st_uid"] == 0 else 0,
         "st_gid": mine if fields["st_gid"] == 0 else mine + 12345,
     }
     stat = _stat_as(path, **resolved)
