@@ -361,9 +361,7 @@ def test_a_secret_mounted_for_cores_group_is_read(
     """A Kubernetes Secret volume with an fsGroup: root's, 0440, Core's group."""
     body = {**BASE_FILE, "operator_token": OPERATOR}
     path = _write(tmp_path, body, 0o400)
-    mounted = _stat_as(
-        path, st_mode=0o100440, st_uid=0, st_gid=os.getgid()
-    )
+    mounted = _stat_as(path, st_mode=0o100440, st_uid=0, st_gid=os.getgid())
     monkeypatch.setattr(Path, "stat", lambda self, **_: mounted)
     settings = load_hosted_settings(path)
     assert settings is not None and settings.operator_token is not None
