@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.box_cluster import box_cluster_on
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import ServerAuditAction
 from switch_core.db.models import (
@@ -46,7 +47,7 @@ from switch_core.visibility.audit_log import (
     check_reason,
     record_operator_result,
 )
-from switch_core.visibility.box_provision import box_provisioning_on, boxes_made
+from switch_core.visibility.box_provision import boxes_made
 from switch_core.visibility.cluster_report import latest_cluster_report
 from switch_core.visibility.dependencies import get_keyed_id_key
 from switch_core.visibility.guards import require_operator
@@ -398,7 +399,7 @@ async def _box_ceiling(
     """Boxes made against `hosted_box_ceiling`, or None while box provisioning
     is off and nothing enforces it."""
     ceiling = getattr(config, "hosted_box_ceiling", None)
-    if not box_provisioning_on(config):
+    if not box_cluster_on():
         return None
     if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling < 1:
         return None

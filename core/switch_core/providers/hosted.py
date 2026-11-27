@@ -9,7 +9,6 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
-    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -32,13 +31,16 @@ OPEN_TO_ALL_WARNING = (
     "allowed_tenant_ids nor allowed_user_ids narrows who may use them in the "
     "hosted controller config."
 )
-# With hosted agents v2 on, an unset cloud-machine list admits nobody: said
-# once at start, so a server that turned v2 on knows why nobody can claim.
+# An unset cloud-machine list admits nobody: said once at start, so a server
+# knows why nobody can claim.
 CLOSED_BY_DEFAULT_WARNING = (
-    "Hosted agents v2 is on and {lists} unset in the hosted controller config, "
+    "Hosted agents are on and {lists} unset in the hosted controller config, "
     "so nobody can use cloud machines. Name the workspaces and accounts, or "
     'set "*" to open them to everyone.'
 )
+
+# The shortest bearer the config takes.
+MIN_BEARER_LENGTH = 32
 
 # The explicit "everyone" for a cloud-machine list (`allowed_tenant_ids`,
 # `allowed_user_ids`), alone in it: `"*"` or `["*"]`.
@@ -49,8 +51,7 @@ class HostedControllerSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # The workspaces whose members may use cloud machines, or "*" for every
-    # one. Null means every one with hosted agents v2 off (as before v2) and
-    # none with it on: v2 is closed until a server says who
+    # one. Null means none: closed until a server says who
     # (`machines_tenant_allowed`).
     allowed_tenant_ids: list[Annotated[str, Field(min_length=1)]] | None
     # Within those workspaces, the accounts (user ids) that may, or "*" for
@@ -58,7 +59,7 @@ class HostedControllerSettings(BaseModel):
     allowed_user_ids: list[Annotated[str, Field(min_length=1)]] | None = None
     # The workspaces that may use agent management at all (/v1/management,
     # /v1/controllers and /gateway/management); null (or left out) for every
-    # one, as today. Separate from the cloud-machine lists: setting it shuts
+    # one. Separate from the cloud-machine lists: setting it shuts
     # every other workspace's own computers out too.
     management_tenant_ids: list[Annotated[str, Field(min_length=1)]] | None = None
     token: SecretStr = Field(min_length=32)
@@ -76,11 +77,11 @@ class HostedControllerSettings(BaseModel):
     # whether or not it's still here. Both or neither.
     operator_token_previous: SecretStr | None = Field(default=None, min_length=32)
     operator_token_previous_until: datetime | None = None
-    # The warm pool's reaper (hosted agents v2): its own bearer, accepted only
+    # The warm pool's reaper: its own bearer, accepted only
     # on the two reaper routes (`/hosted-provisioner/pool/retiring` and
     # `…/pool/{id}/gone`). Unset, those routes refuse every call.
     reaper_token: SecretStr | None = Field(default=None, min_length=32)
-    # Box removal's remover (hosted agents v2): its own bearer, separate from
+    # Box removal's remover: its own bearer, separate from
     # the reaper's, accepted only on the remover's two routes
     # (`/hosted-provisioner/removals/{id}` and `…/removals/listed`). Unset,
     # those routes refuse every call.
@@ -99,18 +100,29 @@ class HostedControllerSettings(BaseModel):
     box_routes_accept_controller_until: datetime | None = None
     agent_api_endpoint: str
 
+    @field_validator("provisioner_token", mode="before")
+    @classmethod
+    def unusable_provisioner_token_is_none(cls, value: object) -> object:
+        """An empty, short or non-text provisioner token names no box cluster: hosted
+        agents stay off, said once, and Core still starts. A typo in this one
+        key never stops the server."""
+        if value is not None and (
+            not isinstance(value, str) or len(value.strip()) < MIN_BEARER_LENGTH
+        ):
+            logger.warning(
+                "provisioner_token in the hosted controller config is empty, not "
+                "text or shorter than %d characters, so no box cluster is "
+                "configured and hosted agents are off.",
+                MIN_BEARER_LENGTH,
+            )
+            return None
+        return value
+
     @field_validator("allowed_tenant_ids", "allowed_user_ids", mode="before")
     @classmethod
-    def everyone_alone(cls, value: object, info: ValidationInfo) -> object:
-        """With hosted agents v2 on, `"*"` is the explicit everyone, as itself
-        or alone in the list; beside names it would hide a mistake, so it's
-        refused. With v2 off the lists load exactly as before v2. The mode is
-        the loader's (`load_hosted_settings(v2=hosted_v2_on(config))`), never
-        the process flag, which isn't set yet when the settings load; with no
-        mode given, off."""
-        context = info.context if isinstance(info.context, dict) else {}
-        if context.get("v2") is not True:
-            return value
+    def everyone_alone(cls, value: object) -> object:
+        """`"*"` is the explicit everyone, as itself or alone in the list;
+        beside names it would hide a mistake, so it's refused."""
         if value == EVERYONE:
             return [EVERYONE]
         if isinstance(value, list) and EVERYONE in value and len(value) > 1:
@@ -206,84 +218,42 @@ class HostedControllerSettings(BaseModel):
         return value.rstrip("/")
 
 
-def _v2(v2: bool | None) -> bool:
-    if v2 is not None:
-        return v2
-    from switch_core.hosted_v2 import process_hosted_v2
-
-    return process_hosted_v2()
-
-
-def v2_of(config: object) -> bool:
-    """The mode for the lists, from the caller's config where it has one:
-    on when the config says so (`hosted_v2_on`), so a process that never
-    recorded its mode still reads v2's closed rule, else this process's."""
-    from switch_core.hosted_v2 import hosted_v2_on, process_hosted_v2
-
-    return hosted_v2_on(config) or process_hosted_v2()
-
-
-def _admits(ids: list[str] | None, member: str, v2: bool) -> bool:
-    """The cloud-machine list rule. With hosted agents v2 off, exactly as
-    before v2: unset admits everyone and a list whom it names (`"*"` is just
-    a name). With v2 on, unset admits nobody, `"*"` everyone, and a list whom
-    it names."""
-    if not v2:
-        return ids is None or member in ids
+def _admits(ids: list[str] | None, member: str) -> bool:
+    """The cloud-machine list rule: unset admits nobody, `"*"` everyone, and a
+    list whom it names."""
     if ids is None:
         return False
     return EVERYONE in ids or member in ids
 
 
-def machines_tenant_allowed(
-    settings: HostedControllerSettings, tenant_id: str, *, v2: bool | None = None
-) -> bool:
-    """Whether `allowed_tenant_ids` admits the workspace to cloud machines.
-    `v2` defaults to this process's answer (`process_hosted_v2`)."""
-    return _admits(settings.allowed_tenant_ids, tenant_id, _v2(v2))
+def machines_tenant_allowed(settings: HostedControllerSettings, tenant_id: str) -> bool:
+    """Whether `allowed_tenant_ids` admits the workspace to cloud machines."""
+    return _admits(settings.allowed_tenant_ids, tenant_id)
 
 
-def machines_user_allowed(
-    settings: HostedControllerSettings, user_id: str, *, v2: bool | None = None
-) -> bool:
+def machines_user_allowed(settings: HostedControllerSettings, user_id: str) -> bool:
     """Whether `allowed_user_ids` admits the account to cloud machines."""
-    return _admits(settings.allowed_user_ids, user_id, _v2(v2))
+    return _admits(settings.allowed_user_ids, user_id)
 
 
-def _everyone(ids: list[str] | None, v2: bool) -> bool:
-    return ids == [EVERYONE] if v2 else ids is None
-
-
-def open_to_all(
-    settings: HostedControllerSettings | None,
-    capacity: int,
-    *,
-    v2: bool | None = None,
-) -> bool:
+def open_to_all(settings: HostedControllerSettings | None, capacity: int) -> bool:
     """Whether this server lets anyone at all claim a cloud machine: it can
-    run them, and neither list narrows who may: both `"*"`, or, with hosted
-    agents v2 off, both unset (the v1 default). Not wrong in itself, but worth
-    saying out loud."""
-    on = _v2(v2)
+    run them, and both lists are `"*"`. Not wrong in itself, but worth saying
+    out loud."""
     return (
         settings is not None
         and capacity > 0
-        and _everyone(settings.allowed_tenant_ids, on)
-        and _everyone(settings.allowed_user_ids, on)
+        and settings.allowed_tenant_ids == [EVERYONE]
+        and settings.allowed_user_ids == [EVERYONE]
     )
 
 
 def warn_if_open_to_all(
-    settings: HostedControllerSettings | None,
-    capacity: int,
-    *,
-    v2: bool | None = None,
+    settings: HostedControllerSettings | None, capacity: int
 ) -> bool:
-    """Logs one WARN at start when `open_to_all`, and, with hosted agents v2
-    on, one when an unset list shuts everyone out; returns whether it warned
-    that it's open to all."""
-    on = _v2(v2)
-    if settings is not None and capacity > 0 and on:
+    """Logs one WARN at start when `open_to_all`, and one when an unset list
+    shuts everyone out; returns whether it warned that it's open to all."""
+    if settings is not None and capacity > 0:
         unset = [
             name
             for name in ("allowed_tenant_ids", "allowed_user_ids")
@@ -295,42 +265,34 @@ def warn_if_open_to_all(
                     lists=" and ".join(unset) + (" are" if len(unset) > 1 else " is")
                 )
             )
-    if not open_to_all(settings, capacity, v2=on):
+    if not open_to_all(settings, capacity):
         return False
     logger.warning(OPEN_TO_ALL_WARNING)
     return True
 
 
 PER_WORKSPACE_UNSET_WARNING = (
-    "Hosted agents v2 is on and HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE is 0, so "
-    "one workspace may take every cloud machine on this server. Set it before "
-    "v2 serves more than one workspace."
+    "HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE is 0, so one workspace may take every "
+    "cloud machine on this server. Set it before this server serves more than "
+    "one workspace."
 )
 
 
-def warn_if_no_per_workspace_limit(
-    capacity: int, per_workspace: int, *, v2: bool
-) -> bool:
-    """Logs one WARN at start when hosted agents v2 can run machines with no
+def warn_if_no_per_workspace_limit(capacity: int, per_workspace: int) -> bool:
+    """Logs one WARN at start when this server can run machines with no
     per-workspace limit; returns whether it did."""
-    if not v2 or capacity <= 0 or per_workspace > 0:
+    if capacity <= 0 or per_workspace > 0:
         return False
     logger.warning(PER_WORKSPACE_UNSET_WARNING)
     return True
 
 
-def load_hosted_settings(
-    path: str | None, *, v2: bool | None = None
-) -> HostedControllerSettings | None:
+def load_hosted_settings(path: str | None) -> HostedControllerSettings | None:
     """The hosted controller config at `HOSTED_CONTROLLER_CONFIG_PATH`, or None
-    when the server has none. `v2` is the server's mode
-    (`hosted_v2_on(config)`), for the lists' `"*"`: it's read before this
-    process records its mode, so callers pass it; unset, this process's."""
+    when the server has none."""
     if not path:
         return None
-    settings = HostedControllerSettings.model_validate_json(
-        Path(path).read_text(), context={"v2": _v2(v2)}
-    )
+    settings = HostedControllerSettings.model_validate_json(Path(path).read_text())
     holds = [
         name
         for name in (

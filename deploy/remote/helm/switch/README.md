@@ -577,18 +577,20 @@ with none, controllers are told nothing and keep their version. To roll
 controllers back, point the three values at the previous release's package and
 upgrade.
 
-## Hosted agents v2
+## Hosted agents
 
-Hosted agents v2 gives each person a box on a shared cluster instead of a
-cloud machine of their own. It's off by default: with
-`switchCore.hostedBoxProvisioning: false` the chart renders exactly as before,
-and switch-core runs v1. switch-core reads the setting once at start-up, so
-moving between v1 and v2 is a values change and a rollout, with no code change.
+Hosted agents give each person a box on a shared cluster. switch-core runs
+them only when the hosted controller config (`hostedControllerSecret`) carries
+the box operator's `provisioner_token`: that is what says a box cluster is set
+up. Without it, hosted agents are off, whatever else is set, and switch-core
+starts as usual. `hostedBoxProvisioning` no longer turns anything on in
+switch-core; it is kept so values that set it still render, and with it true
+the chart still passes `hostedPoolSize`.
 
 ```yaml
 switchCore:
-  hostedBoxProvisioning: true        # HOSTED_BOX_PROVISIONING
-  hostedControllerSecret: switch-hosted-controller
+  hostedBoxProvisioning: true        # passes hostedPoolSize
+  hostedControllerSecret: switch-hosted-controller   # with provisioner_token
   hostedLaunchCapacity: 20
   hostedProvisionsPerMinute: 5       # optional; switch-core's default is 5
   hostedBoxCeiling: 50               # optional; switch-core's default is 50
@@ -600,16 +602,14 @@ switchCore:
     enabled: ["agent_management", "hosted_agents"]
 ```
 
-- **Required with it on:** `hostedControllerSecret`, `hostedLaunchCapacity`
-  above 0, `visibilityKeyedIdKeySecret`, and the `hosted_agents` and
-  `agent_management` feature flags (with `secrets.controllerTokenSecret`, as
-  above). The chart refuses to render without them: without the others no
-  box would ever be made, and without the keyed-id key the Hosted area and
+- **A server with a box cluster also needs** `hostedLaunchCapacity` above 0,
+  `visibilityKeyedIdKeySecret`, and the `hosted_agents` and `agent_management`
+  feature flags (with `secrets.controllerTokenSecret`, as above): without the
+  others no box is ever made, and without the keyed-id key the Hosted area and
   the box operator's restart and drain actions can't work.
 - **The warm pool** (`hostedPoolSize`, 10 by default) keeps that many boxes
   made ahead, so a new person's first start takes one rather than waiting for
-  a box to be made. It's rendered only with v2 on, so a v1 install is
-  unchanged. Spare boxes count towards `hostedLaunchCapacity` and
+  a box to be made. It's passed only with `hostedBoxProvisioning` true. Spare boxes count towards `hostedLaunchCapacity` and
   `hostedBoxCeiling` (50 when empty), and the chart refuses to render unless
   each is at least the pool plus 2, which switch-core also checks at start-up.
   Each spare is a running box, so the pool is a standing cost: set it to how

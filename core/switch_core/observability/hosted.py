@@ -117,8 +117,8 @@ V1_BACKEND = "vm"
 BOX_BACKEND = "box"
 
 # The controller refusal codes (`management.reason_codes`) a refused
-# credential is counted by, plus the hosted controller service's own two. With
-# hosted agents v2 on, also a lockout's two words and `controller_token` (a
+# credential is counted by, plus the hosted controller service's own two, a
+# lockout's two words and `controller_token` (a
 # controller's own bearer offered on the operator API). Any other code is
 # counted as `other`.
 REFUSAL_REASONS = frozenset(

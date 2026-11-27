@@ -42,7 +42,6 @@ from switch_core.db.stores.hosted_machine_store import (
     workspaces_on,
 )
 from switch_core.gateway.dependencies import current_telemetry
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.keys import Keyring
 from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.observability.hosted import (
@@ -152,8 +151,6 @@ async def enrollment_code(
     revision: int,
     keyring: Keyring,
     now: datetime,
-    *,
-    fresh: bool = True,
 ) -> str:
     """The code the machine's controller for the workspace enrolls with at the
     machine's `revision`: the same one for every retry of a revision while it
@@ -162,20 +159,7 @@ async def enrollment_code(
     15 minutes gets a fresh one, never a dead one). A new code makes the
     old unused one stop working, so a box has one live code at a time. Callers
     hold the machine's lock (`CloudMachineStore.locked`), so two at once can't
-    both mint. The caller commits.
-
-    `fresh=False` is the v1/v2 switch with v2 off: exactly as before v2, the
-    stored code for the revision is reused as it is, and nothing is retired."""
-    if not fresh:
-        if (
-            workspace.enrollment_code_revision == revision
-            and workspace.enrollment_code_encrypted is not None
-        ):
-            return keyring.decrypt(workspace.enrollment_code_encrypted)
-        code = await cloud_enrollment().machine_enrollment_code(session, workspace, now)
-        workspace.enrollment_code_encrypted = keyring.encrypt(code)
-        workspace.enrollment_code_revision = revision
-        return code
+    both mint. The caller commits."""
     enrollment = cloud_enrollment()
     if (
         workspace.enrollment_code_revision == revision
@@ -268,9 +252,9 @@ def workspace_reported(
     """Whether the workspace's controller has reported since the machine was
     last seen starting: its agents can run.
 
-    A v2 box's controller nearly always reports before the scaler sees the
+    A box's controller nearly always reports before the scaler sees the
     box running, and the ready check makes the box ready on that report
-    (`ready_if_both_signals`). So for a v2 box, a report made at the
+    (`ready_if_both_signals`). So for a box, a report made at the
     machine's current revision counts too, under the ready check's own conditions: by
     `controller`, the workspace's own controller (read with that workspace
     bound), still live and unrevoked, and only for this workspace."""
@@ -280,8 +264,7 @@ def workspace_reported(
     if datetime.fromisoformat(report["at"]) > machine.running_observed_at:
         return True
     return (
-        process_hosted_v2()
-        and machine.backend == "box"
+        machine.backend == "box"
         and report.get("revision") == machine.revision
         and controller is not None
         and report.get("controller_id") == controller.id
@@ -299,8 +282,8 @@ def _reading(free: Any, total: Any) -> dict[str, int] | None:
 DISK_SCOPES = frozenset({"workspace", "unknown"})
 
 
-def _disk_reading(machine_reading: dict[str, Any], v2: bool) -> dict[str, Any] | None:
-    """The disk figures, with the controller's `scope` (v2 only): "workspace"
+def _disk_reading(machine_reading: dict[str, Any]) -> dict[str, Any] | None:
+    """The disk figures, with the controller's `scope`: "workspace"
     when they are the agents' own volume, "unknown" otherwise. Unmarked (an
     older controller) they may be its own small volume. The apps show a disk
     only for "workspace"."""
@@ -309,7 +292,7 @@ def _disk_reading(machine_reading: dict[str, Any], v2: bool) -> dict[str, Any] |
         machine_reading.get("disk_total_bytes"),
     )
     scope = machine_reading.get("disk_scope")
-    if reading is not None and v2 and scope is not None:
+    if reading is not None and scope is not None:
         # Anything outside the fixed set is "unknown", as the status schema reads it.
         reading["scope"] = (
             scope if isinstance(scope, str) and scope in DISK_SCOPES else "unknown"
@@ -408,7 +391,6 @@ async def record_controller_status(
     now = datetime.now(UTC)
     sessions = machine_reading.get("sessions_running")
     reports = controller_reports(machine)
-    v2 = process_hosted_v2()
     before = reports.get(workspace.id)
     in_use = await _providers_in_use(session, controller_id)
     summary = box_summary(
@@ -435,11 +417,11 @@ async def record_controller_status(
         # Kept so the next report can tell a restart; a controller older
         # than the field sends none, and then nothing is counted.
         "started_at": started,
-        # Which controller reported, at which revision (v2 boxes only), for
+        # Which controller reported, at which revision (boxes only), for
         # `workspace_reported`.
         **(
             {"revision": machine.revision, "controller_id": controller_id}
-            if v2 and machine.backend == "box"
+            if machine.backend == "box"
             else {}
         ),
     }
@@ -447,8 +429,8 @@ async def record_controller_status(
         record_box_report(machine_reading, machine.backend)
     machine.heartbeat = {
         # Keys this function doesn't own (the operator's `box` facts) stay.
-        **((machine.heartbeat or {}) if v2 else {}),
-        "disk": _disk_reading(machine_reading, v2),
+        **(machine.heartbeat or {}),
+        "disk": _disk_reading(machine_reading),
         "memory": _reading(
             machine_reading.get("mem_free_bytes"),
             machine_reading.get("mem_total_bytes"),
@@ -458,7 +440,7 @@ async def record_controller_status(
     machine.heartbeat_at = now
     if isinstance(sessions, int) and sessions > 0:
         machine.active_at = now
-    if v2 and machine.backend == "box":
+    if machine.backend == "box":
         # This controller has reported at this revision: the scaler's
         # `running`, if it comes second, makes the box ready on its own.
         machine.heartbeat[REPORTED_KEY] = {
@@ -497,13 +479,13 @@ def _first_report_at(heartbeat: Any, revision: int, now: datetime) -> str:
 
 
 def note_start_click(machine: CloudMachine, now: datetime) -> None:
-    """Start the clock for a v2 box's start: the person's first request that
+    """Start the clock for a box's start: the person's first request that
     needs the box (opening hosted agents, placing an agent, a message waking
     it, or the owner's Start), once per revision. A box already ready needs no
     start; if that's the person's very first request, it's a first start of
-    0 s. The caller holds the machine's lock and commits. Nothing with v2 off,
-    or for a v1 machine."""
-    if not process_hosted_v2() or machine.backend != "box":
+    0 s. The caller holds the machine's lock and commits. Nothing for a v1
+    machine."""
+    if machine.backend != "box":
         return
     heartbeat = dict(machine.heartbeat or {})
     first_click = FIRST_CLICK_KEY not in heartbeat
@@ -688,9 +670,9 @@ def recover_late_start(machine: CloudMachine, now: datetime) -> bool:
     """A given-up box that comes up within `LATE_GRACE` (the scaler's
     `running`, or a report from its controller) is the person's start after
     all: back to `provisioning`, error cleared, so the usual both-signals rule
-    makes it ready. Hosted agents v2 only. Returns whether it did; the caller
+    makes it ready. Returns whether it did; the caller
     holds the machine's lock and commits."""
-    if not (process_hosted_v2() and given_up(machine)):
+    if not given_up(machine):
         return False
     if now - machine.updated_at > LATE_GRACE:
         return False
@@ -724,8 +706,7 @@ async def ready_if_both_signals(
 
     `reported_now` is the report path: an authenticated report from the
     machine's own controller is being recorded. Otherwise (the scaler's
-    `running`; hosted agents v2 boxes only, since with v2 off only a report
-    makes a machine ready, as before v2) the report must already be in:
+    `running`; boxes only) the report must already be in:
     recorded at this revision, by the controller that is still that
     workspace's controller on this machine, and not revoked since (read with
     that workspace bound, through `factory`)."""
@@ -736,8 +717,7 @@ async def ready_if_both_signals(
     ):
         return False
     if not reported_now and not (
-        process_hosted_v2()
-        and machine.backend == "box"
+        machine.backend == "box"
         and factory is not None
         and await _reported_by_live_controller(factory, machine)
     ):
@@ -771,7 +751,7 @@ async def ready_if_both_signals(
     )
     if provisioning_seconds is not None:
         record_provisioned(provisioning_seconds, machine.backend)
-    if process_hosted_v2() and machine.backend == "box":
+    if machine.backend == "box":
         await _record_start_timings(session, machine, now, new_machine)
     return True
 
@@ -824,23 +804,8 @@ async def wake_controller_machine(
     if found is None:
         return None
     machine, workspace = found
-    if not process_hosted_v2():
-        # The v1/v2 switch: with v2 off, exactly as before v2, and a v2 box
-        # never wakes (it stays stopped, its data kept).
-        if machine.backend == "box":
-            return machine
-        store = CloudMachineStore()
-        if idle_sleeping(machine):
-            store.start(machine, now)
-            emit_after_commit(
-                session,
-                current_telemetry(),
-                "cloud_machine_woken",
-                {"trigger": trigger},
-            )
-            record_machine_event(session, "woken", trigger, machine.backend)
-        elif machine.desired_state == "running":
-            machine.active_at = now
+    if machine.backend != "box":
+        # A v1 cloud machine is never started or woken: v1 is retired.
         return machine
     # Paused, or turned off in this controller's workspace: a
     # message or a placement never wakes the box for it.
@@ -883,9 +848,7 @@ async def wake_lifted_machine(
     with a fresh one-time code; the revoked one stays revoked. None for any
     other revoke (the owner's removal, a replaced or revived controller, or a
     path added later), or a controller on no cloud machine. The caller holds
-    no other machine lock, and commits. With hosted agents v2 off, always None."""
-    if not process_hosted_v2():
-        return None
+    no other machine lock, and commits."""
     controller = await session.get(
         AgentController, controller_id, populate_existing=True
     )

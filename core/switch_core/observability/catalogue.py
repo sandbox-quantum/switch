@@ -1040,8 +1040,8 @@ HOSTED_CLAIM_REFUSED = _spec(
     "sum",
     "{claim}",
     "Cloud machine claims refused at a limit. `reason` is a fixed word: "
-    "`workspace_full` (the workspace's `HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE`, "
-    "hosted agents v2 only). Never which workspace or person.",
+    "`workspace_full` (the workspace's `HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE`). "
+    "Never which workspace or person.",
     "reason",
 )
 HOSTED_POOL_SIZE = _spec(
@@ -1259,7 +1259,7 @@ CONTROLLER_CREDENTIAL_REFUSALS = _spec(
     "Controller credentials refused with a 401, by reason code and kind of "
     "route (`agent`, `management`, `controller`, `hosted_controller`, "
     "`hosted_provisioner`, `hosted_operator` or `other`), never the path or "
-    "any part of the credential. With hosted agents v2 on, also `locked_out` "
+    "any part of the credential. Also `locked_out` "
     "for a request refused while its address is locked out, and "
     "`lockout_started` each time an address is locked out for repeated "
     "refusals.",

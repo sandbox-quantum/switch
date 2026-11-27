@@ -257,26 +257,20 @@ switchCore:
   hostedLaunchCapacity: 0
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
-  # Hosted agents v2 (HOSTED_BOX_PROVISIONING): each person gets a box on a
-  # shared cluster instead of a cloud machine of their own. false is v1,
-  # exactly as before. switch-core reads it once at start-up, so switching
-  # between v1 and v2 is this value plus a rollout, with no code change.
-  # true needs hostedControllerSecret, hostedLaunchCapacity above 0,
-  # visibilityKeyedIdKeySecret, and the "hosted_agents" and
-  # "agent_management" feature flags (the chart refuses to render without
-  # them). The box side (gVisor nodes, the box provisioner
-  # and controller) is set up in the cluster separately, from the deployment repository.
-  # Only true (a real true, or the string "true") turns it on; anything else is off.
+  # No longer used by switch-core, which runs hosted agents (a box per person
+  # on a shared cluster) only when the hosted controller config carries the
+  # box operator's provisioner_token. Kept so values that set it still render:
+  # true only still passes hostedPoolSize, as before.
   hostedBoxProvisioning: false
-  # v2 only. How many boxes switch-core asks for per minute (1-60), and how
+  # How many boxes switch-core asks for per minute (1-60), and how
   # many may exist at once (1-10000). Empty uses switch-core's defaults (5
   # and 50).
   hostedProvisionsPerMinute: ""
   hostedBoxCeiling: ""
-  # v2 only, and set only with hostedBoxProvisioning on. The warm pool: how
+  # Passed only with hostedBoxProvisioning true. The warm pool: how
   # many boxes wait, made ahead, for the next person's first start (0-50).
   # Spare boxes count towards hostedLaunchCapacity and hostedBoxCeiling (empty:
-  # switch-core's 50), so the chart refuses to render v2 unless each is at
+  # switch-core's 50), so the chart refuses to render unless each is at
   # least the pool plus 2. 0 or empty makes none. Each spare is a running box,
   # so the pool is a standing cost: size it to how many new people arrive.
   # And the most live machines serving one workspace (0-100, 0 for no limit;
@@ -284,15 +278,15 @@ switchCore:
   # Empty uses switch-core's default (0).
   hostedPoolSize: 10
   hostedLaunchCapacityPerWorkspace: ""
-  # v2's Hosted area for Switch operators. Each is an existing Secret,
+  # The Hosted area for Switch operators. Each is an existing Secret,
   # mounted as a single file (subPath, mode 0400), because switch-core
   # refuses a key or operator list that is a link or that anyone else can
   # read. A subPath mount doesn't pick up changes to the Secret: restart
   # switch-core after changing either.
   # Secret with keyed-id.key: the key that turns ids into the keyed ids the
-  # Hosted area shows (VISIBILITY_KEYED_ID_KEY_PATH). Required with
-  # hostedBoxProvisioning on; with v2 off and no key, the Hosted area's pages
-  # say they're unavailable.
+  # Hosted area shows (VISIBILITY_KEYED_ID_KEY_PATH). Needed on a server with
+  # a box cluster; with no key, the Hosted area's pages say they're
+  # unavailable.
   visibilityKeyedIdKeySecret: ""
   # The key's version, prefixed to every keyed id ("k1", "k2", ...). Empty
   # uses switch-core's default, k1. Change it when the key changes.

@@ -204,7 +204,6 @@ from switch_core.gateway.workspace_creation import (
     directory_failed,
     refuse_a_workspace_name_taken,
 )
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.invitation_revocation import revoke_invitations_made_by
 from switch_core.organization_access import (
     AccessRevocation,
@@ -983,10 +982,7 @@ async def _audit_budget(
 ) -> None:
     """Every budget change is recorded in the workspace's Activity, in the
     change's own transaction, so a change that doesn't
-    commit leaves no entry and one that does always has one. With hosted
-    agents v2 off, none, as before v2."""
-    if not process_hosted_v2():
-        return
+    commit leaves no entry and one that does always has one."""
     await record_audit_event(
         session,
         tenant_id=tenant_id,
@@ -1094,13 +1090,8 @@ async def update_budget(
     """Change a budget's limit and period. Admins only. What it
     covers is fixed; to cover something else, add another budget."""
     _require_bound_tenant(tenant_id)
-    # Only v2 needs the row before the change (its audit entry); with v2 off,
-    # no extra read, as before v2.
-    before = (
-        await _budget_row(session, tenant_id, budget_id)
-        if process_hosted_v2()
-        else None
-    )
+    # The row before the change, for its audit entry.
+    before = await _budget_row(session, tenant_id, budget_id)
     before_terms = None if before is None else _budget_terms(before)
     try:
         updated = await budget_store.update(
@@ -1134,13 +1125,8 @@ async def delete_budget(
 ) -> Response:
     """Remove a budget. Admins only."""
     _require_bound_tenant(tenant_id)
-    # Only v2 needs the row before the change (its audit entry); with v2 off,
-    # no extra read, as before v2.
-    before = (
-        await _budget_row(session, tenant_id, budget_id)
-        if process_hosted_v2()
-        else None
-    )
+    # The row before the change, for its audit entry.
+    before = await _budget_row(session, tenant_id, budget_id)
     before_terms = None if before is None else _budget_terms(before)
     try:
         await budget_store.delete(session, tenant_id=tenant_id, budget_id=budget_id)
@@ -1645,9 +1631,6 @@ async def list_tenant_audit_events(
             details=event.details,
         )
 
-    if not process_hosted_v2():
-        # The v1/v2 switch: upstream's entries, with no names looked up or sent.
-        return [_entry(event) for event in events]
     # Names for the workspace's own members, whom its admins already see.
     names = names_for(
         events,

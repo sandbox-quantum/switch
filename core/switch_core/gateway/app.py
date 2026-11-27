@@ -7,6 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 
+from switch_core.box_cluster import require_box_cluster, set_box_cluster
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.collaboration.install_service import (
@@ -113,11 +114,6 @@ from switch_core.gateway.workspace_guardrails import (
 from switch_core.gateway.workspace_services import (
     router as workspace_services_router,
 )
-from switch_core.hosted_v2 import (
-    hosted_v2_on,
-    require_hosted_v2,
-    set_process_hosted_v2,
-)
 from switch_core.keys import Purpose
 from switch_core.organization_directory import OrganizationDirectory
 from switch_core.providers.hosted import (
@@ -213,57 +209,60 @@ def create_gateway_app(
     app = FastAPI(title="Switch Gateway API")
     app.state.chat_service = chat_service
     app.state.hosted_controller_settings = load_hosted_settings(
-        config.hosted_controller_config_path, v2=hosted_v2_on(config)
+        config.hosted_controller_config_path
     )
     if config.hosted_launch_capacity and app.state.hosted_controller_settings is None:
         raise ValueError(
             "HOSTED_LAUNCH_CAPACITY above 0 requires HOSTED_CONTROLLER_CONFIG_PATH."
         )
-    warn_if_open_to_all(
-        app.state.hosted_controller_settings,
-        config.hosted_launch_capacity,
-        # Before `set_process_hosted_v2` below: asked of the config itself.
-        v2=hosted_v2_on(config),
-    )
-    warn_if_no_per_workspace_limit(
-        config.hosted_launch_capacity,
-        config.hosted_launch_capacity_per_workspace,
-        v2=hosted_v2_on(config),
-    )
-    # The operator bearer's overlaps: open ones named with their
-    # end, lapsed ones still in the file warned about.
-    log_operator_overlaps(app.state.hosted_controller_settings)
     # Before any route can need it; an unsafe key file stops the start here.
     app.state.keyed_id_key = load_keyed_id_key(config)
     set_process_keyed_id_key(app.state.keyed_id_key)
-    # The v1/v2 switch, once per start, for code with no config to hand.
-    set_process_hosted_v2(config)
+    # Whether this server runs hosted agents, once per start, for every check
+    # that runs later.
+    box_cluster = set_box_cluster(
+        app.state.hosted_controller_settings, app.state.keyed_id_key
+    )
+    if box_cluster:
+        warn_if_open_to_all(
+            app.state.hosted_controller_settings, config.hosted_launch_capacity
+        )
+        warn_if_no_per_workspace_limit(
+            config.hosted_launch_capacity, config.hosted_launch_capacity_per_workspace
+        )
+    # The operator bearer's overlaps: open ones named with their
+    # end, lapsed ones still in the file warned about.
+    log_operator_overlaps(app.state.hosted_controller_settings)
     app.state.operator_list = OperatorList(config.visibility_operators_path)
     # Operator rate limits: the bulk-action alert's title takes its window from
     # the setting, and a limit set looser than the default is named once at start.
     configure_limits(config)
-    # The v1/v2 switch: every v2-only router answers 404 with v2 off, before
-    # any authentication or work, exactly as a route that doesn't exist.
-    v2_only = [Depends(require_hosted_v2)]
+    # Every box router answers 404 without a box cluster, before any
+    # authentication or work, exactly as a route that doesn't exist.
+    box_only = [Depends(require_box_cluster)]
     app.include_router(
-        operator_audit_router, tags=["hosted-operator"], dependencies=v2_only
+        operator_audit_router, tags=["hosted-operator"], dependencies=box_only
     )
     app.include_router(
-        hosted_access_router, tags=["hosted-operator"], dependencies=v2_only
+        hosted_access_router, tags=["hosted-operator"], dependencies=box_only
     )
     app.include_router(
-        operator_action_router, tags=["hosted-operator"], dependencies=v2_only
+        operator_action_router, tags=["hosted-operator"], dependencies=box_only
     )
-    # v1 hosted uses these two, so they stay up; their v2 parts are gated inside.
+    # The owner's own machine routes stay up: without a box cluster they say
+    # cloud machines aren't available. The hosted controller's routes are box
+    # routes.
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
-    app.include_router(hosted_controller_router, tags=["hosted-controller"])
     app.include_router(
-        hosted_provisioner_router, tags=["hosted-provisioner"], dependencies=v2_only
+        hosted_controller_router, tags=["hosted-controller"], dependencies=box_only
+    )
+    app.include_router(
+        hosted_provisioner_router, tags=["hosted-provisioner"], dependencies=box_only
     )
     # The operator's overview and "Show name". They answer 503 until a
     # keyed-id key is set.
     app.include_router(
-        visibility_operator_router, tags=["visibility"], dependencies=v2_only
+        visibility_operator_router, tags=["visibility"], dependencies=box_only
     )
     app.state.connector_apps = connector_apps
     install_github_app(app.state, connector_apps.github_app())

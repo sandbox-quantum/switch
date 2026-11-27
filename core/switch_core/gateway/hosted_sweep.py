@@ -1,11 +1,11 @@
-"""Core's own run of the hosted sweep, with hosted agents v2 on.
+"""Core's own run of the hosted sweep, on a server with a box cluster.
 
 The sweep (`hosted_controller.sweep_hosted_machines`) also runs on every poll
 of `GET /hosted-controller/machines`, but nothing guarantees a poll: with no
 box provisioner or controller service deployed, a claimed box would wait for
 its box for ever. So Core runs it itself, about once a minute, as owned work:
 one process holds it at a time, as with the other sweeps. It's registered only
-with v2 on, so a v1 server starts no loop and takes no lease for it. Each pass
+with a box cluster, so any other server starts no loop and takes no lease for it. Each pass
 is independent: one that fails logs a fixed line and the next runs as usual.
 """
 
@@ -19,8 +19,8 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.box_cluster import box_cluster_on
 from switch_core.config import SwitchConfig
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.ownership import Fence, OwnedKind, Ownership
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import no_tenant
@@ -39,12 +39,12 @@ async def sweep_once(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> bool:
     """One pass, on a session with no tenant bound, as the controller's poll
-    runs it. Nothing without v2 on or without the hosted controller config
-    (then no box can be claimed). True when it ran."""
+    runs it. Nothing without a box cluster (then no box can be claimed). True
+    when it ran."""
     from switch_core.gateway.hosted_controller import sweep_hosted_machines
 
     current = settings()
-    if not process_hosted_v2() or current is None:
+    if not box_cluster_on() or current is None:
         return False
     with no_tenant():
         async with session_factory() as session:
@@ -78,7 +78,7 @@ def own_hosted_sweep(
     settings: Callable[[], HostedControllerSettings | None],
 ) -> OwnedKind:
     """Register the sweep as owned work, wanted by this process; it runs here
-    only while it holds it. Call only with hosted agents v2 on."""
+    only while it holds it. Call only with a box cluster."""
     running: dict[str, asyncio.Task[None]] = {}
 
     def launch(key: str) -> None:
@@ -112,14 +112,14 @@ def own_hosted_sweep(
 
 
 def start_hosted_sweep(
-    v2: bool,
+    box_cluster: bool,
     ownership: Ownership,
     session_factory: async_sessionmaker[AsyncSession],
     config: SwitchConfig,
     settings: Callable[[], HostedControllerSettings | None],
 ) -> OwnedKind | None:
-    """What boot calls: the sweep registered with v2 on, and nothing at all
-    (no loop, no kind, no lease) with it off."""
-    if not v2:
+    """What boot calls: the sweep registered with a box cluster, and nothing at
+    all (no loop, no kind, no lease) without one."""
+    if not box_cluster:
         return None
     return own_hosted_sweep(ownership, session_factory, config, settings)

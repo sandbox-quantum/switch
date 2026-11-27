@@ -21,7 +21,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ModelWrapValidatorHandler,
     StrictBool,
     field_validator,
     model_validator,
@@ -388,79 +387,6 @@ class StatusReport(_StatusBody):
     providers: list[ProviderStatus]
     tools: list[ToolStatus]
     agents: list[AgentStatus]
-
-    @model_validator(mode="wrap")
-    @classmethod
-    def _as_upstream_while_v2_is_off(
-        cls, data: Any, handler: ModelWrapValidatorHandler[Self]
-    ) -> Self:
-        """The v1/v2 switch (sweep row 8): with hosted agents v2 off, a report
-        is read as upstream reads it. The fields v2 declared are kept as sent,
-        as upstream's `extra="allow"` keeps them, and none can refuse it."""
-        from switch_core.hosted_v2 import process_hosted_v2
-
-        if cls is StatusReport and not process_hosted_v2():
-            return _V1StatusReport.model_validate(data)  # type: ignore[return-value]
-        return handler(data)
-
-
-# Every field hosted agents v2 declared on a status report, read as upstream
-# reads an undeclared one while v2 is off: any value, kept as sent.
-V2_MACHINE_STATUS_FIELDS = (
-    "mem_anon_bytes",
-    "mem_cached_bytes",
-    "valve_memory",
-    "disk_scope",
-    "valve_hosts",
-    "valve_hosts_joined",
-    "gateway_agents",
-    "gateway_refused",
-    "valve_parks",
-)
-V2_AGENT_STATUS_FIELDS = ("session", "let_go", "busy")
-
-
-class _V1MachineStatus(MachineStatus):
-    mem_anon_bytes: Any = None
-    mem_cached_bytes: Any = None
-    valve_memory: Any = None
-    disk_scope: Any = None
-    valve_hosts: Any = None
-    valve_hosts_joined: Any = None
-    gateway_agents: Any = None
-    gateway_refused: Any = None
-    valve_parks: Any = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_retired_fields(cls, data: Any) -> Any:
-        # As upstream: an undeclared field is kept as sent.
-        return data
-
-    @field_validator("disk_scope", mode="before")
-    @classmethod
-    def _disk_scope_or_unknown(cls, value: object) -> Any:
-        # As upstream: any value, kept as sent.
-        return value
-
-
-class _V1AgentStatus(AgentStatus):
-    session: Any = None
-    let_go: Any = None
-    busy: Any = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_retired_fields(cls, data: Any) -> Any:
-        # As upstream: an undeclared field is kept as sent.
-        return data
-
-
-class _V1StatusReport(StatusReport):
-    machine: _V1MachineStatus
-    # Pydantic's v1 view of the same report: the narrower element type is the
-    # point, so list's invariance check doesn't apply here.
-    agents: list[_V1AgentStatus]  # type: ignore[assignment]
 
 
 class ProgressRequest(_ControllerBody):

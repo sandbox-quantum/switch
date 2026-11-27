@@ -48,7 +48,6 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_controller import router
 from switch_core.gateway.hosted_machines import router as machines_router
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.keys import Keyring
 from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.providers.hosted import HostedControllerSettings
@@ -161,9 +160,8 @@ async def controller_app(session_factory):
         await session.commit()
     settings = HostedControllerSettings(
         allowed_tenant_ids=[require_tenant_id()],
-        # Every account in it: with hosted agents v2 on, an unset list is nobody
-        # and "*" says everyone; with it off, unset is everyone, as before v2.
-        allowed_user_ids=["*"] if process_hosted_v2() else None,
+        # Every account in it: an unset list is nobody, and "*" says everyone.
+        allowed_user_ids=["*"],
         token=TOKEN,
         agent_api_endpoint="https://switch.example.com/api/agent",
     )

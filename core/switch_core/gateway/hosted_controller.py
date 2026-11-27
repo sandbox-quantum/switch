@@ -2,10 +2,10 @@ import logging
 import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Literal, NoReturn
+from typing import Annotated, Literal, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -57,15 +57,13 @@ from switch_core.gateway.dependencies import (
     get_config,
     get_session_factory,
 )
-from switch_core.gateway.hosted_machines import MACHINES_DISABLED, controller_settings
-from switch_core.hosted_v2 import process_hosted_v2, require_hosted_v2
+from switch_core.gateway.hosted_machines import controller_settings
 from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.observability.hosted import (
     after_commit,
     reconciler_heard,
     record_cloud_error,
     record_controller_errors,
-    record_credential_refusal,
     record_evictions,
     record_machine_event,
 )
@@ -91,7 +89,6 @@ from switch_core.visibility.box_provision import (
     ask_for_box,
     box_allowed,
     box_missing_error,
-    box_provisioning_on,
     boxes_expected,
     expire_binds,
     expire_provisions,
@@ -262,13 +259,6 @@ def _refuse(
     checked first, by the caller, so it is served even from a locked address:
     the operator and the scaler can share one cluster address with anything
     else."""
-    if not process_hosted_v2():
-        # The v1/v2 switch: with v2 off, as before v2 (no lockout, no log
-        # line), but counted (observability step 1): reason and route only.
-        record_credential_refusal(
-            reason or ("missing" if not supplied else "wrong"), route
-        )
-        raise HTTPException(401, "Invalid cloud controller credential.")
     guard = refusal_guard()
     address = client_address(request.scope)
     method = method_of(request.scope)
@@ -301,13 +291,9 @@ def machine_item(machine: CloudMachine) -> dict:
         "expedite_deletion": machine.expedite_deletion,
         "bundle_revision": machine.revision,
     }
-    # `vm` or `box`: `serve` acts only on `vm`, the box side only on
-    # `box`. An older Core sends none, and every row it has is a `vm`. With
-    # hosted agents v2 off, a v1 machine's row is upstream's, with no key; a
-    # box's still says `box`, so `serve` leaves it alone.
-    if process_hosted_v2() or machine.backend == "box":
-        item["backend"] = machine.backend
-    if process_hosted_v2() and machine.backend == "box":
+    # `box`: the box side acts only on `box`.
+    item["backend"] = machine.backend
+    if machine.backend == "box":
         # Whether the box may keep its proxy login: not while it's in error or
         # being deleted, except a start given up on that's still within the
         # grace period (a box waiting in its starter needs its login to come
@@ -363,11 +349,7 @@ def _needs_sweep(machine: CloudMachine, now: datetime, idle_minutes: int) -> boo
         (machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT)
         or _connect_timed_out(machine, now)
         or _start_timed_out(machine, now)
-        or (
-            process_hosted_v2()
-            and given_up(machine)
-            and now - machine.updated_at > LATE_GRACE
-        )
+        or (given_up(machine) and now - machine.updated_at > LATE_GRACE)
         or (machine.state in {"retained", "error"} and retention_expired(machine, now))
         or _errored_unclaimed(machine, now, idle_minutes)
         or idle_sleeping(machine)
@@ -452,11 +434,7 @@ async def _sweep(
         machine.error = "The cloud machine did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
         machine.updated_at = now
         _report_failure(session, machine, "never_started")
-    elif (
-        process_hosted_v2()
-        and given_up(machine)
-        and now - machine.updated_at > LATE_GRACE
-    ):
+    elif given_up(machine) and now - machine.updated_at > LATE_GRACE:
         # A start given up on and not taken back within the grace period: the
         # box scaler takes the box to 0, so it never runs on, unwatched, with
         # its login. Still `error`, so the person sees why; Retry wants it
@@ -627,10 +605,6 @@ async def _ask_for_waiting_boxes(
         )
 
 
-# What the v2-off listing brings to `stopped`: a running box, and a retained one.
-_V2_OFF_STOPS = ("running", "retained")
-
-
 async def sweep_hosted_machines(
     session: AsyncSession,
     factory: async_sessionmaker[AsyncSession],
@@ -638,69 +612,35 @@ async def sweep_hosted_machines(
     settings: HostedControllerSettings,
     now: datetime,
 ) -> list[CloudMachine]:
-    """Switch's own lifecycle changes to cloud machines: the v1/v2 switch's
-    stops, the lifecycle sweep, spent codes, expired box requests and boxes to
-    ask for again. Run by the controller's poll (`GET /machines`) and, with
-    hosted agents v2 on, by Core's own loop (`hosted_sweep`), so a box whose
-    request expires is marked even when nothing polls. Returns the machines
-    read at the start. The caller commits."""
+    """Switch's own lifecycle changes to boxes: the lifecycle sweep, spent
+    codes, expired box requests and boxes to ask for again. Run by the box
+    scaler's poll (`GET /machines`) and by Core's own loop (`hosted_sweep`), so
+    a box whose request expires is marked even when nothing polls. Returns the
+    boxes read at the start. A v1 cloud machine is never read or changed here:
+    v1 is retired. The caller commits."""
     store = CloudMachineStore()
     candidates = list(
         await session.scalars(
             select(CloudMachine)
-            .where(CloudMachine.state != "deleted")
+            .where(CloudMachine.state != "deleted", CloudMachine.backend == "box")
             .order_by(CloudMachine.created_at)
         )
     )
-    v2 = process_hosted_v2()
-    if not v2:
-        # The v1/v2 switch: with v2 off, no v2 box runs. Each is stopped as
-        # asleep, its data kept, so a message wakes it once v2 is on again. A
-        # box already retained is brought back to stopped too, its retention
-        # dropped: the box scaler scales a box down only for `stopped`, and
-        # nothing expires while v2 is off. A box already marked for deletion
-        # is left as it is.
-        for candidate in candidates:
-            if (
-                candidate.backend != "box"
-                or candidate.desired_state not in _V2_OFF_STOPS
-            ):
-                continue
-            machine = await store.locked(session, candidate.id)
-            if (
-                machine is not None
-                and machine.backend == "box"
-                and machine.desired_state in _V2_OFF_STOPS
-            ):
-                machine.retain_until = None
-                store.stop(machine, "idle", now)
-                logger.info(
-                    "Cloud machine %s: a v2 box, stopped while hosted agents v2 is off.",
-                    machine.id,
-                )
-            await session.commit()
-    if box_provisioning_on(config):
-        # First, so a box whose request ran out is marked as not made before
-        # the lifecycle sweep could time it out as never scheduled: the same
-        # outcome whether Core's loop or the controller's poll gets there.
-        await expire_provisions(session, now)
-        await session.commit()
-        # A warm pool bind gets 30 seconds; then its claim fails.
-        owned: list[str] = []
-        await expire_binds(session, now, owned)
-        await session.commit()
-        await revoke_owned_box_controllers(factory, owned)
+    # First, so a box whose request ran out is marked as not made before
+    # the lifecycle sweep could time it out as never scheduled: the same
+    # outcome whether Core's loop or the controller's poll gets there.
+    await expire_provisions(session, now)
+    await session.commit()
+    # A warm pool bind gets 30 seconds; then its claim fails.
+    owned: list[str] = []
+    await expire_binds(session, now, owned)
+    await session.commit()
+    await revoke_owned_box_controllers(factory, owned)
     # A machine whose box is still being made is left alone: its start
     # clocks run from the box's existence, not the claim.
-    being_made = await open_provision_machines(session, now) if v2 else frozenset()
+    being_made = await open_provision_machines(session, now)
     for candidate in candidates:
         if candidate.id in being_made:
-            continue
-        if not v2 and candidate.backend == "box":
-            # With v2 off, a v2 box is only kept stopped (above): never retained,
-            # expired or deleted, so its data stays until v2 is on again. The box
-            # scaler scales a box down only for `stopped`, so a box retained in
-            # this same pass would also be left running.
             continue
         if not _needs_sweep(candidate, now, config.hosted_idle_stop_minutes):
             continue
@@ -716,20 +656,15 @@ async def sweep_hosted_machines(
                 factory,
             )
         await session.commit()
-    if v2 and _codes_due(now):
-        # Stored enrolment codes live no longer than the codes. A v2
-        # box's only: a v1 machine's are kept, as upstream (sweep row 17).
+    if _codes_due(now):
+        # Stored enrolment codes live no longer than the codes.
         for candidate in candidates:
-            if candidate.backend == "box":
-                await clear_spent_codes(factory, candidate.id, now)
-    if box_provisioning_on(config):
-        await _ask_for_waiting_boxes(
-            factory, candidates, being_made, config, settings, now
-        )
-        # The warm pool: retire what no claim should take, then refill.
-        await sweep_pool(factory, config, now)
-        # Boxes named for removal over a day ago and still not gone.
-        await _stuck_removal_alerts(session, factory, now)
+            await clear_spent_codes(factory, candidate.id, now)
+    await _ask_for_waiting_boxes(factory, candidates, being_made, config, settings, now)
+    # The warm pool: retire what no claim should take, then refill.
+    await sweep_pool(factory, config, now)
+    # Boxes named for removal over a day ago and still not gone.
+    await _stuck_removal_alerts(session, factory, now)
     return candidates
 
 
@@ -773,40 +708,38 @@ async def machines(
     reconciler_heard()
     now = datetime.now(UTC)
     await sweep_hosted_machines(session, factory, config, settings, now)
+    # Boxes only: a v1 cloud machine is never listed, so nothing acts on it.
     rows = await session.scalars(
         select(CloudMachine)
-        .where(CloudMachine.state != "deleted")
+        .where(CloudMachine.state != "deleted", CloudMachine.backend == "box")
         .order_by(CloudMachine.created_at)
         .execution_options(populate_existing=True)
     )
     listed = list(rows)
     response: dict = {"machines": [machine_item(machine) for machine in listed]}
-    if process_hosted_v2():
-        # Which boxes the box scaler may report missing: on a v2 box's entry
-        # only, so a v1 machine's entry (and a v1 listing) stays upstream's.
-        expected = await boxes_expected(session, listed)
-        for item in response["machines"]:
-            if item.get("backend") == "box":
-                item["box_expected"] = item["machine_id"] in expected
+    # Which boxes the box scaler may report missing.
+    expected = await boxes_expected(session, listed)
+    for item in response["machines"]:
+        item["box_expected"] = item["machine_id"] in expected
     # For the operator only (this route takes the controller's token): the
     # server lets every workspace and account claim a machine. Absent when
     # either list narrows it; owners' routes never carry it.
-    if process_hosted_v2() and open_to_all(settings, config.hosted_launch_capacity):
+    if open_to_all(settings, config.hosted_launch_capacity):
         response["open_to_all"] = True
     await session.commit()
     return response
 
 
-@router.get("/pool", dependencies=[Depends(require_hosted_v2)])
+@router.get("/pool")
 async def pool(
     session: Annotated[AsyncSession, Depends(box_controller_session)],
 ) -> dict:
-    """The warm pool's boxes, for the box scaler (hosted agents v2): each
+    """The warm pool's boxes, for the box scaler: each
     pool box's id, the namespace Core issued (null until it's made), its
     template revision, and `desired_state`, `running` while requested or
     waiting and `stopped` once retiring. No owner: a pool box has none, and
     `prepare` refuses a pool box id. A claimed box leaves this list and is a
-    machine in `/machines`. Hosted agents v2 only: refused with the switch off."""
+    machine in `/machines`."""
     reconciler_heard()
     rows = await hosted_pool_store.live(session)
     await session.commit()
@@ -824,6 +757,9 @@ async def pool(
 
 
 BOX_NOT_BOUND = "The box is still being handed to its person; try again shortly."
+# A v1 cloud machine asking to boot, enrol or report: v1 is retired, and Core
+# never starts, wakes or serves one again.
+V1_RETIRED = "v1 cloud machines are retired."
 
 
 async def _locked_machine(session: AsyncSession, machine_id: str) -> CloudMachine:
@@ -850,11 +786,10 @@ async def prepare(
     machine = await _locked_machine(session, machine_id)
     if machine.state == "deleted" or machine.desired_state == "deleted":
         raise HTTPException(409, "machine is deleted")
-    v2 = process_hosted_v2()
-    if not v2 and machine.backend == "box":
-        # The v1/v2 switch: with v2 off, no v2 box boots or enrols.
-        raise HTTPException(409, MACHINES_DISABLED)
-    if v2 and machine.backend == "box" and not await owner_written(session, machine.id):
+    if machine.backend != "box":
+        # A v1 cloud machine never boots or enrols again: v1 is retired.
+        raise HTTPException(409, V1_RETIRED)
+    if not await owner_written(session, machine.id):
         # A warm pool box given to its person whose owner isn't written yet
         # (it could still go to the reaper): no code, so nothing can enrol.
         await session.commit()
@@ -875,10 +810,8 @@ async def prepare(
                     continue
                 # Paused, or turned off in this workspace: no
                 # controller and no enrollment code, so nothing new can connect.
-                blocked = (
-                    await block_reason_in(scoped, machine.owner_id, workspace.tenant_id)
-                    if v2
-                    else None
+                blocked = await block_reason_in(
+                    scoped, machine.owner_id, workspace.tenant_id
                 )
                 if blocked is not None:
                     logger.info(
@@ -902,8 +835,6 @@ async def prepare(
                             machine.revision,
                             config.keyring,
                             now,
-                            # Fresh codes after expiry: a v2 box's only.
-                            fresh=v2 and machine.backend == "box",
                         )
                     )
                 except CloudEnrollmentUnavailable as error:
@@ -1026,29 +957,6 @@ class Observation(_UpstreamObservation):
     # so in the owner's `start` (`start.waiting_for_room`).
     waiting_for_room: bool | None = None
 
-    @model_validator(mode="wrap")
-    @classmethod
-    def _v2_fields_while_off(cls, data: Any, handler: Any) -> Any:
-        """The v1/v2 switch: with hosted agents v2 off, an
-        observation naming v2's fields is checked by upstream's model alone,
-        which forbids unknown fields. So the 422 lists exactly upstream's
-        errors, in its order, before the handler runs."""
-        if (
-            not process_hosted_v2()
-            and isinstance(data, dict)
-            and (
-                any(name in _V2_OBSERVATION_FIELDS for name in data)
-                or data.get("error_code") in (BOX_MISSING, NO_ROOM)
-            )
-        ):
-            _UpstreamObservation.model_validate(data)
-        return handler(data)
-
-
-_V2_OBSERVATION_FIELDS = frozenset(
-    set(Observation.model_fields) - set(_UpstreamObservation.model_fields)
-)
-
 
 ERROR_REPLACING_STATES = {"error", "retained", "deleting", "deleted"}
 
@@ -1076,6 +984,10 @@ async def observe(
 ) -> dict:
     reconciler_heard()
     machine = await _locked_machine(session, machine_id)
+    if machine.backend != "box":
+        # Nothing a v1 cloud machine's controller observes is taken: v1 is retired.
+        await session.commit()
+        raise HTTPException(409, V1_RETIRED)
     # Counted once this answer's transaction commits. Every answer from here
     # is a 200 and commits, so the reconciler forgets only what was counted;
     # a batch counts twice only if Core's answer is lost after the commit.
@@ -1151,8 +1063,7 @@ async def observe(
         # and box facts are kept whichever branch ran, an ignored observation too.
         await session.commit()
         return machine_item(machine)
-    if body.error_code == BOX_MISSING and machine.backend == "box":
-        # Only a v2 Core gets this code: with v2 off the model refuses it.
+    if body.error_code == BOX_MISSING:
         ask_again = await _box_missing(session, factory, config, settings, machine, now)
         await session.commit()
         if ask_again:
@@ -1191,7 +1102,7 @@ async def observe(
             machine.state = "provisioning"
             if machine.running_observed_at is None:
                 machine.running_observed_at = now
-            # A v2 box whose controller already reported at this revision
+            # A box whose controller already reported at this revision
             # is ready now, not at its next report.
             await ready_if_both_signals(
                 session, machine, now, reported_now=False, factory=factory
@@ -1224,14 +1135,11 @@ async def observe(
         machine.state = body.state
         machine.error = None
         machine.error_code = None
-    if process_hosted_v2():
-        # The box scaler's waiting-for-room word, kept at this revision only
-        # while it says `provisioning` with it.
-        note_waiting_for_room(
-            machine,
-            body.state == "provisioning" and body.waiting_for_room is True,
-            now,
-        )
+    # The box scaler's waiting-for-room word, kept at this revision only
+    # while it says `provisioning` with it.
+    note_waiting_for_room(
+        machine, body.state == "provisioning" and body.waiting_for_room is True, now
+    )
     if machine.state != previous:
         machine.updated_at = now
     await session.commit()
@@ -1364,7 +1272,7 @@ async def _capped_body(request: Request, cap: int) -> bytes:
     return b"".join(chunks)
 
 
-@router.post("/cluster", dependencies=[Depends(require_hosted_v2)])
+@router.post("/cluster")
 async def cluster_report(
     request: Request,
     _session: Annotated[AsyncSession, Depends(box_controller_session)],

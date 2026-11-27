@@ -60,9 +60,10 @@ WORKSPACE_NOT_ENABLED = "workspace_not_enabled"
 # get no new credential, token or placement until it's undone.
 HOSTED_PAUSED = "paused_by_switch"
 HOSTED_TURNED_OFF = "turned_off_by_admin"
-# The v1/v2 switch: hosted agents v2 is off on this server, so a v2 box's
-# controller is refused for now. Nothing about it is revoked: a box controller
-# keeps its identity and backs off, and carries on once v2 is on again.
+# No box cluster is configured on this server, so a box's controller is
+# refused for now. Nothing about it is revoked: a box controller keeps its
+# identity and backs off, and carries on once a box cluster is configured. The
+# name is kept: released box controllers read it.
 HOSTED_V2_OFF = "hosted_v2_off"
 # An operator is moving this machine from v1 to a v2 box: no login is given to
 # it until the move is done, so none is sealed to a box before its files and

@@ -34,6 +34,7 @@ from uvicorn.main import STARTUP_FAILURE
 from switch_core.accounts.organization_purge import OrganizationPurge
 from switch_core.accounts.suspension import SuspensionEffects
 from switch_core.announcer import Announcer
+from switch_core.box_cluster import box_cluster_at_boot
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
@@ -211,7 +212,6 @@ from switch_core.gateway.cloud_controllers import revoke_machine_controller
 from switch_core.gateway.hosted_sweep import start_hosted_sweep
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.gateway.ui import GatewayUi
-from switch_core.hosted_v2 import hosted_v2_on
 from switch_core.keys import Keyring
 from switch_core.logging_config import configure_logging
 from switch_core.management.signals import REVOKED_SIGNAL
@@ -894,10 +894,10 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     media_store = MediaStore()
     template_store = TemplateStore()
     # Awake-time budgets stay unenforced until every hosted box is split.
-    # The v1/v2 switch: with hosted agents v2 off, none of v2's background
-    # work runs (awake budgets, alerts, sweeps), exactly as before v2.
-    v2 = hosted_v2_on(config)
-    enforce_awake_budgets(config.hosted_awake_budgets_enabled and v2)
+    # Without a box cluster, none of hosted agents' background work runs
+    # (awake budgets, alerts, sweeps).
+    box_cluster = box_cluster_at_boot(config)
+    enforce_awake_budgets(config.hosted_awake_budgets_enabled and box_cluster)
 
     # ── Seed admin user + agent-registration bootstrap key ──────────────────
     # A second acquisition of the boot lock, distinct from the one around the
@@ -916,7 +916,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         async with engine.begin() as connection:
             event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
     # Nobody should be both a Switch operator and a deployment admin.
-    if v2:
+    if box_cluster:
         await warn_if_operators_hold_admin(
             session_factory, OperatorList(config.visibility_operators_path)
         )
@@ -1701,12 +1701,12 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             # with the wrong app both workers stayed off (boot smoke test).
             alerts_task = (
                 _start_hosted_alerts(config, gateway_app, session_factory)
-                if v2
+                if box_cluster
                 else None
             )
             bulk_alerts_task = (
                 _start_bulk_alert_sweep(config, gateway_app, session_factory)
-                if v2
+                if box_cluster
                 else None
             )
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
@@ -1756,13 +1756,13 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             # Turns of a box that never came back: only where agents run on
             # controllers at all.
             # Owned work, as upstream's sweeps: one process runs it.
-            if management is not None and v2:
+            if management is not None and box_cluster:
                 own_restart_sweep(ownership, session_factory, router.post_as_agent)
             # Core's own run of the hosted sweep, so a box request that runs
-            # out is marked even when no controller service polls. v2 only:
-            # a v1 server starts no loop and takes no lease for it.
+            # out is marked even when no controller service polls. Only with a
+            # box cluster: any other server starts no loop and takes no lease.
             start_hosted_sweep(
-                v2,
+                box_cluster,
                 ownership,
                 session_factory,
                 config,
@@ -1778,7 +1778,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                         gateway_app, session_factory, management, config.keyring
                     )
                 )
-                if management is not None and v2
+                if management is not None and box_cluster
                 else None
             )
             data_retention_task = asyncio.create_task(retention_loop(session_factory))

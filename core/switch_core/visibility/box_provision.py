@@ -41,6 +41,7 @@ from typing import Literal
 from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.box_cluster import box_cluster_on
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import (
@@ -68,7 +69,6 @@ from switch_core.providers.hosted import (
     HostedControllerSettings,
     machines_tenant_allowed,
     machines_user_allowed,
-    v2_of,
 )
 from switch_core.tenant_context import no_tenant
 from switch_core.visibility.alerts import Condition, Verdict, apply_alert
@@ -633,11 +633,10 @@ async def box_allowed(
     # The server's main switch, as `machines_enabled` reads it.
     if not config.hosted_agents_enabled or config.hosted_launch_capacity <= 0:
         return False
-    v2 = v2_of(config)
-    if not machines_user_allowed(settings, machine.owner_id, v2=v2):
+    if not machines_user_allowed(settings, machine.owner_id):
         return False
     for workspace in await workspaces_on(factory, machine.id):
-        if not machines_tenant_allowed(settings, workspace.tenant_id, v2=v2):
+        if not machines_tenant_allowed(settings, workspace.tenant_id):
             continue
         if await block_reason(factory, machine.owner_id, workspace.tenant_id) is None:
             return True
@@ -983,7 +982,7 @@ async def refill_pool(
 
     size = getattr(config, "hosted_pool_size", 0)
     key = process_keyed_id_key()
-    if size <= 0 or key is None or not box_provisioning_on(config):
+    if size <= 0 or key is None or not box_cluster_on():
         return []
     made: list[str] = []
     with no_tenant():
@@ -1038,7 +1037,7 @@ def pool_pick_for(
     if (
         settings is None
         or getattr(config, "hosted_pool_size", 0) <= 0
-        or not box_provisioning_on(config)
+        or not box_cluster_on()
     ):
         return None
     gate_settings = settings
@@ -1087,10 +1086,9 @@ async def claim_pool_box(
     ):
         return None
     tenant_id = require_tenant_id()
-    v2 = v2_of(config)
-    if not machines_user_allowed(
-        settings, owner_id, v2=v2
-    ) or not machines_tenant_allowed(settings, tenant_id, v2=v2):
+    if not machines_user_allowed(settings, owner_id) or not machines_tenant_allowed(
+        settings, tenant_id
+    ):
         return None
     if await block_reason_in(session, owner_id, tenant_id) is not None:
         return None
@@ -1194,7 +1192,7 @@ async def sweep_pool(
 ) -> list[str]:
     """The sweep's pool pass: retire what no claim should take, then refill to
     the size. Returns the new pool box ids."""
-    if not box_provisioning_on(config):
+    if not box_cluster_on():
         return []
     await retire_stale_pool_boxes(session_factory, config, now)
     return await refill_pool(session_factory, config, now)
@@ -1592,15 +1590,6 @@ def held_clocks(machine_id: str, open_ids: Collection[str]) -> bool:
     return machine_id in open_ids
 
 
-def box_provisioning_on(config: SwitchConfig) -> bool:
-    """Whether box provisioning is on: the v1/v2 switch's one answer
-    (`hosted_v2_on`). Read defensively: a hand-built test config, or an older caller, simply
-    has it off."""
-    from switch_core.hosted_v2 import hosted_v2_on
-
-    return hosted_v2_on(config)
-
-
 async def ask_for_box(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -1614,7 +1603,7 @@ async def ask_for_box(
     Off, it asks for nothing. On with no keyed-id key, no box can be named,
     so none is asked for and a box still waiting for one is marked as not
     made at once (`_box_not_made`), rather than waiting for ever."""
-    if not box_provisioning_on(config) or settings is None:
+    if not box_cluster_on() or settings is None:
         return None
     key = process_keyed_id_key()
     if key is None:
@@ -1646,7 +1635,7 @@ async def _not_made_without_key(
     session_factory: async_sessionmaker[AsyncSession], machine_id: str, now: datetime
 ) -> None:
     """With no keyed-id key, a box waiting for one is marked as not made, once:
-    only a v2 box still wanted running and still queued or provisioning."""
+    only a box still wanted running and still queued or provisioning."""
     with no_tenant():
         async with session_factory() as session:
             await lock_machine(session, machine_id)

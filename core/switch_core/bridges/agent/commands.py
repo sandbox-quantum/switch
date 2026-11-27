@@ -23,6 +23,7 @@ from switch_core.aliases import (
     validate_alias_format,
 )
 from switch_core.authz import Principal
+from switch_core.box_cluster import on_box
 from switch_core.bridges.agent.agent_change_requests import (
     CONFIRM_COMMAND,
     confirm_with,
@@ -79,7 +80,6 @@ from switch_core.delivery.addressing import (
 )
 from switch_core.events import CommandEvent
 from switch_core.feature_flags import DECISION_ROUTING
-from switch_core.hosted_v2 import process_hosted_v2, v2_box
 from switch_core.platform_access import administers_on_record
 from switch_core.room_invites import not_addressable_refusal
 from switch_core.room_policy import RoomAction, RoomCaller, RoomDecision
@@ -653,13 +653,10 @@ async def _decide_control_command(
         # A controller's agent host says how a reset went once it knows: an
         # awake session, a resting one cleared, or one that couldn't be.
         # Said here as well, the room would read a reset that never happened.
-        # The v1/v2 switch: only a v2 box's agent host tells; a v1 machine or
-        # a person's own computer keeps upstream's acknowledgement, and with
-        # v2 off nothing is read (sweep row 1).
+        # Only a box's agent host tells; a person's own computer keeps
+        # upstream's acknowledgement.
         box_tells = (
-            controller_backed
-            and command == "reset"
-            and await _on_v2_box(client, agent.id)
+            controller_backed and command == "reset" and await _on_box(client, agent.id)
         )
         if box_tells:
             frame["roomTold"] = False
@@ -768,12 +765,12 @@ async def _dispatch_control_command(
     )
 
 
-async def _on_v2_box(client: AgentRecipient, agent_id: str) -> bool:
+async def _on_box(client: AgentRecipient, agent_id: str) -> bool:
     binding = client._connections.controllers.binding(agent_id)
-    if binding is None or not process_hosted_v2():
+    if binding is None:
         return False
     async with tenant_session(client.session_factory, client.tenant_id) as session:
-        return await v2_box(session, client.tenant_id, binding.controller_id)
+        return await on_box(session, client.tenant_id, binding.controller_id)
 
 
 # The agreed line for a reset that couldn't be done.

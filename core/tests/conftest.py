@@ -65,26 +65,27 @@ for _platform in PLATFORMS:
 
 
 @pytest.fixture(autouse=True)
-def _hosted_v2_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The v1/v2 switch's process-wide copy, for code with no config to hand.
-    On by default, so the v2 tests read as they were written; a run with
-    SWITCH_TEST_HOSTED_V2=0 takes the whole suite with v2 off, as v1 servers
-    run it (the switch's flag-off parity run). A test that needs one state
-    sets it itself."""
-    from switch_core import hosted_v2
+def _box_cluster_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The process's box cluster answer (`box_cluster.set_box_cluster`), on for
+    every test, as on a server that runs hosted agents. A test of a server
+    without one sets it off itself (`box_cluster_off`)."""
+    from switch_core import box_cluster
 
-    monkeypatch.setattr(
-        hosted_v2, "_process_on", os.environ.get("SWITCH_TEST_HOSTED_V2", "1") != "0"
-    )
+    monkeypatch.setattr(box_cluster, "_process_on", True)
 
 
 @pytest.fixture
-def hosted_v2_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pins hosted agents v2 on for a test written for it, so it reads the same
-    in the whole-suite off run (SWITCH_TEST_HOSTED_V2=0) as by default."""
-    from switch_core import hosted_v2
+def hosted_v2_on() -> None:
+    """The old name for a test written for a box cluster, which every test now
+    has (`_box_cluster_on`). Goes once the two-mode tests are collapsed."""
 
-    monkeypatch.setattr(hosted_v2, "_process_on", True)
+
+@pytest.fixture
+def box_cluster_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server with no box cluster configured: hosted agents are off."""
+    from switch_core import box_cluster
+
+    monkeypatch.setattr(box_cluster, "_process_on", False)
 
 
 @pytest.fixture(autouse=True)
