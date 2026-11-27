@@ -120,11 +120,11 @@ it('refuses a transfer to a session that is not on this host', async () => {
   });
 });
 
-it('does not remove files outside the relay attachments directory on cancel', async () => {
+it('refuses to cancel a transfer id that would name a file outside its directory', async () => {
   const transfers = new AttachmentTransfers(root);
   const externalFile = join(paths.base, 'target.part');
   await writeFile(externalFile, 'important data');
-  await transfers.cancel('../target');
+  await expect(transfers.cancel('../target')).rejects.toThrow('cannot be used in a file name');
   expect(await readFile(externalFile, 'utf8')).toBe('important data');
 });
 

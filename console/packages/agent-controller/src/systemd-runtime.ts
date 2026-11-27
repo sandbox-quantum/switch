@@ -6,8 +6,10 @@ import { promisify } from 'node:util';
 import {
   CONTROL_FILE,
   clearTakenOver,
+  isSafeId,
   PROVIDER_ENV_VARS,
   type ProviderReadiness,
+  safeId,
   type SharedHostConfig,
   sessionsBaseIn,
   sharedConfigSchema,
@@ -437,11 +439,18 @@ export class SystemdRuntime implements AgentRuntime {
    * held one, and the directories the agent host and the agent write in.
    */
   private async prepare(agentId: string): Promise<string> {
+    safeId(agentId, 'agent id');
     const slot = this.claim(agentId);
     const root = agentRoot(this.deps.config, slot);
     if (await isDirectory(root)) {
       const holder = (await readOptional(join(root, AGENT_MARKER)))?.trim() ?? '';
-      if (holder !== agentId) await this.setAside(root, holder || `unknown-${this.deps.now()}`);
+      if (holder !== agentId) {
+        if (holder && !isSafeId(holder))
+          this.deps.log.warn('An agent directory’s marker names no agent id; setting it aside', {
+            directory: root,
+          });
+        await this.setAside(root, isSafeId(holder) ? holder : `unknown-${this.deps.now()}`);
+      }
     }
     if (!(await isDirectory(root))) {
       const released = join(this.deps.config.agentsDir, RELEASED, agentId);
@@ -465,7 +474,7 @@ export class SystemdRuntime implements AgentRuntime {
   private async setAside(root: string, agentId: string): Promise<void> {
     const released = join(this.deps.config.agentsDir, RELEASED);
     await mkdir(released, { recursive: true, mode: 0o700 });
-    const target = join(released, agentId);
+    const target = join(released, safeId(agentId, 'agent id'));
     if (await isDirectory(target)) await rename(target, `${target}.${this.deps.now()}`);
     await rename(root, target);
     this.deps.log.info('Set an agent’s directory aside', { agentId, directory: target });

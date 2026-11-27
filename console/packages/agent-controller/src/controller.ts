@@ -1,7 +1,8 @@
-import type {
-  DeviceConsentNeed,
-  OpenAgentStream,
-  ProviderReadiness,
+import {
+  isSafeId,
+  type DeviceConsentNeed,
+  type OpenAgentStream,
+  type ProviderReadiness,
 } from '@switch-console/agent-providers';
 import type { RestartNotice } from '@switch-console/agent-providers/box';
 import { AgentHub } from './agent-hub';
@@ -21,7 +22,6 @@ import { ConfigurationError } from './errors';
 import { HubSocket } from './hub-socket';
 import { errorMessage, type Logger } from './log';
 import { processPendingOperations } from './operations';
-import { isSafeSegment } from './paths';
 import type { ProviderRechecks } from './provider-rechecks';
 import { providersFor } from './providers';
 import {
@@ -533,7 +533,7 @@ export async function runController(
         ...(assignment?.agents.map((entry) => entry.agent_id) ?? []),
       ]);
       for (const agentId of agentIds) {
-        if (!isSafeSegment(agentId)) continue;
+        if (!isSafeId(agentId)) continue;
         relay.unregister(agentId);
         try {
           await runtime.stop(agentId, { wait: false });

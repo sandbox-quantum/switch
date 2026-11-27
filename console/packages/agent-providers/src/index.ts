@@ -224,6 +224,7 @@ export { readSharedCredentials, sharedConfigSchema } from './host/shared-config'
 export type { SharedHostConfig } from './host/shared-config';
 
 export { loginCommandOf, providerReadinessSchema } from './readiness';
+export { isSafeId, safeId } from './safe-id';
 export {
   cliConversationListSchema,
   deletedCliConversationCopiesSchema,

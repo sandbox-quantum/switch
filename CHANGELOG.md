@@ -5277,6 +5277,10 @@ version of their own to them without also giving them a release of their own.
   whose name contained placeholder text such as `{{path_raw}}` had its path
   substituted a second time, unquoted, into the shell command that opens it.
 
+- **Cancelling an attachment upload checks the id.** The session host deleted
+  `<id>.part` for whatever id it was sent, so an id such as `../x` could delete
+  a file outside its upload folder.
+
 - **A new OpenCode agent asks before it acts.** OpenCode's auto mode has no
   review of its own: it answers every permission request itself, so with it
   on, anyone who can post in the agent's rooms could have commands run on its
@@ -8223,6 +8227,13 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Security
+- **An agent id must be a plain file name before it names a directory.**
+  Running agents as users of their own, the controller set aside and gave back
+  agent directories under `released/` by agent id, and by whatever id the
+  directory's marker file held, without checking either; an id with `..` or a
+  separator is now refused, and a marker that holds one is set aside as an
+  unknown agent's.
+- **Cancelling an attachment upload checks the id**, as on the sidecar.
 - **A managed Codex agent keeps the host's own Codex sandbox.** The
   controller used to give every Codex session a sandbox of its own,
   `danger-full-access` under Bypass permissions and `workspace-write`
@@ -8697,6 +8708,10 @@ published on its own.
 - **An agent's sessions move with its folder**, as in Switch Console.
 
 #### Security
+- **An id that names a file is checked before it is used.** Cancelling an
+  attachment upload with an id such as `../x` could delete a file outside the
+  upload folder; such ids, and conversation ids that are not file names, are
+  now refused.
 - **The control socket compares its secret in constant time.**
 - **Shell setup can no longer add environment variables beyond the inherited
   allowlist**, as in Switch Console.

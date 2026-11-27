@@ -307,6 +307,23 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     expect(readFileSync(join(stale, '.switch-agent-id'), 'utf8').trim()).toBe('agent-1');
   });
 
+  it('sets aside a directory whose marker names a path as an unknown agent’s, inside released/', async () => {
+    const stale = join(config.agentsDir, '01');
+    mkdirSync(join(stale, 'workspace'), { recursive: true });
+    writeFileSync(join(stale, '.switch-agent-id'), '../../escaped\n');
+    await start('agent-1');
+    expect(existsSync(join(config.agentsDir, 'released', 'unknown-1000', 'workspace'))).toBe(true);
+    expect(existsSync(join(dir, 'escaped'))).toBe(false);
+  });
+
+  it('refuses an agent id that could name a path', async () => {
+    for (const agentId of ['../x', 'a/b', '..', '.hidden'])
+      await expect(runtime.workingDirectory(agentId, 'x', null)).rejects.toThrow(
+        'cannot be used in a file name'
+      );
+    expect(store.agentUser('../x')).toBeNull();
+  });
+
   it('stops through the watch flags and the unit', async () => {
     await start('agent-1');
     systemctl.calls.length = 0;

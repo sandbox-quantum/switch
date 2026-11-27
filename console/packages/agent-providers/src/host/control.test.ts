@@ -630,7 +630,9 @@ it('reads as a health ask to a sidecar that predates reasoning, so its connectio
 
 it('validates attachmentCancel transferId and rejects path traversal', async () => {
   expect(controlMessageSchema.safeParse({ attachmentCancel: 't1' }).success).toBe(true);
-  expect(controlMessageSchema.safeParse({ attachmentCancel: '../../../tmp/target' }).success).toBe(false);
+  expect(controlMessageSchema.safeParse({ attachmentCancel: '../../../tmp/target' }).success).toBe(
+    false
+  );
   expect(controlMessageSchema.safeParse({ attachmentCancel: '' }).success).toBe(false);
   expect(controlMessageSchema.safeParse({ attachmentCancel: 'bad/slash' }).success).toBe(false);
 
@@ -649,9 +651,7 @@ it('validates attachmentCancel transferId and rejects path traversal', async () 
   socket.write(`${JSON.stringify({ token: control.token })}\n`);
 
   socket.write(`${JSON.stringify({ id: 1, attachmentCancel: 't1' })}\n`);
-  await vi.waitFor(() =>
-    expect(replies).toContainEqual({ id: 1, ok: true, value: null })
-  );
+  await vi.waitFor(() => expect(replies).toContainEqual({ id: 1, ok: true, value: null }));
 
   const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
   socket.write(`${JSON.stringify({ id: 2, attachmentCancel: '../../../tmp/target' })}\n`);

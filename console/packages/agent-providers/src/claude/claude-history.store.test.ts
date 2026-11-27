@@ -62,6 +62,15 @@ it('finds a saved conversation by its id in any project, leaving out a line cut 
   ).toBeNull();
 });
 
+it('refuses a conversation id that would name a file outside the projects folder', async () => {
+  const dir = await savedConversation();
+  await writeFile(join(dir, 'outside.jsonl'), line('user', U1, null, 'secret'));
+  for (const sessionId of ['../../outside', '../outside', 'a/b', '..'])
+    await expect(
+      configDirSessionStore(dir).load({ projectKey: 'anything', sessionId })
+    ).rejects.toThrow('cannot be used in a file name');
+});
+
 it('reads a conversation from the session’s config directory without touching this process’s environment', async () => {
   const dir = await savedConversation();
   const before = process.env.CLAUDE_CONFIG_DIR;

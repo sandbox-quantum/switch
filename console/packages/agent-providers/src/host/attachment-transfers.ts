@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, readFile, rm, stat } from 'node:fs/promises';
-import { join, resolve, sep } from 'node:path';
+import { join } from 'node:path';
 import { z } from 'zod';
+import { safeId } from '../safe-id';
 import { MAX_ATTACHMENT_BYTES, stageAttachment } from './attachments';
 import { sharedSessionRoot } from './launch';
 
@@ -73,10 +74,12 @@ export class AttachmentTransfers {
     await rm(this.directory, { recursive: true, force: true });
   }
 
+  private partPath(transferId: string): string {
+    return join(this.directory, `${safeId(transferId, 'transfer id')}.part`);
+  }
+
   async cancel(transferId: string): Promise<void> {
-    if (!transferIdSchema.safeParse(transferId).success) return;
-    const target = resolve(this.directory, `${transferId}.part`);
-    if (!target.startsWith(this.directory + sep)) return;
+    const target = this.partPath(transferId);
     this.partials.delete(transferId);
     await rm(target, { force: true });
   }
@@ -162,7 +165,7 @@ export class AttachmentTransfers {
         expected: partial.next,
       });
     const data = Buffer.from(encoded, 'base64');
-    const part = join(this.directory, `${chunk.transferId}.part`);
+    const part = this.partPath(chunk.transferId);
     if (
       data.byteLength > MAX_CHUNK_BYTES ||
       partial.received + data.byteLength > chunk.size ||
