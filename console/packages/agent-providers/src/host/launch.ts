@@ -11,7 +11,12 @@ import type { SessionLinks } from './session-channel';
 import { recordSessionStart, type HostStartSource } from './session-start';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { requestStop } from './stop-request';
-import { superviseSharedHost } from './supervisor';
+import {
+  AdoptUnsureError,
+  leftByEarlierSupervisor,
+  type SupervisorBox,
+  superviseSharedHost,
+} from './supervisor';
 
 export function sharedSessionsBase(): string {
   return sessionsBaseIn(homedir());
@@ -31,6 +36,21 @@ export function sharedSessionRoot(sessionId: string): string {
  * SSH machine detaches its supervisor so it outlives the deploying process;
  * Console supervises a local host itself so the tree ends when Console does.
  */
+/**
+ * What a box's supervision does beyond Console's (`box/owner-records`,
+ * `box/stop-asked`), given only in box mode: saved ids are judged before
+ * anything trusts or stops them, a stop marks itself asked for, and each host
+ * gets the controller's owner marker.
+ */
+export type SupervisionBox = SupervisorBox & {
+  recordFolder: (path: string) => string;
+  /** A process's command line, read from `/proc` on Linux rather than a `ps` per look. */
+  commandLine: (pid: number) => Promise<string | null>;
+  markStopAsked: (root: string) => Promise<void>;
+  /** Added to this process's environment for each host: an agents controller's owner marker. */
+  extraEnv: Record<string, string>;
+};
+
 export type Supervision = {
   /**
    * Names the code this supervision runs. A host recorded under a different
@@ -40,8 +60,15 @@ export type Supervision = {
    */
   build: string;
   start: (input: { root: string; configPath: string; watcher: boolean }) => Promise<void>;
-  /** Stops whatever currently owns this root, so a replacement can take it. */
-  stop: (root: string) => Promise<void>;
+  /**
+   * Stops whatever currently owns this root, so a replacement can take it. In
+   * box mode it is marked asked for unless `asked` is false: a turn it cuts off
+   * then owes its room no "I was restarted" line. An upgrade to a new build
+   * passes false, since that is a restart the person in the room did not ask for.
+   */
+  stop: (root: string, options?: { asked?: boolean }) => Promise<void>;
+  /** Box mode only. */
+  box?: SupervisionBox;
   /**
    * The channels to the hosts this supervision starts, where they are
    * children of this process and talk to it over IPC. Null for hosts started
@@ -65,10 +92,11 @@ type LaunchInput = {
   startSource: HostStartSource | null;
 };
 
-export function detachedSupervision(entrypoint: string): Supervision {
+export function detachedSupervision(entrypoint: string, box?: SupervisionBox): Supervision {
   return {
     build: entrypoint,
     links: null,
+    ...(box ? { box } : {}),
     start: async ({ root, configPath, watcher }) => {
       const log = await open(join(root, 'supervisor.log'), 'a', 0o600);
       try {
@@ -79,7 +107,7 @@ export function detachedSupervision(entrypoint: string): Supervision {
             detached: true,
             windowsHide: true,
             stdio: ['ignore', log.fd, log.fd],
-            env: process.env,
+            env: box ? { ...process.env, ...box.extraEnv } : process.env,
           }
         );
         await new Promise<void>((resolve, reject) => {
@@ -91,9 +119,10 @@ export function detachedSupervision(entrypoint: string): Supervision {
         await log.close();
       }
     },
-    stop: async (root) => {
-      await stopOwnedProcess(root, join(root, 'supervisor', 'owner.json'));
-      await stopOwnedProcess(root, join(root, 'shared-owner.lock'));
+    stop: async (root, options) => {
+      if (box && options?.asked !== false) await box.markStopAsked(root);
+      await stopOwnedProcess(root, join(root, 'supervisor', 'owner.json'), box);
+      await stopOwnedProcess(root, join(root, 'shared-owner.lock'), box);
     },
   };
 }
@@ -109,15 +138,20 @@ export function detachedSupervision(entrypoint: string): Supervision {
  */
 export function inProcessSupervision(
   entrypoint: string,
-  links: SessionLinks
-): Supervision & { close: () => Promise<void> } {
+  links: SessionLinks,
+  box?: SupervisionBox
+): Supervision & { close: (options?: { asked?: boolean }) => Promise<void> } {
   const running = new Map<string, { stop: AbortController; done: Promise<void> }>();
   let closed = false;
   return {
     build: entrypoint,
     links,
-    close: async () => {
+    ...(box ? { box } : {}),
+    // `asked` (box mode): the agent is being stopped, not the whole controller
+    // going down, so each host is told its stop was asked for.
+    close: async (options?: { asked?: boolean }) => {
       closed = true;
+      if (box && options?.asked) for (const root of running.keys()) await box.markStopAsked(root);
       const entries = [...running.values()];
       for (const entry of entries) entry.stop.abort();
       await Promise.all(entries.map((entry) => entry.done));
@@ -131,22 +165,27 @@ export function inProcessSupervision(
         root,
         executable: process.execPath,
         args: [entrypoint, root, configPath],
-        env: process.env,
+        env: box ? { ...process.env, ...box.extraEnv } : process.env,
         signal: stop.signal,
         build: entrypoint,
         links,
+        ...(box ? { box } : {}),
       })
         .catch((error: unknown) => {
           console.error(`Session host at ${root} stopped: ${String(error)}`);
+          // Nothing was spawned to exit and report it, so say it here: the
+          // agent's room hears that the session cannot start.
+          if (error instanceof AdoptUnsureError) links.reportFailure(root, error.message);
         })
         .finally(() => running.delete(root));
       running.set(root, { stop, done });
     },
-    stop: async (root) => {
+    stop: async (root, options) => {
+      if (box && options?.asked !== false) await box.markStopAsked(root);
       const entry = running.get(root);
       if (!entry) {
-        await stopOwnedProcess(root, join(root, 'supervisor', 'owner.json'));
-        await stopOwnedProcess(root, join(root, 'shared-owner.lock'));
+        await stopOwnedProcess(root, join(root, 'supervisor', 'owner.json'), box);
+        await stopOwnedProcess(root, join(root, 'shared-owner.lock'), box);
         return;
       }
       entry.stop.abort();
@@ -224,7 +263,7 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
     session: saved.session,
     resumeOperationId: input.restart ? randomUUID() : saved.resumeOperationId,
   });
-  const running = await liveSupervisor(input.root);
+  const running = await liveSupervisor(input.root, input.supervision.box);
   if (running) {
     if (running.build === input.supervision.build) return { created };
     await input.supervision.stop(input.root);
@@ -248,20 +287,36 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
  * supervisor from a build predating the record reports no build, which reads
  * as different from whatever is asking — so it is replaced.
  */
-export async function liveSupervisor(root: string): Promise<{ build: unknown } | null> {
+export async function liveSupervisor(
+  root: string,
+  box?: Pick<SupervisionBox, 'judge'>
+): Promise<{ build: unknown } | null> {
+  const ownerPath = join(root, 'supervisor', 'owner.json');
   let owner;
   try {
-    owner = JSON.parse(await readFile(join(root, 'supervisor', 'owner.json'), 'utf8'));
+    owner = JSON.parse(await readFile(ownerPath, 'utf8'));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
   if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
     throw new Error('Invalid shared host supervisor owner.');
+  if (box) {
+    // Judged first, so a record from before this box is seen (and logged) as
+    // such even when it names this process's own id.
+    if ((await box.judge(ownerPath, owner.pid)).kind === 'stale') return null;
+    // A record this process never wrote, naming its own id, was left by an
+    // earlier process with the same id (a restarted container): no supervisor.
+    if (leftByEarlierSupervisor(ownerPath, owner)) return null;
+  }
   return isProcessAlive(owner.pid, 'recorded') ? { build: owner.build } : null;
 }
 
-async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> {
+async function stopOwnedProcess(
+  root: string,
+  ownerPath: string,
+  box: SupervisionBox | undefined
+): Promise<void> {
   let pid: number;
   try {
     pid = JSON.parse(await readFile(ownerPath, 'utf8')).pid;
@@ -271,7 +326,30 @@ async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> 
   }
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid SDK process owner.');
   if (!isProcessAlive(pid, 'recorded')) return;
-  const commandLine = await processCommandLine(pid);
+  if (box) {
+    // Only an owner judged alive may be stopped (and then only if its command
+    // line names this root, below). A stale record names nothing of ours: it
+    // goes, or the session would read as still running, and nothing is killed.
+    // An unknown one is neither stopped nor waited on: nothing is killed on a
+    // guess, and the caller is not held up by it.
+    const verdict = await box.judge(ownerPath, pid);
+    if (verdict.kind === 'stale') {
+      console.warn(
+        `The owner recorded in ${box.recordFolder(ownerPath)} (pid ${pid}) is not running (${verdict.reason}); leaving whatever holds that id alone and clearing the stale record.`
+      );
+      await unlink(ownerPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+      return;
+    }
+    if (verdict.kind === 'unknown') {
+      console.warn(
+        `Could not tell whether the owner recorded in ${box.recordFolder(ownerPath)} (pid ${pid}) is still running; stopping nothing.`
+      );
+      return;
+    }
+  }
+  const commandLine = await (box ? box.commandLine(pid) : processCommandLine(pid));
   if (commandLine === null) return;
   if (!commandLineNames(commandLine, root))
     throw new Error(
@@ -284,7 +362,7 @@ async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> 
   // longer changes nothing, and refusing leaves every update to this agent
   // failing the same way, so what is left of the tree is killed.
   console.warn(
-    `The SDK host at ${root} (pid ${pid}) did not stop within ${STOP_GRACE_MS / 1000} s of being asked; killing it and everything it started.`
+    `The SDK host ${box ? `in ${box.recordFolder(ownerPath)}` : `at ${root}`} (pid ${pid}) did not stop within ${STOP_GRACE_MS / 1000} s of being asked; killing it and everything it started.`
   );
   await killProcessTree(pid);
   if (await exitsWithin(pid, 5000)) return;

@@ -1,9 +1,11 @@
+import { Checkbox } from '@switch-console/chat-ui/primitives/checkbox';
+import { Field, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { RelativeTime } from '@switch-console/chat-ui/primitives/relative-time';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown } from 'lucide-react';
 import { useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
 import {
   Combobox,
   ComboboxContent,
@@ -13,8 +15,6 @@ import {
   ComboboxList,
   ComboboxTrigger,
 } from '@renderer/lib/ui/combobox';
-import { Field, FieldLabel } from '@renderer/lib/ui/field';
-import { RelativeTime } from '@renderer/lib/ui/relative-time';
 import { cn } from '@renderer/utils/utils';
 import type { CliConversation, CliConversationList } from '@shared/core/sessions/cli-conversations';
 

@@ -3,7 +3,7 @@
   "expect": "refuse",
   "from_good": "good/drain-worker-a-box-evicted-post-pod-eviction-box-0.json",
   "group": "",
-  "message": "the operator may only evict box-0 in a box namespace",
+  "message": "",
   "name": "box-1",
   "namespace": "agents-box-k1-0000000000000021",
   "object": {
@@ -20,10 +20,8 @@
     }
   },
   "operation": "CREATE",
-  "policies": [
-    "switch-operator-evict-boxes-only"
-  ],
-  "refused_by": "admission",
+  "policies": [],
+  "refused_by": "rbac",
   "request": {
     "body": {
       "apiVersion": "policy/v1",

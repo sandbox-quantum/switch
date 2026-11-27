@@ -26,11 +26,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { dataLayout } from './paths';
 import {
+  clearLeftLoginChecks,
+  type InProcessBox,
   InProcessRuntime,
   isInside,
   LaunchedBundle,
   loginProbeEnvironment,
   observeOnDisk,
+  parseRelayCredentials,
+  probeProvider,
+  relayCredentialsBody,
 } from './runtime';
 import { buildWatcherTemplate } from './template';
 
@@ -108,6 +113,7 @@ beforeEach(() => {
     openStream,
     log: silentLogger,
     crashBackoffMs: 5,
+    box: null,
   });
 });
 
@@ -192,7 +198,7 @@ describe('InProcessRuntime', () => {
       () => existsSync(join(dir, 'data', 'watchers', 'agent-1', 'health.json')),
       'the health file'
     );
-    expect(await observeOnDisk(dataLayout(join(dir, 'data')), 'agent-1')).toMatchObject({
+    expect(await observeOnDisk(dataLayout(join(dir, 'data')), 'agent-1', null)).toMatchObject({
       alive: true,
       health: { pid: process.pid, current: true },
     });
@@ -323,6 +329,7 @@ describe('InProcessRuntime', () => {
       openStream,
       log: silentLogger,
       crashBackoffMs: 5,
+      box: null,
     });
     const readiness = await checking.probe('codex', '/usr/bin/codex', '/tmp', {
       status: 'connected',
@@ -421,6 +428,156 @@ describe('LaunchedBundle', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('box mode (InProcessBox)', () => {
+  function fakeBox(overrides: Partial<InProcessBox> = {}): InProcessBox & {
+    watchers: string[];
+    supervised: string[];
+  } {
+    const watchers: string[] = [];
+    const supervised: string[] = [];
+    return {
+      watchers,
+      supervised,
+      watcher: (agentId) => {
+        watchers.push(agentId);
+        return undefined;
+      },
+      supervision: (agentId) => {
+        supervised.push(agentId);
+        return {
+          judge: async () => ({ kind: 'alive' as const }),
+          ticketJudge: async () => ({ kind: 'alive' as const }),
+          selfRestart: true,
+          recordFolder: (path: string) => path,
+          commandLine: async () => null,
+          markStopAsked: async () => {},
+          extraEnv: { SWITCH_TEST_OWNER: agentId },
+        } as unknown as ReturnType<InProcessBox['supervision']>;
+      },
+      recordedOwnerAlive: async () => true,
+      judgeOwnerRecord: async () => ({ kind: 'alive' }),
+      ...overrides,
+    };
+  }
+
+  function boxRuntime(box: InProcessBox): InProcessRuntime {
+    return new InProcessRuntime({
+      layout: dataLayout(join(dir, 'data')),
+      workspaces: join(dir, 'data', 'workspaces'),
+      bundlePath: bundle,
+      openStream,
+      log: silentLogger,
+      crashBackoffMs: 5,
+      box,
+    });
+  }
+
+  it("gives each agent host the box's watcher and supervision halves", async () => {
+    const box = fakeBox();
+    const inBox = boxRuntime(box);
+    await inBox.writeCredentials('agent-1', RELAY);
+    await inBox.launch('agent-1', template(), LAUNCH);
+    await waitFor(() => opened.length === 1, 'the watcher');
+    expect(box.watchers).toEqual(['agent-1']);
+    expect(box.supervised).toEqual(['agent-1']);
+    await inBox.close();
+  });
+
+  it("leaves running an earlier controller's watcher whose record isn't judged alive", async () => {
+    const root = join(dir, 'data', 'watchers', 'agent-1');
+    mkdirSync(join(root, 'supervisor'), { recursive: true });
+    const detached = await fakeWatcher(root);
+    writeFileSync(join(root, 'supervisor', 'owner.json'), JSON.stringify({ pid: detached.pid }));
+    const inBox = boxRuntime(fakeBox({ judgeOwnerRecord: async () => ({ kind: 'reused' }) }));
+    await inBox.writeCredentials('agent-1', RELAY);
+    await inBox.launch('agent-1', template(), LAUNCH);
+    expect(detached.exitCode).toBeNull();
+    expect(detached.signalCode).toBeNull();
+    await inBox.close();
+  });
+
+  it('reads a recorded owner as alive only as the box judges it', async () => {
+    const root = join(dir, 'data', 'watchers', 'agent-1');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'shared-owner.lock'), JSON.stringify({ pid: process.pid }));
+    const layout = dataLayout(join(dir, 'data'));
+    expect((await observeOnDisk(layout, 'agent-1', null)).alive).toBe(true);
+    const stale = fakeBox({ recordedOwnerAlive: async () => false });
+    expect((await observeOnDisk(layout, 'agent-1', stale)).alive).toBe(false);
+  });
+
+  it("round-trips the box's gateway record, and reads a file without one exactly as before", async () => {
+    const gateway = {
+      token: 'swpg_placeholder',
+      provider: 'claude',
+      kind: 'api-key',
+      revision: '3',
+    };
+    const withGateway = relayCredentialsBody('agent-1', { ...RELAY, gateway });
+    expect(parseRelayCredentials(withGateway, 'agent-1')).toEqual({ ...RELAY, gateway });
+    const plain = relayCredentialsBody('agent-1', RELAY);
+    expect(JSON.parse(plain)).not.toHaveProperty('gateway');
+    expect(parseRelayCredentials(plain, 'agent-1')).toEqual(RELAY);
+    const forged = JSON.stringify({
+      ...JSON.parse(plain),
+      gateway: { ...gateway, token: 'not-a-gateway-token' },
+    });
+    expect(parseRelayCredentials(forged, 'agent-1')).toEqual(RELAY);
+  });
+
+  it('answers a provider check the same way, in its own process group', async () => {
+    expect(
+      await probeProvider(bundle, 'claude', '/usr/bin/claude', '/tmp', process.env, { box: true })
+    ).toEqual({
+      status: 'authenticated',
+      message: '--probe claude /tmp /usr/bin/claude',
+      models: [],
+    });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'ends the whole process group of a provider check that runs too long',
+    async () => {
+      const beat = join(dir, 'beat');
+      const cli = join(dir, 'busy-cli.cjs');
+      const slow = join(dir, 'slow-bundle.cjs');
+      writeFileSync(
+        cli,
+        `setInterval(() => require('node:fs').appendFileSync(${JSON.stringify(beat)}, 'x'), 20);`
+      );
+      // A check that starts a CLI of its own, which keeps writing, then never answers.
+      writeFileSync(
+        slow,
+        `require('node:child_process').spawn(process.execPath, [${JSON.stringify(cli)}], { stdio: 'ignore' });
+         setInterval(() => {}, 1000);`
+      );
+      await expect(
+        probeProvider(slow, 'claude', '/usr/bin/claude', '/tmp', process.env, {
+          box: true,
+          timeoutMs: 500,
+        })
+      ).rejects.toThrow('did not finish within 0.5 s');
+      await delay(100);
+      const size = statSync(beat).size;
+      await delay(300);
+      expect(statSync(beat).size).toBe(size);
+    }
+  );
+});
+
+describe('clearLeftLoginChecks', () => {
+  it('clears a login check left by a controller stopped in the middle of one', async () => {
+    const left = join(dir, 'data', 'login-check', 'claude', 'provider-home');
+    mkdirSync(left, { recursive: true });
+    writeFileSync(join(left, 'google-credentials.json'), '{}');
+    writeFileSync(join(dir, 'data', 'kept.txt'), 'kept');
+    await clearLeftLoginChecks(join(dir, 'data'));
+    expect(existsSync(join(dir, 'data', 'login-check'))).toBe(false);
+    expect(existsSync(join(dir, 'data', 'kept.txt'))).toBe(true);
+    await clearLeftLoginChecks(join(dir, 'data'));
   });
 });
 

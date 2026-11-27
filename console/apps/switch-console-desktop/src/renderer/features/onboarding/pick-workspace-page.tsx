@@ -1,13 +1,18 @@
+import {
+  invitationSummary,
+  joinableSummary,
+  listedInvitations,
+  listedJoinable,
+  pickSubtitle,
+} from '@switch-console/chat-ui/model/workspace-offers';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { useQuery } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  invitationSummary,
   InvitedBadge,
-  joinableSummary,
-  listedInvitations,
-  listedJoinable,
   useJoinableWorkspaces,
   usePendingInvitations,
 } from '@renderer/features/workspaces/pending-invitations';
@@ -15,8 +20,6 @@ import { workspacesStore } from '@renderer/features/workspaces/workspaces-store'
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { report } from '@renderer/lib/telemetry/report';
-import { Button } from '@renderer/lib/ui/button';
-import { Spinner } from '@renderer/lib/ui/spinner';
 import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';
@@ -262,12 +265,6 @@ export const PickWorkspacePage = observer(function PickWorkspacePage({
   );
 });
 
-function pickSubtitle(memberships: number, offers: number): string {
-  if (offers === 0) return 'You’re a member of these.';
-  if (memberships === 0) return 'You can join these.';
-  return 'You’re a member of these, or can join them.';
-}
-
 function JoinableRow({
   offer,
   joining,
@@ -296,7 +293,7 @@ function JoinableRow({
             {offer.workspaceName}
           </span>
           <span className="block truncate text-xs text-foreground-muted">
-            {joinableSummary(offer)}
+            {joinableSummary(offer.domain)}
           </span>
         </span>
         {joining ? (
@@ -337,7 +334,7 @@ function InvitationRow({
             {invitation.workspaceName}
           </span>
           <span className="block truncate text-xs text-foreground-muted">
-            {invitationSummary(invitation)}
+            {invitationSummary(invitation.invitedBy, invitation.role)}
           </span>
         </span>
         <InvitedBadge />

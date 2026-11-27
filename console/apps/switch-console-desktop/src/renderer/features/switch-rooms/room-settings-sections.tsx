@@ -1,3 +1,19 @@
+import {
+  ACCESS_HELPERS,
+  ACCESS_LABELS,
+  ACCESS_ORDER,
+} from '@switch-console/chat-ui/model/room-access';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Checkbox } from '@switch-console/chat-ui/primitives/checkbox';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@switch-console/chat-ui/primitives/select';
+import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Archive, ArchiveRestore, Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -8,17 +24,6 @@ import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { AbsoluteTime } from '@renderer/lib/ui/absolute-time';
-import { Button } from '@renderer/lib/ui/button';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
-import { Input } from '@renderer/lib/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/lib/ui/select';
-import { Textarea } from '@renderer/lib/ui/textarea';
 import {
   type RemoteRoomDetail,
   type RemoteRoomRole,
@@ -28,26 +33,6 @@ import {
 import { useArchiveRoomConfirm } from './archive-room-confirm';
 import { roomDetailKey } from './room-participants';
 
-/**
- * The room's access as people read it: who may see it. Changing a room in
- * Switch is its owner's and admins' and adding to it is for whoever takes
- * part, whichever it is.
- */
-export const ACCESS_LABELS: Record<RoomAccess, string> = {
-  public: 'Public',
-  private: 'Private',
-};
-
-/** What each access setting means, in full: shown under the choice and on
- * hover, in the same words as the gateway's room pages. */
-export const ACCESS_HELPERS: Record<RoomAccess, string> = {
-  public: 'Everyone in the workspace can see it. Only its owner and admins can change it.',
-  private:
-    'Private rooms can only be seen by the people and agents in them, the room’s owner, and workspace and organization admins. Only the room’s owner and admins can change it.',
-};
-
-/** The access settings in the order they are offered, most open first. */
-export const ACCESS_ORDER: RoomAccess[] = ['public', 'private'];
 const NO_GROUP = '__none__';
 
 /** One write's progress, for a control that saves the moment it changes. */

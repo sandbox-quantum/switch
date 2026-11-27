@@ -1,10 +1,10 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { ExternalLink } from 'lucide-react';
 import React from 'react';
 import { InstallSection } from '@renderer/features/settings/agents-page/InstallSection';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { useAgentInstallationStatus } from '@renderer/lib/stores/use-agent-installation-statuses';
 import { useAgent } from '@renderer/lib/stores/use-agents';
-import { Button } from '@renderer/lib/ui/button';
 import {
   getDescriptionForProvider,
   getDocUrlForProvider,

@@ -1,4 +1,5 @@
-import type { ChatSummary } from '@shared/core/chats/chats';
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import { isConsoleDirectChatSummary } from '@switch-console/chat-ui/model/agent-conversations';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 
 /**
@@ -60,13 +61,6 @@ export function consoleChatNotice(
     detail:
       'Its conversation shows here once Switch Console has loaded this server’s chats, which needs chats turned on for the server.',
   };
-}
-
-/** {@link isConsoleDirectChat} for a chat summary. */
-export function isConsoleDirectChatSummary(
-  chat: Pick<ChatSummary, 'channelType' | 'bridgeType' | 'agents'>
-): boolean {
-  return isConsoleDirectChat({ ...chat, agentCount: chat.agents.length });
 }
 
 /** A Console group chat: an unbridged chat that is not a 1-1 Console chat. It opens as a room. */

@@ -129,6 +129,11 @@ describe('openConsoleLink', () => {
     expect(navigate).toHaveBeenCalledWith('serverRooms', { serverId: 'srv-1' });
   });
 
+  it('opens a room by its link, a room on a messaging app included', async () => {
+    await openConsoleLink('switchdash://open/room/slack-room');
+    expect(navigate).toHaveBeenCalledWith('room', { roomId: 'slack-room' });
+  });
+
   it('opens the Server page of a server this Console runs', async () => {
     await openConsoleLink('switchdash://open/server');
     expect(navigate).toHaveBeenCalledWith('managedServer', { serverId: 'srv-1' });

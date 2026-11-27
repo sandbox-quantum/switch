@@ -1,8 +1,8 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import { chatSummarySchema } from '@switch-console/chat-ui/contracts/chats';
 import { QueryClient } from '@tanstack/react-query';
 import { runInAction } from 'mobx';
 import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
-import type { ChatSummary } from '@shared/core/chats/chats';
-import { chatSummarySchema } from '@shared/core/chats/chats';
 
 const calls = vi.hoisted(() => new Map<string, ReturnType<typeof vi.fn>>());
 const client = vi.hoisted(() => ({ current: null as unknown }));

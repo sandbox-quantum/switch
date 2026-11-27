@@ -444,3 +444,23 @@ def test_the_drain_may_evict_only_box_pods_by_name():
         "  verbs:\n  - create" in role
     )
     assert role.count("pods/eviction") == 1
+
+
+def test_no_policy_reads_a_request_field_that_may_be_missing():
+    """On a real API server a request leaves out an empty field: no `subResource` without a
+    subresource, and no `name` on a create by generateName. Reading one bare is an error, and with
+    failurePolicy Fail the policy then refuses every request. `subResource` is always read with a
+    default; a bare `name` only where every resource the policy matches is a subresource (an
+    eviction's path always names its pod)."""
+    hosted = Path(__file__).parents[2]
+    for path in sorted((hosted / "k8s").glob("*.yaml")) + sorted((hosted / "gate").glob("*.yaml")):
+        for d in docs(path.read_text()):
+            if "\nkind: ValidatingAdmissionPolicy\n" not in "\n" + d + "\n":
+                continue
+            assert not re.search(r"request\.subResource", d), path.name
+            if re.search(r"request\.name\b", d):
+                block = re.findall(r"resources:\s*\[([^\]]*)\]", d) + re.findall(
+                    r"resources:\n((?:\s*- .*\n)+)", d + "\n"
+                )
+                names = re.findall(r"[a-z]+(?:/[a-z]+)?", " ".join(block))
+                assert names and all("/" in n for n in names), (path.name, names)

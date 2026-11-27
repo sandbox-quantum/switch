@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
-import { planReconcile, reconcile, type ReconcileDeps } from './reconcile';
+import { BOX_PROVIDERS } from './providers';
+import { definitionProblem, planReconcile, reconcile, type ReconcileDeps } from './reconcile';
 import { emptyObservation } from './runtime';
-import type { AgentAssignment, Assignment } from './schemas';
+import { type AgentAssignment, type Assignment, PROVIDERS } from './schemas';
 import type { GivenLogin } from './sealed-logins';
 import { LAUNCH_GRACE_MS } from './status';
 import { ControllerStore } from './store';
@@ -55,6 +56,7 @@ function deps(): ReconcileDeps {
   return {
     store,
     runtime,
+    offered: PROVIDERS,
     ensureCredentials: async (agentId) => {
       if (runtime.credentials.get(agentId)?.endpoint === endpoint) return false;
       minted.push(agentId);
@@ -336,6 +338,7 @@ describe('planReconcile', () => {
       observations: new Map([['agent-1', emptyObservation()]]),
       credentialsChanged: new Set(),
       nowMs: 0,
+      offered: PROVIDERS,
     });
     expect(actions).toEqual([expect.objectContaining({ kind: 'hold', agentId: 'agent-1' })]);
   });
@@ -359,7 +362,19 @@ describe('planReconcile', () => {
       ]),
       credentialsChanged: new Set(),
       nowMs: 0,
+      offered: PROVIDERS,
     });
     expect(actions).toEqual([expect.objectContaining({ kind: 'start', restart: true })]);
+  });
+});
+
+describe('the providers offered', () => {
+  it('refuses an agent of a provider this controller does not offer, as box mode does', () => {
+    const pi = agent({}, { provider: 'pi' });
+    expect(definitionProblem(pi, PROVIDERS)).toBeNull();
+    expect(definitionProblem(pi, BOX_PROVIDERS)).toBe(
+      "This controller does not run the provider 'pi'."
+    );
+    expect(definitionProblem(agent(), BOX_PROVIDERS)).toBeNull();
   });
 });

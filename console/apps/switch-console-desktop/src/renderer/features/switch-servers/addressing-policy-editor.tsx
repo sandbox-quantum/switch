@@ -1,15 +1,15 @@
-import { Trash2, X } from 'lucide-react';
-import { useState } from 'react';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
-import { Input } from '@renderer/lib/ui/input';
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
+} from '@switch-console/chat-ui/primitives/select';
+import { Trash2, X } from 'lucide-react';
+import { useState } from 'react';
 import type {
   AddressingDimension,
   AddressingPolicy,

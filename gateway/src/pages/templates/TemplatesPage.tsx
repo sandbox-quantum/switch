@@ -1,64 +1,62 @@
-import CloseOutlined from "@mui/icons-material/CloseOutlined";
-import ContentCopyOutlined from "@mui/icons-material/ContentCopyOutlined";
-import DeleteOutline from "@mui/icons-material/DeleteOutline";
-import EditOutlined from "@mui/icons-material/EditOutlined";
-import PersonOutline from "@mui/icons-material/PersonOutline";
-import SearchOutlined from "@mui/icons-material/SearchOutlined";
+import "@switch-console/chat-ui/theme.css";
+import { ServerPage } from "@switch-console/chat-ui/components/server-page";
+import { SHARED_UI_CLASS } from "@switch-console/chat-ui/model/scope";
+import { TemplateCard } from "@switch-console/chat-ui/components/template-card";
 import {
-  Alert,
-  Box,
-  Button,
-  CircularProgress,
-  IconButton,
-  InputAdornment,
-  Link,
-  Stack,
-  Tab,
-  Tabs,
-  TextField,
-  ToggleButton,
-  ToggleButtonGroup,
-  Typography,
-} from "@mui/material";
+  CreateTemplateMenu,
+  TemplateFilters,
+  TemplateResults,
+  TemplateScopeTabs,
+} from "@switch-console/chat-ui/components/template-catalogue";
+import {
+  type TemplateKind,
+  type TemplateScope,
+  matchesFilter,
+  scopeCounts,
+  toggleKind,
+} from "@switch-console/chat-ui/model/template-filters";
+import { Alert, AlertAction, AlertDescription } from "@switch-console/chat-ui/primitives/alert";
+import { Button } from "@switch-console/chat-ui/primitives/button";
+import { DropdownMenuItem, DropdownMenuSeparator } from "@switch-console/chat-ui/primitives/dropdown-menu";
+import { SearchInput } from "@switch-console/chat-ui/primitives/search-input";
+import { Code, Copy, Pencil, Play, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useNavigate } from "react-router";
 import ConfirmDialog from "../../components/ConfirmDialog";
-import PageHeader from "../../components/PageHeader";
-import type { RowAction } from "../../components/RowActionsMenu";
-import { SCREEN_READER_ONLY } from "../../components/screenReaderOnly";
 import { useAuth } from "../../data/AuthContext";
 import { type TemplateSummary, deleteTemplate } from "../../data/api";
 import { AGENT_MANAGEMENT, SWITCH_BUDDY } from "../../data/featureFlags";
 import { useTemplates } from "../../data/hooks";
 import CreateTemplateDialog, { type TemplateDraft } from "../resources/CreateTemplateDialog";
-import CreateTemplateMenu, { type CreateWay } from "./CreateTemplateMenu";
 import { duplicateDraft } from "./duplicate";
-import OpenInConsoleDialog, { UseInConsoleDialog } from "./OpenInConsoleDialog";
-import TemplateCard from "./TemplateCard";
-import {
-  NO_FILTER,
-  TEMPLATE_SCOPES,
-  TYPE_FILTERS,
-  type TemplateFilter,
-  type TemplateScope,
-  type TypeFilter,
-  librarySections,
-  narrowed,
-  scopeCounts,
-  typeCounts,
-} from "./templateFilters";
+import OpenInConsoleDialog from "./OpenInConsoleDialog";
+import TemplateRunDialog from "./TemplateRunDialog";
 import {
   type TemplateAction,
   consoleBuddyLink,
-  consoleRunLink,
   consoleTemplatesLink,
+  ownerLabel,
   templateMenu,
 } from "./templateRows";
 
+type CreateWay = "agent" | "console" | "yaml";
+
+/** The ways to create a template: the first two hand over to Switch Console;
+ * writing the YAML here is for someone on the web without it. */
+const WAYS: Record<CreateWay, { label: string; detail: string; icon: ReactNode }> = {
+  agent: {
+    label: "Create with your personal agent",
+    detail: "Opens a chat with your agent",
+    icon: <Sparkles className="size-4" />,
+  },
+  console: { label: "Create in Console", detail: "Fill in the template form", icon: <SlidersHorizontal className="size-4" /> },
+  yaml: { label: "Write the YAML here", detail: "Paste it in or load a file", icon: <Code className="size-4" /> },
+};
+
 const ACTION_LABELS: Record<TemplateAction, { label: string; icon: ReactNode }> = {
-  edit: { label: "Edit template", icon: <EditOutlined fontSize="small" /> },
-  duplicate: { label: "Duplicate as my own", icon: <ContentCopyOutlined fontSize="small" /> },
-  delete: { label: "Delete template", icon: <DeleteOutline fontSize="small" /> },
+  edit: { label: "Edit template", icon: <Pencil className="size-4" /> },
+  duplicate: { label: "Duplicate as my own", icon: <Copy className="size-4" /> },
+  delete: { label: "Delete template…", icon: <Trash2 className="size-4" /> },
 };
 
 /** What the two hand-offs to Switch Console say before they open it. */
@@ -82,43 +80,69 @@ type Dialog =
   | { kind: "use"; template: TemplateSummary }
   | { kind: "delete"; template: TemplateSummary };
 
-/** A label with its count beside it, muted, as the tabs and chips show it. */
-function Counted({ label, count }: { label: string; count: number }) {
+/** A template as the shared catalogue reads it. */
+function catalogued(template: TemplateSummary) {
+  return {
+    name: template.name,
+    kind: template.kind,
+    official: template.official,
+    ownerId: template.owner_id,
+    creator: ownerLabel(template),
+    description: template.description,
+  };
+}
+
+/** A menu item, greyed with why when `disabledReason` says so. */
+function MenuAction({
+  icon,
+  label,
+  disabledReason,
+  destructive,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  disabledReason: string | null;
+  destructive: boolean;
+  onClick: () => void;
+}) {
   return (
-    <span>
-      {label}{" "}
-      <Box component="span" sx={{ ml: 0.25, color: "text.secondary", fontVariantNumeric: "tabular-nums" }}>
-        {count}
-      </Box>
-    </span>
+    <DropdownMenuItem
+      variant={destructive ? "destructive" : "default"}
+      disabled={disabledReason !== null}
+      onClick={onClick}
+    >
+      {icon}
+      <span className="flex flex-col">
+        {label}
+        {disabledReason && <span className="text-xs text-foreground-muted">{disabledReason}</span>}
+      </span>
+    </DropdownMenuItem>
   );
 }
 
 /**
- * Templates: a library of cards, the workspace's own first and then the
- * ones that come with Switch, most used first. Tabs pick whose, chips the
- * kind, and a search and Only mine narrow both; every count says what you
- * would get by picking it. A card opens its template; Use hands it to Switch
- * Console, and the "…" follows what the server says the viewer may do.
+ * Templates, as Switch Console shows them: tabs pick whose, a search and the
+ * kind chips narrow the cards, and every tab says how many it holds. A card
+ * opens its template; its menu uses, edits, duplicates or deletes it, as the
+ * server says the viewer may.
  */
 export default function TemplatesPage() {
   const navigate = useNavigate();
   const { user, session, capabilities } = useAuth();
   const workspace = session?.tenant ?? null;
   const { data, loading, error, refetch } = useTemplates();
-  const [scope, setScope] = useState<TemplateScope>(NO_FILTER.scope);
-  const [type, setType] = useState<TypeFilter>(NO_FILTER.type);
-  const [query, setQuery] = useState(NO_FILTER.query);
-  const [onlyMine, setOnlyMine] = useState(NO_FILTER.onlyMine);
+  const [scope, setScope] = useState<TemplateScope>("all");
+  const [kinds, setKinds] = useState<readonly TemplateKind[]>([]);
+  const [query, setQuery] = useState("");
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
 
+  const meId = user?.id ?? null;
   const templates = data ?? [];
-  const filter: TemplateFilter = { scope, type, query, onlyMine, viewerId: user?.id ?? null };
-  const scopes = scopeCounts(templates, filter);
-  const types = typeCounts(templates, filter);
-  const sections = librarySections(templates, filter);
-  const shown = sections.reduce((n, s) => n + s.items.length, 0);
+  const counts = scopeCounts(templates.map(catalogued), meId);
+  const shown = templates.filter((t) => matchesFilter(catalogued(t), { scope, kinds, query, meId }));
+  const filtering = query.trim().length > 0 || kinds.length > 0;
 
   // switch-buddy is served only with both flags on; without it there is no
   // personal agent to ask.
@@ -127,13 +151,6 @@ export default function TemplatesPage() {
     "console",
     "yaml",
   ];
-
-  const clearFilters = () => {
-    setScope(NO_FILTER.scope);
-    setType(NO_FILTER.type);
-    setQuery(NO_FILTER.query);
-    setOnlyMine(NO_FILTER.onlyMine);
-  };
 
   const open = (template: TemplateSummary) => navigate(`/templates/${encodeURIComponent(template.id)}`);
 
@@ -147,218 +164,118 @@ export default function TemplatesPage() {
     }
   };
 
-  const actionsFor = (template: TemplateSummary): RowAction[] =>
-    templateMenu(template).map(({ action, disabledReason }) => ({
-      ...ACTION_LABELS[action],
-      destructive: action === "delete",
-      disabledReason,
-      onClick: () => {
-        if (action === "edit") open(template);
-        else if (action === "duplicate") void duplicate(template);
-        else setDialog({ kind: "delete", template });
-      },
-    }));
-
-  const clearable = templates.length > 0 && narrowed(filter);
-  const emptyLine =
-    templates.length === 0
-      ? `There are no templates on ${workspace?.name ?? "this workspace"} yet.`
-      : clearable
-        ? "No templates match these filters."
-        : scope === "workspace"
-          ? "No workspace templates yet. Create one, or duplicate an official one to make it your own."
-          : "No templates here yet.";
-
-  return (
-    <Box>
-      <PageHeader
-        sx={{ mb: 2 }}
-        title={<Typography variant="h5">Templates</Typography>}
-        description={
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, maxWidth: 680 }}>
-            Templates create agents and rooms on this workspace. Pick one, fill in what it asks, and everything it
-            describes is created in one go, or nothing is.
-          </Typography>
-        }
-        actions={
-          <CreateTemplateMenu
-            ways={ways}
-            onChoose={(way) =>
-              setDialog(way === "yaml" ? { kind: "create", draft: null } : { kind: "console", way })
-            }
-          />
-        }
+  const actionsFor = (template: TemplateSummary) => (
+    <>
+      <MenuAction
+        icon={<Play className="size-4" />}
+        label="Use template"
+        disabledReason={template.run_blocked_reason}
+        destructive={false}
+        onClick={() => setDialog({ kind: "use", template })}
       />
-
-      <Tabs
-        value={scope}
-        onChange={(_event, next: TemplateScope) => setScope(next)}
-        aria-label="Official or workspace templates"
-        sx={{ mb: 2.5, borderBottom: 1, borderColor: "divider" }}
-      >
-        {TEMPLATE_SCOPES.map((s) => (
-          <Tab key={s.value} value={s.value} label={<Counted label={s.label} count={scopes[s.value]} />} />
-        ))}
-      </Tabs>
-
-      <Stack direction="row" spacing={1.5} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap", mb: 3 }}>
-        {/* Plain text rather than `type="search"`, whose own clear glyph
-            would sit beside this one. */}
-        <TextField
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search templates"
-          fullWidth={false}
-          sx={{ width: { xs: "100%", sm: 320 } }}
-          slotProps={{
-            htmlInput: { "aria-label": "Search templates" },
-            input: {
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchOutlined fontSize="small" />
-                </InputAdornment>
-              ),
-              endAdornment: query ? (
-                <InputAdornment position="end">
-                  <IconButton size="small" edge="end" aria-label="Clear search" onClick={() => setQuery("")}>
-                    <CloseOutlined fontSize="small" />
-                  </IconButton>
-                </InputAdornment>
-              ) : undefined,
-            },
+      <DropdownMenuSeparator />
+      {templateMenu(template).map(({ action, disabledReason }) => (
+        <MenuAction
+          key={action}
+          {...ACTION_LABELS[action]}
+          disabledReason={disabledReason}
+          destructive={action === "delete"}
+          onClick={() => {
+            if (action === "edit") open(template);
+            else if (action === "duplicate") void duplicate(template);
+            else setDialog({ kind: "delete", template });
           }}
         />
-        <ToggleButtonGroup
-          size="small"
-          exclusive
-          value={type}
-          onChange={(_event, next: TypeFilter | null) => {
-            if (next) setType(next);
-          }}
-          aria-label="Filter by template type"
-        >
-          {TYPE_FILTERS.map((t) => (
-            <ToggleButton key={t.value} value={t.value} sx={{ px: 1.5 }}>
-              <Counted label={t.label} count={types[t.value]} />
-            </ToggleButton>
+      ))}
+    </>
+  );
+
+  return (
+    <div className={`${SHARED_UI_CLASS} flex min-h-0 flex-1 flex-col`}>
+    <ServerPage
+      width={1000}
+      title="Templates"
+      term="template"
+      description="Templates create agents and rooms on this workspace. Pick one, fill in what it asks, and everything it describes is created in one go, or nothing is."
+      action={
+        <CreateTemplateMenu>
+          {ways.map((way) => (
+            <DropdownMenuItem
+              key={way}
+              onClick={() => setDialog(way === "yaml" ? { kind: "create", draft: null } : { kind: "console", way })}
+            >
+              {WAYS[way].icon}
+              <span className="flex flex-col">
+                {WAYS[way].label}
+                <span className="text-xs text-foreground-muted">{WAYS[way].detail}</span>
+              </span>
+            </DropdownMenuItem>
           ))}
-        </ToggleButtonGroup>
-        {/* Templates you made yourself; the official ones have no owner, so
-            they drop out while it is on. */}
-        <ToggleButton
-          size="small"
-          value="mine"
-          selected={onlyMine}
-          onChange={() => setOnlyMine((on) => !on)}
-          sx={{ ml: { sm: "auto" }, px: 1.5, gap: 0.75 }}
-        >
-          <PersonOutline fontSize="small" />
-          Only mine
-        </ToggleButton>
-      </Stack>
+        </CreateTemplateMenu>
+      }
+    >
+      <div className="space-y-6">
+        {copyError && (
+          <Alert variant="destructive">
+            <AlertDescription>{copyError}</AlertDescription>
+            <AlertAction>
+              <Button variant="ghost" size="icon-xs" aria-label="Dismiss" onClick={() => setCopyError(null)}>
+                <X className="size-3.5" />
+              </Button>
+            </AlertAction>
+          </Alert>
+        )}
+        {error && data !== null && (
+          // A refresh that failed after an action: what is on screen stays,
+          // since it was right a moment ago, with why it could not be updated.
+          <Alert variant="destructive">
+            <AlertDescription>Could not refresh templates: {error}</AlertDescription>
+          </Alert>
+        )}
 
-      {copyError && (
-        <Alert severity="error" onClose={() => setCopyError(null)} sx={{ mb: 2 }}>
-          {copyError}
-        </Alert>
-      )}
-      {error && data !== null && (
-        // A refresh that failed after an action: what is on screen stays,
-        // since it was right a moment ago, with why it could not be updated.
-        <Alert severity="error" sx={{ mb: 2 }}>
-          Could not refresh templates: {error}
-        </Alert>
-      )}
+        <TemplateScopeTabs value={scope} onChange={setScope} counts={counts} showYours={meId !== null} />
 
-      {error && data === null ? (
-        // In place of the library: an empty one would read as a workspace
-        // with no templates.
-        <Alert severity="error">Could not load templates: {error}</Alert>
-      ) : loading && data === null ? (
-        <CircularProgress />
-      ) : (
-        <>
-          {/* Announced as the filters change the list, since the change
-              happens away from the control being used. */}
-          <Box role="status" aria-live="polite" sx={SCREEN_READER_ONLY}>
-            {`${shown} ${shown === 1 ? "template" : "templates"} shown`}
-          </Box>
-          {sections.length === 0 ? (
-            <Stack spacing={1.5} sx={{ alignItems: "flex-start", py: 5 }}>
-              <Typography variant="body2" color="text.secondary">
-                {emptyLine}
-              </Typography>
-              {clearable && (
-                <Button variant="outlined" onClick={clearFilters}>
-                  Clear filters
-                </Button>
-              )}
-            </Stack>
-          ) : (
-            <Stack spacing={4}>
-              {sections.map((section) => (
-                <Box component="section" key={section.id} aria-labelledby={`templates-${section.id}`}>
-                  <Stack direction="row" spacing={1} useFlexGap sx={{ alignItems: "center", mb: 1.5 }}>
-                    <Typography
-                      id={`templates-${section.id}`}
-                      variant="overline"
-                      component="h2"
-                      sx={{ color: "text.secondary", lineHeight: 1.5 }}
-                    >
-                      {section.label}
-                    </Typography>
-                    <Box
-                      component="span"
-                      sx={{
-                        px: 0.75,
-                        borderRadius: "6px",
-                        backgroundColor: "var(--sw-muted)",
-                        color: "text.secondary",
-                        fontSize: "0.75rem",
-                        fontWeight: 500,
-                        fontVariantNumeric: "tabular-nums",
-                      }}
-                    >
-                      {section.total}
-                    </Box>
-                    {section.preview && (
-                      <Link
-                        component="button"
-                        variant="body2"
-                        onClick={() => setScope("official")}
-                        sx={{ ml: "auto" }}
-                      >
-                        See all {section.total}
-                      </Link>
-                    )}
-                  </Stack>
-                  <Box
-                    sx={{
-                      display: "grid",
-                      gap: 2,
-                      gridTemplateColumns: {
-                        xs: "minmax(0, 1fr)",
-                        md: "repeat(2, minmax(0, 1fr))",
-                        lg: "repeat(3, minmax(0, 1fr))",
-                      },
-                    }}
-                  >
-                    {section.items.map((template) => (
-                      <TemplateCard
-                        key={template.id}
-                        template={template}
-                        actions={actionsFor(template)}
-                        onOpen={() => open(template)}
-                        onUse={() => setDialog({ kind: "use", template })}
-                      />
-                    ))}
-                  </Box>
-                </Box>
-              ))}
-            </Stack>
+        <TemplateFilters
+          search={
+            <SearchInput
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search templates"
+              aria-label="Search templates by name, description and author"
+              containerClassName="w-full"
+              className="h-9"
+            />
+          }
+          kinds={kinds}
+          onToggleKind={(kind) => setKinds((current) => toggleKind(current, kind))}
+        />
+
+        {/* Announced as the filters change the list, since the change
+            happens away from the control being used. */}
+        <div role="status" aria-live="polite" className="sr-only">
+          {data !== null && `${shown.length} ${shown.length === 1 ? "template" : "templates"} shown`}
+        </div>
+
+        <TemplateResults
+          loading={loading && data === null}
+          // In place of the library: an empty one would read as a workspace
+          // with no templates.
+          error={error && data === null ? `Could not load templates: ${error}` : null}
+          onRetry={() => void refetch()}
+          recent={[]}
+          shown={shown}
+          filtering={filtering}
+          scope={scope}
+          card={(template) => (
+            <TemplateCard
+              key={template.id}
+              template={catalogued(template)}
+              onOpen={() => open(template)}
+              actions={actionsFor(template)}
+            />
           )}
-        </>
-      )}
+        />
+      </div>
 
       {dialog?.kind === "create" && (
         <CreateTemplateDialog
@@ -386,10 +303,10 @@ export default function TemplatesPage() {
           onClose={() => setDialog(null)}
         />
       )}
-      {dialog?.kind === "use" && workspace && (
-        <UseInConsoleDialog
+      {dialog?.kind === "use" && (
+        <TemplateRunDialog
+          templateId={dialog.template.id}
           templateName={dialog.template.name}
-          link={consoleRunLink(dialog.template.id, workspace.id, window.location.origin)}
           onClose={() => setDialog(null)}
         />
       )}
@@ -407,6 +324,7 @@ export default function TemplatesPage() {
           onClose={() => setDialog(null)}
         />
       )}
-    </Box>
+    </ServerPage>
+    </div>
   );
 }

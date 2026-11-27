@@ -9,7 +9,7 @@
   "object": {
     "apiVersion": "v1",
     "data": {
-      "0000000f-0000-4000-8000-00000000000f": "YWdlbnRzLWJveC1rMS1mZmZmZmZmZmZmZmZmZmZm"
+      "00000001-0000-4000-8000-000000000001": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDIx"
     },
     "kind": "Secret",
     "metadata": {
@@ -30,7 +30,7 @@
     "body": {
       "apiVersion": "v1",
       "data": {
-        "0000000f-0000-4000-8000-00000000000f": "YWdlbnRzLWJveC1rMS1mZmZmZmZmZmZmZmZmZmZm"
+        "00000001-0000-4000-8000-000000000001": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDIx"
       },
       "kind": "Secret",
       "metadata": {

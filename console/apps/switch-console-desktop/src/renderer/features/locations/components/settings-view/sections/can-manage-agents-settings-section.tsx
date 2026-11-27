@@ -1,9 +1,8 @@
+import { CanManageAgentsSetting } from '@switch-console/chat-ui/components/agent-permissions';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { Switch } from '@renderer/lib/ui/switch';
 import { log } from '@renderer/utils/logger';
-import { SettingRow } from './setting-row';
 
 /**
  * Per-Switch-agent "can manage agents" capability: with it on, the agent may
@@ -70,28 +69,17 @@ export function CanManageAgentsRow({
   if (!access?.available) return null;
 
   return (
-    <SettingRow
-      title={agentName ? `${agentName}: can manage agents` : 'Can manage agents'}
-      info={{
-        label: 'More info about managing agents',
-        content:
-          'The agent can see your machines and managed agents, and create new agents that run on your machines and belong to you. Agents it creates do not get this permission.',
-      }}
-      description="Let this agent create agents on your machines."
-      control={
-        <Switch
-          aria-label="Can manage agents"
-          checked={access.canManageAgents}
-          disabled={mutation.isPending}
-          onCheckedChange={(checked) => mutation.mutate(checked)}
-        />
+    <CanManageAgentsSetting
+      agentName={agentName}
+      machineWord="machine"
+      checked={access.canManageAgents}
+      disabled={mutation.isPending}
+      onChange={(checked) => mutation.mutate(checked)}
+      error={
+        mutation.error
+          ? failureText(mutation.error, 'Could not change whether this agent can manage agents.')
+          : null
       }
-    >
-      {mutation.error && (
-        <span className="text-xs text-destructive">
-          {failureText(mutation.error, 'Could not change whether this agent can manage agents.')}
-        </span>
-      )}
-    </SettingRow>
+    />
   );
 }

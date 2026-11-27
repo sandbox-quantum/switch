@@ -41,8 +41,8 @@ vi.mock('@renderer/lib/ipc', () => ({
 }));
 vi.mock('@renderer/lib/hooks/use-toast', () => ({ useToast: () => ({ toast }) }));
 
+import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 import { TeamsPlacementModal } from '@renderer/features/switch-servers/TeamsPlacementModal';
-import { Dialog } from '@renderer/lib/ui/dialog';
 import type { TeamsTeam } from '@shared/core/switch-servers/switch-servers';
 
 const onSuccess = vi.fn();

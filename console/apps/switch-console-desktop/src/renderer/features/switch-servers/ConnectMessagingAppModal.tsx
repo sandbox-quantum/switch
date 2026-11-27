@@ -1,7 +1,11 @@
+import {
+  type ConnectedMessagingApp,
+  ConnectMessagingAppDialog,
+  type ConnectMessagingAppHost,
+} from '@switch-console/chat-ui/components/connect-messaging-app';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useCallback } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel, bridgeSetupDocsUrl } from '@renderer/lib/components/bridge-platform';
@@ -10,44 +14,13 @@ import { useOnUnmount } from '@renderer/lib/hooks/use-on-unmount';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Button } from '@renderer/lib/ui/button';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import {
-  DialogContentArea,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
-import { Field, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/lib/ui/select';
-import { cn } from '@renderer/utils/utils';
+import { log } from '@renderer/utils/logger';
 import type { CreateBridgeResult } from '@shared/core/switch-servers/switch-servers';
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
-import {
-  connectFormFields,
-  isMissingRequired,
-  missingFieldsMessage,
-  unreachableFromInternet,
-} from './connect-form-fields';
-import { ConnectChatPanel } from './ConnectChatPanel';
-import { InstallMessagingAppPanel } from './InstallMessagingAppPanel';
+import { CONSOLE_MESSAGING_APP_WORDS, unreachableFromInternet } from './connect-form-fields';
 import { offerAccountLinkAfterConnect } from './offer-account-link';
-import {
-  GUIDE_ASKED_FIELDS,
-  GUIDE_FILLED_FIELDS,
-  GUIDE_REQUIRED_FIELDS,
-  isGuidedPlatform,
-  OwnAppGuide,
-} from './own-app-guide';
+import { OwnAppGuide } from './own-app-guide';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { WebhookAddressStep } from './webhook-address-step';
@@ -64,18 +37,9 @@ type ConnectMessagingAppModalArgs = {
   onClosed: () => void;
 };
 
-/** The app just connected. `directorySearchSupported` says whether there is
- * any point offering the link-your-account step the dialog ends with: on a
- * platform without a directory, a connection nobody has used yet knows nobody,
- * so the search would be a form that cannot be filled in. */
-type ConnectedApp = {
-  bridgeId: string;
-  displayName: string;
-  directorySearchSupported: boolean;
-};
+type Props = BaseModalProps<ConnectedMessagingApp> & ConnectMessagingAppModalArgs;
 
-type Props = BaseModalProps<ConnectedApp> & ConnectMessagingAppModalArgs;
-
+/** The shared Connect a messaging app dialog, reaching the server through Console's stores and IPC. */
 export const ConnectMessagingAppModal = observer(function ConnectMessagingAppModal({
   serverId: overrideServerId,
   platform,
@@ -85,37 +49,11 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 }: Props) {
   useOnUnmount(onClosed);
   const { setCloseGuard } = useModalContext();
-  // Ties each label to its input, so a screen reader names the field.
-  const idPrefix = useId();
-  const inputId = (key: string) => `${idPrefix}-${key}`;
 
   const serverId = overrideServerId ?? switchServersStore.activeServerId ?? '';
   const workspaceId = workspacesStore.idOnServerInScope(serverId || null);
   const server = switchServersStore.servers.find((s) => s.id === serverId) ?? null;
   const isAdmin = administersWorkspaceInScope(serverId);
-
-  const [typeKey, setTypeKey] = useState<string | null>(null);
-  const [displayName, setDisplayName] = useState('');
-  // Credential values. Renderer-local and never persisted: this state dies with
-  // the modal, and the only thing that reads it is the submit call.
-  // Typed by the schema, not all strings: a boolean field posts a real boolean,
-  // since the server rejects an empty string as one.
-  const [config, setConfig] = useState<Record<string, string | boolean>>({});
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [setAsDefault, setSetAsDefault] = useState(false);
-  // Defaults on: most platforms can create channels, and the server rejects
-  // this staying true for one that can't rather than us guessing wrong.
-  const [channelCreationEnabled, setChannelCreationEnabled] = useState(true);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  // Set once a webhook platform is connected: the dialog stays open on its
-  // address instead of closing, since the platform needs it before anything
-  // arrives.
-  const [awaitingWebhookSetup, setAwaitingWebhookSetup] = useState<{
-    app: ConnectedApp;
-    platform: string;
-    webhookUrl: string | null;
-  } | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const queryClient = useQueryClient();
   // Every way of adding an app ends here, whoever opened the dialog: the
@@ -123,7 +61,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
   // room-creation picker and the link step share the query key), and the
   // person is offered to link their own account on the new app.
   const finish = useCallback(
-    (app: ConnectedApp) => {
+    (app: ConnectedMessagingApp) => {
       void queryClient.invalidateQueries({ queryKey: ['remote-bridges', workspaceId] });
       void switchRoomsStore.refreshRoomState();
       onSuccess(app);
@@ -145,547 +83,61 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     queryFn: () => rpc.workspaces.listMessagingApps(workspaceId as string),
     enabled: workspaceId !== null && isAdmin,
   });
-  const installable = (installableQuery.data?.installable ?? []).filter(
-    (p) => platform === undefined || p === platform
-  );
-  const claimable = (installableQuery.data?.claimable ?? []).filter(
-    (c) => c.canAddChat && (platform === undefined || c.platform === platform)
-  );
-  const [useOwnApp, setUseOwnApp] = useState(false);
-  // The platform whose link and code are on screen. From then on the dialog is
-  // about that one chat: the other apps are a different errand, and for a
-  // workspace that already has the connection, closing is how it ends.
-  const [claimingPlatform, setClaimingPlatform] = useState<string | null>(null);
-  const offerInstall = (installable.length > 0 || claimable.length > 0) && !useOwnApp;
-  const showForm = !offerInstall && !(isAdmin && installableQuery.isLoading);
 
-  const types = useMemo(() => typesQuery.data ?? [], [typesQuery.data]);
-  const selectedType = types.find((t) => t.key === typeKey) ?? null;
-  // What the guide works out itself (the Slack workspace, the Discord server)
-  // is filled in for the person, not asked of them.
-  // The guide asks for its tokens as required, whatever the schema says (a
-  // token a shared app leaves optional is not, on a server's own app).
-  const formFields = connectFormFields(
-    selectedType?.key ?? '',
-    selectedType?.fields ?? [],
-    isGuidedPlatform(selectedType?.key) ? GUIDE_REQUIRED_FIELDS[selectedType.key] : []
-  );
-  // What the guide asks for itself (the tokens, each in its own step) is not
-  // asked for again below it.
-  const guideFields = isGuidedPlatform(selectedType?.key)
-    ? [...GUIDE_FILLED_FIELDS[selectedType.key], ...GUIDE_ASKED_FIELDS[selectedType.key]]
-    : [];
-  const visibleFields = formFields.filter((field) => !guideFields.includes(field.key));
-  const setGuideField = useCallback((key: string, value: string | null) => {
-    setConfig((prev) => {
-      if ((prev[key] ?? null) === value) return prev;
-      const next = { ...prev };
-      if (value === null) delete next[key];
-      else next[key] = value;
-      return next;
-    });
-  }, []);
-  // A token typed into the guide is the person editing the form, as in any
-  // other field: the last error no longer applies.
-  const setGuideInput = useCallback(
-    (key: string, value: string | null) => {
-      setGuideField(key, value);
-      setError(null);
+  const ws = workspaceId as string;
+  const host: ConnectMessagingAppHost = {
+    scope: workspaceId ?? '',
+    words: CONSOLE_MESSAGING_APP_WORDS,
+    serverName: server?.name ?? null,
+    hasWorkspace: workspaceId !== null,
+    isAdmin,
+    blocker: !server
+      ? 'No Switch server is selected. Choose a server in the sidebar first.'
+      : !isAdmin
+        ? 'Connecting a messaging app requires an admin of this workspace. You are a member without admin rights, so the server would reject this.'
+        : null,
+    types: typesQuery,
+    offers: installableQuery,
+    teamsUnreachable: server !== null && unreachableFromInternet(server),
+    platformLabel: bridgePlatformLabel,
+    docsUrl: bridgeSetupDocsUrl,
+    icons: { BridgeIcon, hasBridgeIcon },
+    openExternal: openExternalUrl,
+    // Console hands the page to the system browser once its address is known.
+    openWhenReady: (failureTitle) => ({
+      open: (url) => openExternalUrl(url, failureTitle),
+      cancel: () => {},
+    }),
+    describeError: failureText,
+    listBridges: () => rpc.workspaces.listBridges(ws),
+    beginInstall: (platform) =>
+      rpc.workspaces.beginMessagingAppInstall({ workspaceId: ws, platform }),
+    appInstalled: (bridgeId) =>
+      void rpc.workspaces
+        .messagingAppInstalled({ workspaceId: ws, bridgeId })
+        .catch((cause: unknown) =>
+          log.warn('Could not report a messaging app install', { error: String(cause) })
+        ),
+    beginChatClaim: (platform) => rpc.workspaces.beginChatClaim({ workspaceId: ws, platform }),
+    createBridge: async (app) => {
+      const result = await rpc.workspaces.createBridge({ workspaceId: ws, ...app });
+      return result.kind === 'created'
+        ? { kind: 'created', bridge: result.bridge }
+        : { kind: 'refused', message: messageFor(result) };
     },
-    [setGuideField]
-  );
-  // Unknown until the type list has loaded; assume supported so the checkbox
-  // isn't forced off while that request is in flight.
-  const channelCreationSupported = selectedType?.channelCreationSupported ?? true;
-
-  const handleTypeChange = useCallback(
-    (next: string | null) => {
-      // Switching platform drops whatever was typed for the previous one — those
-      // fields do not exist on the new type, and carrying a stale token forward
-      // would silently submit a credential the user thinks they replaced. The
-      // new type's defaults are seeded, so a field left untouched posts what the
-      // platform expects rather than nothing.
-      const prevLabel = typeKey ? bridgePlatformLabel(typeKey) : null;
-      const nextLabel = next ? bridgePlatformLabel(next) : '';
-      if (!displayName.trim() || displayName === prevLabel) {
-        setDisplayName(nextLabel);
-      }
-      setTypeKey(next);
-      const fields = types.find((t) => t.key === next)?.fields ?? [];
-      const defaults: Record<string, string | boolean> = {};
-      for (const field of fields) {
-        if (field.default !== null) defaults[field.key] = field.default;
-      }
-      setConfig(defaults);
-      setChannelCreationEnabled(true);
-      setError(null);
-    },
-    [types, typeKey, displayName]
-  );
-
-  useEffect(() => {
-    if (platform !== undefined && typeKey === null && types.some((t) => t.key === platform))
-      handleTypeChange(platform);
-  }, [platform, typeKey, types, handleTypeChange]);
-
-  const trimmedName = displayName.trim();
-  const missingRequired = formFields.some((field) => isMissingRequired(field, config));
-  // Only what the person can type is named, the tokens the guide asks for
-  // included: a field the guide fills in itself is reported by the guide.
-  const missingMessage = missingFieldsMessage(
-    formFields.filter(
-      (field) =>
-        !isGuidedPlatform(selectedType?.key) ||
-        !GUIDE_FILLED_FIELDS[selectedType.key].includes(field.key)
-    ),
-    config
-  );
-  const canSubmit =
-    showForm &&
-    workspaceId !== null &&
-    isAdmin &&
-    !!selectedType &&
-    !!trimmedName &&
-    !missingRequired &&
-    !isSubmitting;
-
-  const handleSubmit = useCallback(async () => {
-    if (!canSubmit || !selectedType) return;
-    setIsSubmitting(true);
-    setCloseGuard(true);
-    setError(null);
-
-    try {
-      // Send only the fields this type declares, trimmed. A value left over in
-      // state from a field that is no longer rendered must not ride along.
-      const connectionConfig: Record<string, string | boolean> = {};
-      for (const field of selectedType.fields) {
-        const value = config[field.key];
-        if (typeof value === 'boolean') {
-          connectionConfig[field.key] = value;
-          continue;
-        }
-        const trimmed = (value ?? '').trim();
-        if (trimmed) connectionConfig[field.key] = trimmed;
-      }
-
-      const result = await rpc.workspaces.createBridge({
-        workspaceId: workspaceId as string,
-        bridgeType: selectedType.key,
-        displayName: trimmedName,
-        connectionConfig,
-        setAsDefault,
-        // Forced off for a platform that can't create channels regardless of
-        // the checkbox state — the server rejects `true` there anyway, but
-        // sending what the form actually shows is the honest request.
-        channelCreationEnabled: channelCreationSupported && channelCreationEnabled,
-      });
-
-      if (result.kind !== 'created') {
-        setError(messageFor(result));
-        return;
-      }
-      const app = {
-        bridgeId: result.bridge.id,
-        displayName: result.bridge.displayName,
-        directorySearchSupported: selectedType.directorySearchSupported,
-      };
-      if (result.bridge.receivesWebhooks) {
-        setAwaitingWebhookSetup({
-          app,
-          platform: selectedType.key,
-          webhookUrl: result.bridge.webhookUrl,
-        });
-        return;
-      }
-      finish(app);
-    } catch (cause) {
-      setError(failureText(cause, 'Could not connect the messaging app.'));
-    } finally {
-      setIsSubmitting(false);
-      setCloseGuard(false);
-    }
-  }, [
-    canSubmit,
-    selectedType,
-    workspaceId,
-    trimmedName,
-    config,
-    setAsDefault,
-    channelCreationSupported,
-    channelCreationEnabled,
-    finish,
     setCloseGuard,
-  ]);
-
-  const handleInstalled = useCallback(
-    (platform: string, bridge: { bridgeId: string; displayName: string }) => {
-      finish({
-        ...bridge,
-        // Unknown only if the type list failed to load; offering the link step
-        // then costs a search that finds nothing, where skipping it would hide
-        // a step that works.
-        directorySearchSupported:
-          types.find((t) => t.key === platform)?.directorySearchSupported ?? true,
-      });
-    },
-    [finish, types]
-  );
+    renderOwnAppGuide: (props) => <OwnAppGuide {...props} workspaceId={ws} />,
+    renderWebhookStep: (props) => <WebhookAddressStep {...props} />,
+    ConfirmButton,
+  };
 
   return (
-    <>
-      <DialogHeader showCloseButton={false}>
-        <DialogTitle>
-          {claimingPlatform !== null
-            ? `Add to ${bridgePlatformLabel(claimingPlatform)}`
-            : `Connect a messaging app${server ? ` to ${server.name}` : ''}`}
-        </DialogTitle>
-      </DialogHeader>
-      {awaitingWebhookSetup !== null ? (
-        <>
-          <DialogContentArea className="pt-0">
-            <WebhookAddressStep
-              platform={awaitingWebhookSetup.platform}
-              webhookUrl={awaitingWebhookSetup.webhookUrl}
-            />
-          </DialogContentArea>
-          <DialogFooter>
-            <ConfirmButton onClick={() => finish(awaitingWebhookSetup.app)}>Done</ConfirmButton>
-          </DialogFooter>
-        </>
-      ) : (
-        <>
-          <DialogContentArea className="pt-0">
-            <div className="flex w-full flex-col gap-5">
-              {!server && (
-                <p className="text-xs text-destructive">
-                  No Switch server is selected. Choose a server in the sidebar first.
-                </p>
-              )}
-
-              {server && !isAdmin && (
-                <p className="text-xs text-destructive">
-                  Connecting a messaging app requires an admin of this workspace. You are a member
-                  without admin rights, so the server would reject this.
-                </p>
-              )}
-
-              {installableQuery.isError && (
-                <p className="text-xs text-destructive">
-                  {failureText(
-                    installableQuery.error,
-                    'Could not check which messaging apps this server can add for you, so only connecting your own app is offered.'
-                  )}
-                </p>
-              )}
-
-              {isAdmin && installableQuery.isLoading && (
-                <p className="text-xs text-foreground-muted">Loading…</p>
-              )}
-
-              {offerInstall && workspaceId !== null && (
-                <>
-                  {claimingPlatform === null &&
-                    installable.map((platform) => (
-                      <InstallMessagingAppPanel
-                        key={platform}
-                        workspaceId={workspaceId}
-                        platform={platform}
-                        onInstalled={(bridge) => handleInstalled(platform, bridge)}
-                      />
-                    ))}
-                  {claimable
-                    .filter((c) => claimingPlatform === null || c.platform === claimingPlatform)
-                    .map((c) => (
-                      <ConnectChatPanel
-                        key={c.platform}
-                        workspaceId={workspaceId}
-                        claimable={c}
-                        onShown={() => setClaimingPlatform(c.platform)}
-                        onConnected={(bridge) => handleInstalled(c.platform, bridge)}
-                      />
-                    ))}
-                  {claimingPlatform === null && (
-                    <button
-                      type="button"
-                      className="w-fit text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
-                      onClick={() => setUseOwnApp(true)}
-                    >
-                      Use your own app instead
-                    </button>
-                  )}
-                </>
-              )}
-
-              {showForm && (
-                <Field>
-                  <FieldLabel htmlFor={inputId('platform')}>Messaging app</FieldLabel>
-                  <Select
-                    value={typeKey ?? ''}
-                    onValueChange={(next) => handleTypeChange(next ?? null)}
-                    disabled={typesQuery.isLoading || types.length === 0 || !isAdmin}
-                  >
-                    <SelectTrigger id={inputId('platform')}>
-                      <SelectValue
-                        placeholder={typesQuery.isLoading ? 'Loading…' : 'Choose a platform'}
-                      >
-                        {selectedType ? bridgePlatformLabel(selectedType.key) : undefined}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {types.map((type) => (
-                        <SelectItem key={type.key} value={type.key}>
-                          <span className="flex items-center gap-2">
-                            {hasBridgeIcon(type.key) && (
-                              <BridgeIcon bridgeType={type.key} size={16} />
-                            )}
-                            {bridgePlatformLabel(type.key)}
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {typesQuery.isError && (
-                    <p className="mt-1 text-xs text-destructive">
-                      {failureText(
-                        typesQuery.error,
-                        'Could not load the available messaging apps.'
-                      )}
-                    </p>
-                  )}
-                </Field>
-              )}
-
-              {showForm && selectedType && (
-                <>
-                  {selectedType.key === 'teams' && server && unreachableFromInternet(server) && (
-                    <div
-                      role="note"
-                      className="rounded-md border border-border bg-background-1 px-3 py-2 text-xs text-foreground"
-                    >
-                      Microsoft Teams sends every message to your server’s own address, so it needs
-                      a public HTTPS address that Microsoft can reach. This server runs on your
-                      computer or a private network, so Teams messages would not arrive. Run Switch
-                      somewhere public first; the{' '}
-                      <button
-                        type="button"
-                        className="underline underline-offset-2"
-                        onClick={() =>
-                          void openExternalUrl(
-                            bridgeSetupDocsUrl('teams'),
-                            'Could not open the setup guide'
-                          )
-                        }
-                      >
-                        Teams setup guide
-                      </button>{' '}
-                      explains what it needs.
-                    </div>
-                  )}
-
-                  {selectedType.key === 'telegram' && (
-                    <div
-                      role="note"
-                      className="rounded-md border border-border bg-background-1 px-3 py-2 text-xs text-foreground"
-                    >
-                      <p>
-                        Before you add the bot to a group, turn off its Group Privacy: in BotFather,
-                        send <code>/setprivacy</code>, pick the bot and choose{' '}
-                        <span className="font-medium">Disable</span>. Otherwise it sees only
-                        commands and replies to its own messages. Already in a group? Remove it and
-                        add it back, or make it an admin.
-                      </p>
-                      <p className="mt-1">
-                        Then, in a group with the bot, link your Telegram account first, and bring
-                        agents in with <code>/invite_agent</code> after.
-                      </p>
-                    </div>
-                  )}
-
-                  <Field>
-                    <FieldLabel htmlFor={inputId('display-name')}>Name</FieldLabel>
-                    <Input
-                      id={inputId('display-name')}
-                      placeholder={`e.g. ${bridgePlatformLabel(selectedType.key)}`}
-                      value={displayName}
-                      onChange={(e) => {
-                        setDisplayName(e.target.value);
-                        setError(null);
-                      }}
-                    />
-                    <p className="mt-1 text-xs text-foreground-muted">
-                      How this connection is labelled in Switch Console when you pick it for a room.
-                    </p>
-                  </Field>
-
-                  {isGuidedPlatform(selectedType.key) && workspaceId !== null && (
-                    <OwnAppGuide
-                      platform={selectedType.key}
-                      workspaceId={workspaceId}
-                      config={config}
-                      fields={formFields}
-                      setField={setGuideField}
-                      setInput={setGuideInput}
-                    />
-                  )}
-
-                  {/* The fields below are asked for without explanation — what a
-                  "bot token" is, and where to get one, lives in the platform's
-                  setup guide. Link to it at the point the question arises. The
-                  guided setup carries its own link. */}
-                  {!(isGuidedPlatform(selectedType.key) && workspaceId !== null) && (
-                    <button
-                      type="button"
-                      className="flex w-fit items-center gap-1 text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
-                      onClick={() =>
-                        void openExternalUrl(
-                          bridgeSetupDocsUrl(selectedType.key),
-                          'Could not open the setup guide'
-                        )
-                      }
-                    >
-                      How to set up {bridgePlatformLabel(selectedType.key)}
-                      <ExternalLink className="size-3" />
-                    </button>
-                  )}
-
-                  {visibleFields
-                    .filter((field) => field.kind !== 'boolean')
-                    .map((field, index) => (
-                      <Field key={`${selectedType.key}:${field.key}`}>
-                        <FieldLabel htmlFor={inputId(field.key)}>
-                          {field.label}
-                          {!field.required && (
-                            <span className="ml-1 font-normal text-foreground-muted">
-                              (optional)
-                            </span>
-                          )}
-                        </FieldLabel>
-                        <Input
-                          id={inputId(field.key)}
-                          // The guided setup asks its own questions first; focus stays with it.
-                          autoFocus={
-                            index === 0 &&
-                            !(isGuidedPlatform(selectedType.key) && workspaceId !== null)
-                          }
-                          // Masked for credentials, so a token is not left readable on
-                          // screen while the user checks the rest of the form.
-                          type={field.secret ? 'password' : 'text'}
-                          autoComplete={field.secret ? 'new-password' : 'off'}
-                          spellCheck={false}
-                          value={
-                            typeof config[field.key] === 'string'
-                              ? (config[field.key] as string)
-                              : ''
-                          }
-                          onChange={(e) => {
-                            const { value } = e.target;
-                            setConfig((prev) => ({ ...prev, [field.key]: value }));
-                            setError(null);
-                          }}
-                        />
-                        {field.description && (
-                          <p className="mt-1 text-xs text-foreground-muted">{field.description}</p>
-                        )}
-                      </Field>
-                    ))}
-
-                  <DisclosureRow
-                    open={advancedOpen}
-                    title="Advanced configuration"
-                    onToggle={() => setAdvancedOpen((open) => !open)}
-                  />
-                  {advancedOpen && (
-                    <div className="flex flex-col gap-4">
-                      {visibleFields
-                        .filter((field) => field.kind === 'boolean')
-                        .map((field) => (
-                          <label
-                            key={field.key}
-                            className="group/field flex cursor-pointer items-start gap-2.5"
-                          >
-                            <Checkbox
-                              checked={config[field.key] === true}
-                              onCheckedChange={(checked) => {
-                                setConfig((prev) => ({ ...prev, [field.key]: checked === true }));
-                                setError(null);
-                              }}
-                              className="mt-0.5"
-                            />
-                            <span className="flex flex-col gap-0.5">
-                              <span className="text-sm font-medium">{field.label}</span>
-                              {field.description && (
-                                <span className="text-xs text-foreground-muted">
-                                  {field.description}
-                                </span>
-                              )}
-                            </span>
-                          </label>
-                        ))}
-
-                      <label
-                        className={cn(
-                          'group/field flex items-start gap-2.5',
-                          channelCreationSupported ? 'cursor-pointer' : 'cursor-not-allowed'
-                        )}
-                      >
-                        <Checkbox
-                          checked={channelCreationSupported && channelCreationEnabled}
-                          disabled={!channelCreationSupported}
-                          onCheckedChange={(checked) => setChannelCreationEnabled(checked === true)}
-                          className="mt-0.5"
-                        />
-                        <span className="flex flex-col gap-0.5">
-                          <span className="text-sm font-medium">
-                            Allow creating channels from Switch
-                          </span>
-                          <span className="text-xs text-foreground-muted">
-                            {channelCreationSupported
-                              ? `Allows Switch users and agents to create channels in ${bridgePlatformLabel(selectedType.key)} from Switch. Turn it off to only ever use channels made in the app.`
-                              : `${bridgePlatformLabel(selectedType.key)} has no way to create channels from Switch, so this connection can only be used with channels made in the app.`}
-                          </span>
-                        </span>
-                      </label>
-
-                      <label className="group/field flex cursor-pointer items-start gap-2.5">
-                        <Checkbox
-                          checked={setAsDefault}
-                          onCheckedChange={(checked) => setSetAsDefault(checked === true)}
-                          className="mt-0.5"
-                        />
-                        <span className="flex flex-col gap-0.5">
-                          <span className="text-sm font-medium">Use for new rooms by default</span>
-                          <span className="text-xs text-foreground-muted">
-                            Rooms created without naming a messaging app will land here. Replaces
-                            the server’s current default; existing rooms are unaffected.
-                          </span>
-                        </span>
-                      </label>
-                    </div>
-                  )}
-                </>
-              )}
-
-              {showForm && selectedType && missingMessage && (
-                <p className="text-xs text-foreground-muted">{missingMessage}</p>
-              )}
-
-              {error && <p className="text-xs text-destructive">{error}</p>}
-            </div>
-          </DialogContentArea>
-          <DialogFooter>
-            <Button variant="outline" onClick={onClose} disabled={isSubmitting}>
-              {claimingPlatform !== null ? 'Close' : 'Cancel'}
-            </Button>
-            {showForm && (
-              <ConfirmButton onClick={() => void handleSubmit()} disabled={!canSubmit}>
-                {isSubmitting ? 'Connecting…' : 'Connect'}
-              </ConfirmButton>
-            )}
-          </DialogFooter>
-        </>
-      )}
-    </>
+    <ConnectMessagingAppDialog
+      host={host}
+      platform={platform}
+      onConnected={finish}
+      onClose={onClose}
+    />
   );
 });
 

@@ -1,8 +1,11 @@
 import type { CurrentTenant, Session } from "./api";
 import {
   AGENT_MANAGEMENT,
+  DECISION_ROUTING,
   type FeatureFlagKey,
   type FeatureFlags,
+  GATEWAY_CHATS,
+  GATEWAY_ONBOARDING,
   ORGANIZATION_CONNECTOR_APPS,
   SERVICE_CONNECTIONS,
 } from "./featureFlags";
@@ -115,10 +118,15 @@ function feature(flag: FeatureFlagKey, what: string): Rule {
 
 export const agentManagement = feature(AGENT_MANAGEMENT, "Agent management isn't");
 export const serviceConnections = feature(SERVICE_CONNECTIONS, "Connectors aren't");
+export const gatewayChats = feature(GATEWAY_CHATS, "Chats aren't");
+export const gatewayOnboarding = feature(GATEWAY_ONBOARDING, "Getting started on the web isn't");
 export const organizationConnectorApps = feature(
   ORGANIZATION_CONNECTOR_APPS,
   "Organization connector apps aren't",
 );
+export const decisionRouting = feature(DECISION_ROUTING, "Message routing isn't");
+
+export const messageRoutingManagers = allOf(workspaceAdmins, decisionRouting);
 
 /** Allowed when any rule allows; otherwise the first rule's refusal. */
 export function anyOf(first: Rule, ...rest: Rule[]): Rule {

@@ -75,10 +75,14 @@ _THIRTEENTH_MERGE = "f7c2a5e9d304"
 _AFTER_THIRTEENTH = ("85dfde4a8300",)  # the box operator's live boxes and ceiling
 # Main's three revisions after `e223eae63078` (the audit purge function,
 # `expedite_deletion`, process leases' `booting`), and the fourteenth merge
-# joining them with ours: the head.
+# joining them with ours.
 _MAIN_FOURTEENTH = ("f2c8a4d17e93", "a9d3e6f1c2b7", "a25845a0e7be")
 _FOURTEENTH_MERGE = "4899866041ab"
-_HEAD = _FOURTEENTH_MERGE
+# Main's one revision after `a25845a0e7be` (the team survey and license
+# columns), and the fifteenth merge joining it with ours: the head.
+_MAIN_FIFTEENTH = "df57881f482a"
+_FIFTEENTH_MERGE = "5c50c7ae76dd"
+_HEAD = _FIFTEENTH_MERGE
 _EIGHTH_MAIN_MERGE = "97c1c62e3ca3"
 _MAIN_ARCHIVE_HEAD = "e2c7a94f1b38"
 _SEVENTH_MAIN_MERGE = "0c3b39b59766"
@@ -323,8 +327,16 @@ def _without_main_thirteenth(ran: list[str]) -> list[str]:
     """An upgrade from before the thirteenth merge ends with that merge, and
     runs main's `e223eae63078` once, somewhere after its parent `c18f5ebeef66`
     (when that runs too). Check that, and return the run without the two."""
-    # The fourteenth merge last, and main's three after the thirteenth (in
-    # their order, after their parent `e223eae63078`), then as before.
+    # The fifteenth merge last, and main's one after `a25845a0e7be` once,
+    # somewhere after that parent.
+    assert ran[-1] == _FIFTEENTH_MERGE
+    ran = ran[:-1]
+    assert ran.count(_MAIN_FIFTEENTH) == 1
+    assert ran.index(_MAIN_FIFTEENTH) > ran.index(_MAIN_FOURTEENTH[-1])
+    ran = [r for r in ran if r != _MAIN_FIFTEENTH]
+    # The fourteenth merge last of the rest, and main's three after the
+    # thirteenth (in their order, after their parent `e223eae63078`), then as
+    # before.
     assert ran[-1] == _FOURTEENTH_MERGE
     ran = ran[:-1]
     assert [r for r in ran if r in _MAIN_FOURTEENTH] == list(_MAIN_FOURTEENTH)
@@ -375,12 +387,17 @@ async def _missing(engine: AsyncEngine) -> list[str]:
 
 
 def test_there_is_exactly_one_head_and_it_is_the_merge() -> None:
-    """One head, the fourteenth merge, joining ours after the thirteenth merge
-    with main's three after its own; the thirteenth joins our hosted
-    migrations (after the twelfth merge, which joins the eleventh with main's
-    three) with main's next."""
+    """One head, the fifteenth merge, joining the fourteenth with main's next;
+    the fourteenth joins ours after the thirteenth merge with main's three
+    after its own; the thirteenth joins our hosted migrations (after the
+    twelfth merge, which joins the eleventh with main's three) with main's
+    next."""
     script = _script()
     assert script.get_heads() == [_HEAD]
+    fifteenth = script.get_revision(_FIFTEENTH_MERGE)
+    assert fifteenth is not None
+    assert set(fifteenth._all_down_revisions) == {_FOURTEENTH_MERGE, _MAIN_FIFTEENTH}
+    assert script.get_revision(_MAIN_FIFTEENTH).down_revision == _MAIN_FOURTEENTH[-1]  # type: ignore[union-attr]
     fourteenth = script.get_revision(_FOURTEENTH_MERGE)
     assert fourteenth is not None
     assert set(fourteenth._all_down_revisions) == {

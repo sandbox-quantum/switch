@@ -1,3 +1,13 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Checkbox } from '@switch-console/chat-ui/primitives/checkbox';
+import {
+  DialogContentArea,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { CircleCheck, Circle, ExternalLink, FileKey } from 'lucide-react';
 import { useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -5,17 +15,7 @@ import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { openExternalUrl } from '@renderer/lib/open-external';
-import { Button } from '@renderer/lib/ui/button';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
-import {
-  DialogContentArea,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Input } from '@renderer/lib/ui/input';
 import { RadioGroup, RadioGroupItem } from '@renderer/lib/ui/radio-group';
-import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
 import type {
   ConnectorApp,

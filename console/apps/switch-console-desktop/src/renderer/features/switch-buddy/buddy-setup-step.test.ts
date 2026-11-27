@@ -1,16 +1,16 @@
-import { describe, expect, it } from 'vitest';
-import type { ChatSummary } from '@shared/core/chats/chats';
-import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
-import { RpcError } from '@shared/lib/ipc/rpc-error';
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import {
   buddyBridge,
   buddyHandedOffPlatform,
-  buddyHandoffRefusal,
   buddyPlatform,
   buddyResumeBridges,
   buddySetupCardsEnabled,
   buddySetupStep,
-} from './buddy-setup-step';
+} from '@switch-console/chat-ui/model/buddy-setup-step';
+import { describe, expect, it } from 'vitest';
+import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
+import { RpcError } from '@shared/lib/ipc/rpc-error';
+import { buddyHandoffRefusal } from './buddy-setup-step';
 
 const slack = { id: 'b-1', type: 'slack', status: 'active' } as RemoteBridge;
 const slack2 = { id: 'b-2', type: 'slack', status: 'active' } as RemoteBridge;

@@ -15,7 +15,7 @@ import { type ReactNode, useEffect, useId, useState } from "react";
 import EditableField from "../../components/EditableField";
 import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { useAuth } from "../../data/AuthContext";
-import { type Me, changeMyName, fetchMe } from "../../data/api";
+import { type Me, changeMyName, fetchAuthConfig, fetchMe } from "../../data/api";
 import ChangePasswordDialog from "../../layout/ChangePasswordDialog";
 import { tokenVar } from "../../theme/tokens";
 import DeleteAccountDialog from "./DeleteAccountDialog";
@@ -66,7 +66,14 @@ export default function AccountPage() {
 function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => void }) {
   const { logout, logoutEverywhere, recheck } = useAuth();
   const [passwordOpen, setPasswordOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState<"delete" | "reset" | null>(null);
+  const [testServer, setTestServer] = useState(false);
+  useEffect(() => {
+    fetchAuthConfig().then(
+      (config) => setTestServer(config?.test_account_reset_enabled === true),
+      () => setTestServer(false),
+    );
+  }, []);
   const [notice, setNotice] = useState<string | null>(null);
   // Which sign-out is under way. Both buttons wait for it: a sign-out that
   // fails says so here, and this browser stays signed in.
@@ -156,17 +163,29 @@ function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => voi
           description="Removes you from every workspace you're in, and deletes the agents you own and the connector accounts you connected."
           error={null}
         >
-          <Button variant="outlined" color="error" onClick={() => setDeleteOpen(true)}>
+          <Button variant="outlined" color="error" onClick={() => setDeleteOpen("delete")}>
             Delete account
           </Button>
         </AccountCard>
+        {testServer && (
+          <AccountCard
+            title="Reset test account"
+            description="For testing only: wipes this account and everything it owns, so signing in again starts as someone new."
+            error={null}
+          >
+            <Button variant="outlined" color="error" onClick={() => setDeleteOpen("reset")}>
+              Reset test account
+            </Button>
+          </AccountCard>
+        )}
       </Stack>
 
       <ChangePasswordDialog open={passwordOpen} onClose={() => setPasswordOpen(false)} />
       <DeleteAccountDialog
-        open={deleteOpen}
+        open={deleteOpen !== null}
         email={me.email}
-        onClose={() => setDeleteOpen(false)}
+        mode={deleteOpen ?? "delete"}
+        onClose={() => setDeleteOpen(null)}
       />
       <SuccessSnackbar message={notice} onClose={() => setNotice(null)} />
     </>

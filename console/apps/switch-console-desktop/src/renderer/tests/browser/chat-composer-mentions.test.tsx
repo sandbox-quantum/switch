@@ -1,3 +1,10 @@
+import { ChatComposer } from '@switch-console/chat-ui/components/chat-composer';
+import { ChatHostProvider } from '@switch-console/chat-ui/host';
+import { ChatTimeline, type TimelineApi } from '@switch-console/chat-ui/stores/chat-timeline-store';
+import { stubChatHost } from '@switch-console/chat-ui/testing';
+// Geometry is the subject, so the real utility classes must be present.
+import '@renderer/index.css';
+import { PromptInput, PromptInputTextarea } from '@switch-console/chat-ui/ui/prompt-input';
 /**
  * The composer's mention badges sit behind the textarea on a mirrored layer;
  * they only line up with the text if that layer scrolls exactly like the
@@ -7,17 +14,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-// Geometry is the subject, so the real utility classes must be present.
-import '@renderer/index.css';
-import { ChatComposer } from '@renderer/features/chats/components/chat-composer';
-import {
-  ChatTimeline,
-  type TimelineApi,
-} from '@renderer/features/chats/stores/chat-timeline-store';
-import { PromptInput, PromptInputTextarea } from '@renderer/features/chats/ui/prompt-input';
 
 const flags = vi.hoisted(() => ({ group_chats: true }));
-vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({ useFeatureFlags: () => flags }));
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -35,7 +33,13 @@ async function render(node: React.ReactNode): Promise<HTMLTextAreaElement> {
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () =>
-    root!.render(<QueryClientProvider client={new QueryClient()}>{node}</QueryClientProvider>)
+    root!.render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ChatHostProvider host={stubChatHost({ useGroupChats: () => flags.group_chats })}>
+          {node}
+        </ChatHostProvider>
+      </QueryClientProvider>
+    )
   );
   return container.querySelector('textarea')!;
 }

@@ -1,34 +1,25 @@
+import { SearchInput as SearchField } from '@switch-console/chat-ui/primitives/search-input';
 import { useHotkey } from '@tanstack/react-hotkeys';
-import { Search } from 'lucide-react';
 import * as React from 'react';
-import { Input } from '@renderer/lib/ui/input';
-import { cn } from '@renderer/utils/utils';
 
-type SearchInputProps = React.ComponentProps<'input'> & {
-  containerClassName?: string;
-};
+type SearchInputProps = React.ComponentProps<typeof SearchField>;
 
-const SearchInput = React.forwardRef<HTMLInputElement, SearchInputProps>(function SearchInput(
-  { className, containerClassName, ...props },
-  forwardedRef
-) {
-  const inputRef = React.useRef<HTMLInputElement>(null);
+/** The shared search box, focused by Mod+F. */
+const SearchInput = React.forwardRef<HTMLInputElement, SearchInputProps>(
+  function SearchInput(props, forwardedRef) {
+    const inputRef = React.useRef<HTMLInputElement>(null);
 
-  React.useImperativeHandle(forwardedRef, () => inputRef.current as HTMLInputElement);
+    React.useImperativeHandle(forwardedRef, () => inputRef.current as HTMLInputElement);
 
-  useHotkey(
-    'Mod+F',
-    () => {
-      inputRef.current?.focus();
-    },
-    { enabled: true }
-  );
-  return (
-    <div className={cn('relative flex min-w-0 items-center', containerClassName)}>
-      <Search className="pointer-events-none absolute left-2.5 size-3.5 shrink-0 text-foreground-muted" />
-      <Input className={cn('pl-8', className)} {...props} ref={inputRef} />
-    </div>
-  );
-});
+    useHotkey(
+      'Mod+F',
+      () => {
+        inputRef.current?.focus();
+      },
+      { enabled: true }
+    );
+    return <SearchField {...props} ref={inputRef} />;
+  }
+);
 
 export { SearchInput };

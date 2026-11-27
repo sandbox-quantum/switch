@@ -1,3 +1,11 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  DialogContentArea,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Field, FieldLabel } from '@switch-console/chat-ui/primitives/field';
 import { FileText } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useState } from 'react';
@@ -15,15 +23,7 @@ import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { useRoomAgentCandidates } from '@renderer/lib/stores/use-room-agent-candidates';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
-import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import {
-  DialogContentArea,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Field, FieldLabel } from '@renderer/lib/ui/field';
 
 type Props = BaseModalProps<void> & { roomId: string };
 

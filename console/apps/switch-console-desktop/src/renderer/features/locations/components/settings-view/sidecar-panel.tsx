@@ -1,11 +1,11 @@
+import { SectionLabel } from '@switch-console/chat-ui/components/agent-page-section';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
-import { SectionLabel } from '@renderer/features/locations/components/main-panel/agent-page-section';
 import { SidecarSettingsSection } from '@renderer/features/locations/components/settings-view/sections/sidecar-settings-section';
 import { events, rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
-import { Spinner } from '@renderer/lib/ui/spinner';
 import { agentMigrationChannel } from '@shared/events/agentMigrationEvents';
 
 export const SidecarPanel = observer(function SidecarPanel() {

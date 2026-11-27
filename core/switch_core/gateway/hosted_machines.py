@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal, cast
 
@@ -13,6 +14,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_CONNECT_TIMEOUT,
     MACHINE_MIGRATING,
@@ -63,6 +65,8 @@ from switch_core.visibility.box_provision import (
 )
 from switch_core.visibility.hosted_access import block_reason_in
 from switch_core.visibility.reason_codes import StopReason
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/hosted-machines")
 
@@ -369,6 +373,38 @@ async def _owned(
     if machine is None or workspace is None:
         raise HTTPException(404, "Cloud machine not found.")
     return machine, workspace
+
+
+async def warm_after_sign_in(
+    factory: async_sessionmaker[AsyncSession],
+    user_id: str,
+    tenant_id: str | None,
+    config: SwitchConfig,
+    settings: HostedControllerSettings | None,
+) -> None:
+    """Starts the person's cloud machine in the workspace a sign-in lands in,
+    where getting started on the web is on, so it is warming before the
+    dashboard first loads. A sign-in with no workspace yet, or a workspace
+    that may have none, starts nothing; one that cannot be had is logged and
+    never fails the sign-in, and the dashboard says why when it asks again.
+    With v2's box provisioning on and a warm pool, a sign-in starts nothing,
+    as a sign-up doesn't: a pool box goes to a person at their first start."""
+    if not config.gateway_onboarding_enabled or settings is None or tenant_id is None:
+        return
+    if box_provisioning_on(config) and getattr(config, "hosted_pool_size", 0) > 0:
+        return
+    async with tenant_session(factory, tenant_id) as session:
+        if not machines_enabled(config, settings, user_id):
+            return
+        try:
+            await ensure_machine(session, factory, user_id, config, settings)
+        except (MachineUnavailable, CloudMachineConflict) as error:
+            await session.rollback()
+            logger.warning(
+                "Signed-in user %s has no cloud machine warming: %s", user_id, error
+            )
+            return
+        await session.commit()
 
 
 @router.get("")

@@ -55,6 +55,11 @@ RUN groupadd --gid 2000 switch \
       --shell /usr/sbin/nologin --comment "Switch agents" switch
 
 COPY --chown=0:0 --chmod=0755 entrypoint.sh /usr/local/bin/switch-box
+# The box marker: the controller and agent host run in box mode only with it (and the controller only with --box
+# too, which the entrypoint passes). Root-owned, read-only, on a root filesystem every box container mounts
+# read-only, so nothing in a box can remove it.
+RUN mkdir -p /etc/switch && printf 'hosted agents box\n' > /etc/switch/box \
+ && chown 0:0 /etc/switch/box && chmod 0444 /etc/switch/box
 
 ENV PATH=/opt/switch/controller/bin:/opt/switch/providers/bin:/usr/local/bin:/usr/bin:/bin \
     HOME=/data/home \

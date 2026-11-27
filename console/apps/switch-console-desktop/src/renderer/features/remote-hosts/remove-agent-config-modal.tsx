@@ -1,12 +1,12 @@
-import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
-import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
+} from '@switch-console/chat-ui/primitives/dialog';
+import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
+import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 
 export type RemoveAgentConfigModalArgs = {
   /** The agent's name (also the config file's stem). */
