@@ -1,15 +1,15 @@
+import { ServerTableEmpty } from '@switch-console/chat-ui/components/server-page';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
-import { ServerTableEmpty } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
-import { Spinner } from '@renderer/lib/ui/spinner';
 import { MachineDetails } from './machine-details';
 import { RefreshFailed } from './refresh-failed';
 import { useMachineDetails } from './use-machines';

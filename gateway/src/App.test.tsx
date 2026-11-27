@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppRoutes } from "./App";
 import type { Session, TenantMembership } from "./data/api";
 import { AuthProvider } from "./data/AuthContext";
@@ -181,10 +181,12 @@ afterEach(() => {
 describe("AppRoutes", () => {
   it("sends a signed-out visitor to sign in", async () => {
     mockFetch({ "/auth/session": [401, { detail: "Not authenticated" }], "/auth/config": [200, authConfig] });
-    renderAt("/rooms");
-    expect(await screen.findByText("Switch Gateway")).toBeTruthy();
+    renderAt("/agents");
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
     expect(
-      await screen.findByText("Sign in with Example SSO to create a workspace or join one."),
+      await screen.findByText(
+        "New to Switch? Signing in creates your account, and you can create a workspace or join one.",
+      ),
     ).toBeTruthy();
   });
 
@@ -217,7 +219,7 @@ describe("AppRoutes", () => {
       "/auth/session": [200, session({ state: "needs_selection", tenants: [acme, beta] })],
       "/feature-flags": [200, { flags: [] }],
     });
-    renderAt("/rooms");
+    renderAt("/agents");
     expect(await screen.findByText("Choose a workspace")).toBeTruthy();
     expect(screen.getByText("Acme")).toBeTruthy();
     expect(screen.getByText("Beta Co")).toBeTruthy();
@@ -226,7 +228,7 @@ describe("AppRoutes", () => {
   it("puts a pending invite before everything else", async () => {
     storePendingInvite("abc");
     mockFetch(signedInAs("org_admin"));
-    renderAt("/rooms");
+    renderAt("/agents");
     expect(await screen.findByText("Join a workspace")).toBeTruthy();
   });
 
@@ -239,7 +241,7 @@ describe("AppRoutes", () => {
     });
     renderAt("/");
     fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
-    expect(await screen.findByText("Switch Gateway")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
     expect(window.sessionStorage.getItem("switch.pendingInvite")).toBeNull();
   });
 
@@ -253,18 +255,18 @@ describe("AppRoutes", () => {
     renderAt("/");
     fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
     expect(await screen.findByText("Couldn't sign out: Bad Gateway")).toBeTruthy();
-    expect(screen.queryByText("Switch Gateway")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Sign in to Switch" })).toBeNull();
     // Still signed in, so still on the way to the invitation.
     expect(window.sessionStorage.getItem("switch.pendingInvite")).toBe("abc");
   });
 
   it("says so when the session cannot be read, instead of showing sign-in", async () => {
     mockFetch({ "/auth/session": [500, { detail: "database unavailable" }] });
-    renderAt("/rooms");
+    renderAt("/agents");
     expect(
       await screen.findByText(/Could not load your session: database unavailable/),
     ).toBeTruthy();
-    expect(screen.queryByText("Switch Gateway")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Sign in to Switch" })).toBeNull();
   });
 
   it("says so when the deployment's flags cannot be read, rather than hiding pages", async () => {
@@ -272,7 +274,7 @@ describe("AppRoutes", () => {
       ...signedInAs("member"),
       "/feature-flags": [500, { detail: "flags unavailable" }],
     });
-    renderAt("/rooms");
+    renderAt("/agents");
     expect(await screen.findByText(/Could not load your session: flags unavailable/)).toBeTruthy();
   });
 
@@ -281,7 +283,7 @@ describe("AppRoutes", () => {
       ...signedInAs("workspace_admin"),
       "/tenants/current": [500, { detail: "workspace unavailable" }],
     });
-    renderAt("/rooms");
+    renderAt("/agents");
     expect(
       await screen.findByText(/Could not load your session: workspace unavailable/),
     ).toBeTruthy();
@@ -315,13 +317,129 @@ describe("AppRoutes", () => {
       ...signedInAs("member"),
       "/auth/sessions/revoke": [500, { detail: "Internal Server Error" }],
     });
-    renderAt("/rooms");
+    renderAt("/agents");
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out of all devices" }));
     expect(
       await screen.findByText("Couldn't sign out of every device: Internal Server Error"),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Account menu" })).toBeTruthy();
+  });
+});
+
+describe("signing up", () => {
+  // Chats loads the chat UI on first opening, and compiling that module graph
+  // cold takes seconds under a busy full run: done here, it is cached before
+  // the test's own clock starts, and the test still goes through the lazy load.
+  beforeAll(() => import("./pages/chats/ChatsPage"), 60_000);
+
+  /** A server under open sign-up: signed out until the account is made, in
+   * no workspace until it makes one, then in it. Every other request answers
+   * as an empty new workspace would. */
+  function openSignUp(flags: FeatureFlagKey[] = ["gateway_chats"]) {
+    let state: "signed_out" | "no_workspace" | "ready" = "signed_out";
+    let surveyAnswers: unknown = null;
+    let acceptedVersion: string | null = null;
+    const made: TenantMembership = { ...acme, id: "t9", slug: "adas-lab", name: "Ada's Lab" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input).replace(/^\/gateway/, "").split("?")[0];
+        const method = init?.method ?? "GET";
+        const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+        if (path === "/auth/config")
+          return json(200, { ...authConfig, oidc_enabled: false, web_signup_enabled: true });
+        if (path === "/auth/signup" && method === "POST") {
+          state = "no_workspace";
+          return json(201, { id: "u1", name: "Ada", email: "ada@example.com", role: "user" });
+        }
+        if (path === "/organizations" && method === "POST") {
+          if (state !== "no_workspace") return json(401, { detail: "Not authenticated" });
+          state = "ready";
+          return json(201, { organization: { id: "o1", slug: "adas-lab", name: "Ada's Lab" }, workspace: made });
+        }
+        if (path === "/auth/session")
+          return state === "signed_out"
+            ? json(401, { detail: "Not authenticated" })
+            : json(
+                200,
+                state === "ready"
+                  ? session({ state: "ready", tenant: made, tenants: [made] })
+                  : session({}),
+              );
+        if (path === "/feature-flags")
+          return json(200, { flags: flags.map((key) => ({ key, enabled: true })) });
+        if (path === "/auth/me/team-survey") {
+          if (method === "PUT") surveyAnswers = JSON.parse(String(init?.body));
+          return json(200, { choices: surveyChoices, answers: surveyAnswers, answered_at: null });
+        }
+        if (path === "/license") return json(200, { version: "v1", text: "Software: Agent Switch" });
+        if (path === "/auth/me/license") {
+          if (method === "PUT") acceptedVersion = JSON.parse(String(init?.body)).version;
+          return json(200, { version: "v1", accepted_version: acceptedVersion, accepted_at: null });
+        }
+        if (path === "/tenants/current")
+          return json(200, { ...made, administers: true, can_delete: false, can_manage_data_protection: false });
+        if (path === "/chats") return json(200, { chats: [] });
+        if (["/agents", "/rooms", "/organizations"].includes(path)) return json(200, []);
+        return json(404, { detail: `unmocked ${path}` });
+      }),
+    );
+  }
+
+  const surveyChoices = {
+    company_size: ["1-10", "11-50"],
+    role: ["Platform / DevOps", "Other"],
+    agent_count: ["1-5", "6-20"],
+    use_cases: ["Internal tools", "Other"],
+  };
+
+  async function signUpWithWorkspace() {
+    fireEvent.click(await screen.findByRole("button", { name: "Sign up" }));
+    fireEvent.change(screen.getByLabelText("First name"), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.change(await screen.findByLabelText("Password"), { target: { value: "a long password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.change(await screen.findByLabelText(/Workspace name/), { target: { value: "Ada's Lab" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+  }
+
+  it("asks about the team, then for the license, where the dashboard onboards people", async () => {
+    openSignUp(["gateway_chats", "gateway_onboarding"]);
+    renderAt("/");
+    await signUpWithWorkspace();
+
+    expect(await screen.findByRole("heading", { name: "Tell us about your team" })).toBeTruthy();
+    const continueButton = screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
+    expect(continueButton.disabled).toBe(true);
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Company size" })).getByRole("radio", { name: "11-50" }));
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Your role" })).getByRole("radio", { name: "Other" }));
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Number of AI agents" })).getByRole("radio", { name: "1-5" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Internal tools" }));
+    fireEvent.click(continueButton);
+
+    expect(await screen.findByRole("heading", { name: "Review the license" })).toBeTruthy();
+    expect(await screen.findByText("Software: Agent Switch")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "I have reviewed and accept the license" }));
+
+    await landsOn("/overview");
+    expect(await screen.findByRole("navigation", { name: "Main" })).toBeTruthy();
+  });
+
+  it("opens Chats in the new workspace, without a reload", async () => {
+    openSignUp();
+    renderAt("/");
+    await signUpWithWorkspace();
+
+    await landsOn("/overview");
+    const rail = await screen.findByRole("navigation", { name: "Main" });
+    fireEvent.click(within(rail).getByRole("link", { name: "Chats" }));
+    await landsOn("/chats");
+    // The chat UI is loaded when Chats first opens.
+    expect(await screen.findByText("No agents to chat with yet.")).toBeTruthy();
+    expect(screen.queryByText("Loading your chats…")).toBeNull();
+    expect(screen.getAllByText("Ada's Lab").length).toBeGreaterThan(0);
   });
 });
 
@@ -348,17 +466,36 @@ describe("the layout", () => {
     await landsOn("/overview");
   });
 
-  it("shows a member the new rail", async () => {
+  it("shows a member the new rail, with Rooms where the server has no Chats", async () => {
     mockFetch(signedInAs("member"));
     renderAt("/overview");
-    expect(await railLabels()).toEqual([
-      "Home",
-      "Agents",
-      "Rooms",
-      "Templates",
-      "Resources",
-      "Settings",
-    ]);
+    expect(await railLabels()).toEqual(["Home", "Agents", "Rooms", "Templates", "Resources", "Settings"]);
+  });
+
+  it("leaves Rooms off the rail where rooms are listed in Chats", async () => {
+    mockFetch(signedInAs("member", { flags: ["gateway_chats"] }));
+    renderAt("/overview");
+    expect(await railLabels()).toEqual(["Home", "Chats", "Agents", "Templates", "Resources", "Settings"]);
+  });
+
+  it.each([
+    ["/rooms", "/chats?tab=rooms"],
+    ["/rooms/groups", "/settings/room-groups"],
+    ["/rooms/graph", "/settings/room-graph"],
+  ])("sends %s, no page of its own where there are Chats, to %s", async (from, to) => {
+    mockFetch(signedInAs("member", { flags: ["gateway_chats"] }));
+    renderAt(from);
+    await landsOn(to);
+  });
+
+  it.each([
+    ["/rooms", { name: "Rooms", level: 5 }],
+    ["/rooms/new", { name: "New room", level: 5 }],
+  ])("keeps %s a page of its own where the server has no Chats", async (path, heading) => {
+    mockFetch({ ...signedInAs("member"), "/rooms": [200, []] });
+    renderAt(path);
+    expect(await screen.findByRole("heading", heading)).toBeTruthy();
+    await landsOn(path);
   });
 
   it("shows the Settings cog without a label, and every other item with one", async () => {
@@ -462,6 +599,8 @@ describe("the layout", () => {
       expect(await menuLabels("Settings")).toEqual([
         "General",
         "Users",
+        "Room groups",
+        "Rooms graph",
         "Messaging apps",
         "API keys",
         "Guardrails",
@@ -469,20 +608,24 @@ describe("the layout", () => {
       ]);
     });
 
-    it("gives a workspace admin Devices and Connectors where they run", async () => {
+    it("gives a workspace admin AI providers, Devices and Connectors where they run", async () => {
       mockFetch(
         signedInAs("workspace_admin", {
-          flags: ["agent_management", "service_connections"],
+          flags: ["agent_management", "service_connections", "decision_routing"],
         }),
       );
       renderAt("/settings/general");
       expect(await menuLabels("Settings")).toEqual([
         "General",
         "Users",
+        "Room groups",
+        "Rooms graph",
         "Messaging apps",
         "Connectors",
         "API keys",
         "Guardrails",
+        "Message routing",
+        "AI providers",
         "Devices",
         "Your account",
       ]);
@@ -722,21 +865,22 @@ describe("the layout", () => {
 
     it("names the organization, the workspace and the page", async () => {
       mockFetch(signedInAs("member"));
-      renderAt("/rooms");
-      expect(await screen.findByRole("button", { name: /Acme Group\s*\/\s*Acme/ })).toBeTruthy();
-      expect(screen.getByText("Rooms", { selector: "span" })).toBeTruthy();
+      renderAt("/agents");
+      const crumb = await screen.findByRole("button", { name: /Acme Group\s*\/\s*Acme/ });
+      // In the top bar, not the page's own title.
+      expect(within(crumb.parentElement!).getByText("Agents", { selector: "span" })).toBeTruthy();
     });
 
     it("names only the workspace where it belongs to no organization", async () => {
       mockFetch(signedInAs("member", { inOrganization: false }));
-      renderAt("/rooms");
+      renderAt("/agents");
       const crumb = await screen.findByRole("button", { name: "Acme" });
       expect(crumb.getAttribute("aria-haspopup")).toBe("menu");
     });
 
     it("lists the workspaces by organization, with their users and agents", async () => {
       mockFetch(signedInAs("member", { tenants: [beta] }));
-      renderAt("/rooms");
+      renderAt("/agents");
       const menu = await openSwitcher();
       expect(within(menu).getByText("Acme Group")).toBeTruthy();
       expect(within(menu).getByText("Beta Holdings")).toBeTruthy();
@@ -786,7 +930,7 @@ describe("the layout", () => {
           },
         ],
       });
-      renderAt("/rooms");
+      renderAt("/agents");
       fireEvent.click(await screen.findByRole("button", { name: /Gamma Corp\s*\/\s*Gamma/ }));
       const menu = await screen.findByRole("menu", { name: "Workspaces" });
       for (const heading of ["Acme Group", "Beta Holdings", "Gamma Corp"]) {
@@ -800,7 +944,7 @@ describe("the layout", () => {
         ...signedInAs("member", { tenants: [beta] }),
         "/tenants/counts": [500, { detail: "counts unavailable" }],
       });
-      renderAt("/rooms");
+      renderAt("/agents");
       const menu = await openSwitcher();
       expect(
         await within(menu).findByText(/Could not load how many users and agents.*counts unavailable/),
@@ -809,7 +953,7 @@ describe("the layout", () => {
     });
 
     it.each([
-      ["a list, staying on it", "/rooms", "/rooms"],
+      ["a list, staying on it", "/agents", "/agents"],
       ["one room, going to the landing page", "/rooms/r1", "/"],
     ])("switches to the workspace chosen from %s", async (_, from, to) => {
       const assign = vi.fn();
@@ -824,7 +968,7 @@ describe("the layout", () => {
           ...signedInAs("member", { tenants: [beta] }),
           "/tenants/t2/switch": [200, { ok: true }],
         });
-        renderAt("/rooms");
+        renderAt("/agents");
         const menu = await openSwitcher();
         fireEvent.click(within(menu).getByText("Beta Co"));
         await waitFor(() => expect(assign).toHaveBeenCalledWith(to));
@@ -843,7 +987,7 @@ describe("the layout", () => {
     it("lets a workspace admin or an organization admin invite people", async () => {
       for (const role of ["workspace_admin", "org_admin"] as const) {
         mockFetch(signedInAs(role));
-        renderAt("/rooms");
+        renderAt("/agents");
         const menu = await openSwitcher();
         fireEvent.click(within(menu).getByRole("menuitem", { name: "Invite people to Acme" }));
         expect(await screen.findByRole("dialog", { name: "Invite users to Acme" })).toBeTruthy();
@@ -853,14 +997,14 @@ describe("the layout", () => {
 
     it("does not offer a member to invite people", async () => {
       mockFetch(signedInAs("member"));
-      renderAt("/rooms");
+      renderAt("/agents");
       const menu = await openSwitcher();
       expect(within(menu).queryByRole("menuitem", { name: /Invite people/ })).toBeNull();
     });
 
     it("links to help and the docs, and claims nothing about the system's health", async () => {
       mockFetch(signedInAs("member"));
-      renderAt("/rooms");
+      renderAt("/agents");
       const help = await screen.findByRole("link", { name: "Help" });
       expect(help.getAttribute("href")).toBe(
         "https://docs.switchagents.ai/switch-rooms/resources/troubleshooting",
@@ -879,7 +1023,7 @@ describe("the layout", () => {
   describe("the account menu", () => {
     it("leads to your account, where the password changes, and leaves switching workspace to the top bar", async () => {
       mockFetch(signedInAs("member", { tenants: [beta] }));
-      renderAt("/rooms");
+      renderAt("/agents");
       fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
       const account = await screen.findByRole("menuitem", { name: "Your account" });
       expect(account.getAttribute("href")).toBe("/settings/account");
@@ -1114,7 +1258,7 @@ describe("a page that falls behind the server", () => {
 
   it("reads the session once when a restore and a tab coming back arrive together", async () => {
     mockFetch(signedInAs("member"));
-    renderAt("/rooms");
+    renderAt("/agents");
     await railLabels();
     mockFetch(signedInAs("member"));
     window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
@@ -1129,14 +1273,14 @@ describe("a page that falls behind the server", () => {
 
   it("warns, keeping the page, when the session cannot be read on coming back to the tab", async () => {
     mockFetch(signedInAs("member"));
-    renderAt("/rooms");
+    renderAt("/settings/account");
     await railLabels();
     mockFetch({ ...signedInAs("member"), "/auth/session": [503, { detail: "server restarting" }] });
     comeBackToTheTab();
     expect(
       await screen.findByText(/Could not check your session with Switch: server restarting/),
     ).toBeTruthy();
-    expect(await railLabels()).toContain("Rooms");
+    expect(await railLabels()).toContain("Agents");
 
     mockFetch(signedInAs("member"));
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -1147,7 +1291,7 @@ describe("a page that falls behind the server", () => {
 
   it("fails loud when a restored page cannot be checked, since it may be another workspace's", async () => {
     mockFetch(signedInAs("member"));
-    renderAt("/rooms");
+    renderAt("/agents");
     await railLabels();
     mockFetch({ ...signedInAs("member"), "/auth/session": [503, { detail: "server restarting" }] });
     window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
@@ -1201,16 +1345,16 @@ describe("what the server's answers say about the session", () => {
         const path = String(input).replace(/^\/gateway/, "").split("?")[0];
         if (path === "/auth/session" && sessionReads++ > 0)
           return new Response(JSON.stringify({ detail: "Session ended" }), { status: 401 });
-        if (path === "/rooms")
+        if (path === "/agents")
           return new Response(JSON.stringify({ detail: "Session ended" }), { status: 401 });
         const [status, body] = routes[path] ?? [404, { detail: `unmocked ${path}` }];
         return new Response(JSON.stringify(body), { status });
       }),
     );
-    renderAt("/rooms?q=ops");
+    renderAt("/agents?q=ops");
     await waitFor(() => expect(reload).toHaveBeenCalled());
     expect(JSON.parse(window.sessionStorage.getItem("switch.workspaceLinkAfterSignIn") ?? "null")).toMatchObject({
-      path: "/rooms?q=ops",
+      path: "/agents?q=ops",
       workspace: "t1",
     });
   });
@@ -1234,7 +1378,7 @@ describe("what the server's answers say about the session", () => {
 
   it("names the workspace the page shows on its writes", async () => {
     mockFetch(signedInAs("member"));
-    renderAt("/rooms");
+    renderAt("/agents");
     await railLabels();
     mockFetch({ ...signedInAs("member"), "/api-keys": [200, {}] });
     await gatewayFetch("/gateway/api-keys", { method: "POST" });
@@ -1244,7 +1388,7 @@ describe("what the server's answers say about the session", () => {
 
   it("says the tab shows another workspace, offering a reload, when a write is refused for it", async () => {
     mockFetch(signedInAs("member"));
-    renderAt("/rooms");
+    renderAt("/agents");
     await railLabels();
     mockFetch({
       ...signedInAs("member"),
@@ -1352,14 +1496,14 @@ describe("a link naming a workspace", () => {
 
   it("does not switch to a workspace the session is not in, and says so", async () => {
     mockFetch(signedInAs("operator"));
-    renderAt("/rooms?workspace=t9");
+    renderAt("/agents?workspace=t9");
     // The operator is also told where they act on someone else's.
     expect(
       await screen.findByText(
         `The link you followed is for a workspace you aren't in, so this is Acme. ${OPERATOR_ELSEWHERE}`,
       ),
     ).toBeTruthy();
-    await landsOn("/rooms");
+    await landsOn("/agents");
     expect(switchedTo("t9")).toBe(false);
     expect(replace).not.toHaveBeenCalled();
   });
@@ -1398,7 +1542,7 @@ describe("a link naming a workspace", () => {
 
   it("lets the notice be put away", async () => {
     mockFetch(signedInAs("member"));
-    renderAt("/rooms?workspace=t9");
+    renderAt("/agents?workspace=t9");
     const notice = await screen.findByText(/The link you followed/);
     fireEvent.click(within(notice.closest('[role="alert"]') as HTMLElement).getByRole("button"));
     await waitFor(() => expect(screen.queryByText(/The link you followed/)).toBeNull());
@@ -1409,13 +1553,13 @@ describe("a link naming a workspace", () => {
       ...signedInAs("member", { tenants: [beta] }),
       "/tenants/t2/switch": [403, { detail: "Not a member of this workspace" }],
     });
-    renderAt("/rooms?workspace=t2");
+    renderAt("/agents?workspace=t2");
     expect(
       await screen.findByText(
         /Couldn't switch to the workspace the link you followed is for: Not a member of this workspace/,
       ),
     ).toBeTruthy();
-    await landsOn("/rooms");
+    await landsOn("/agents");
     expect(replace).not.toHaveBeenCalled();
   });
 
@@ -1426,13 +1570,14 @@ describe("a link naming a workspace", () => {
       "/auth/login": [200, { id: "u1", name: "Ada", email: "ada@example.com" }],
     });
     renderAt("/rooms/r1?tab=documents&workspace=t2");
-    expect(await screen.findByText("Switch Gateway")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
     expect(switchedTo("t2")).toBe(false);
 
     fireEvent.change(await screen.findByLabelText(/^Email/), {
       target: { value: "ada@example.com" },
     });
-    fireEvent.change(screen.getByLabelText(/^Password/), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue with email" }));
+    fireEvent.change(await screen.findByLabelText(/^Password/), { target: { value: "pw" } });
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
     await waitFor(() =>
       expect(replace).toHaveBeenCalledWith(`${origin}/rooms/r1?tab=documents&workspace=t2`),
@@ -1454,7 +1599,7 @@ describe("a link naming a workspace", () => {
       ...signedInAs("member"),
       "/auth/logout": [200, {}],
     });
-    renderAt("/rooms");
+    renderAt("/agents");
     await railLabels();
     keepLinkForSignIn({ path: "/agents/a1", workspace: "t2" });
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));

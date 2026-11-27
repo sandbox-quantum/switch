@@ -1,3 +1,12 @@
+import {
+  ChatHeaderControls,
+  ChatHeaderTitle,
+} from '@switch-console/chat-ui/components/chat-header';
+import { ChatPanel, useAgentActivities } from '@switch-console/chat-ui/components/chat-panel';
+import {
+  UNSAVED_CHAT_NAME,
+  UNSAVED_CHAT_PREFIX,
+} from '@switch-console/chat-ui/stores/direct-chat-starter';
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -7,13 +16,10 @@ import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { appState } from '@renderer/lib/stores/app-state';
-import { ChatHeaderControls, ChatHeaderTitle } from './components/chat-header';
-import { ChatPanel, useAgentActivities } from './components/chat-panel';
 import { useOpenGroupAsRoom } from './console-chat-redirect';
 import { directChats } from './start-direct-chat';
 import { agentChatsFlag } from './stores/agent-chats-flag';
 import { chatsStore } from './stores/chats';
-import { UNSAVED_CHAT_NAME, UNSAVED_CHAT_PREFIX } from './stores/direct-chat-starter';
 
 type ChatParams = { serverId: string; roomId: string; agentId: string | null };
 
@@ -22,6 +28,13 @@ const ChatTitlebar = observer(function ChatTitlebar() {
   const chat = chatsStore.chat(params.roomId);
   // Shared with the panel: the registry hands both the same activities.
   const activities = useAgentActivities(params.serverId, chat);
+  const navigation = appState.navigation;
+  const context = {
+    currentViewId: navigation.currentViewId,
+    chatRoomId: params.roomId,
+    roomRoomId: undefined,
+    agentRoomId: undefined,
+  };
   return (
     <Titlebar
       leftClassName="min-w-0"
@@ -38,7 +51,12 @@ const ChatTitlebar = observer(function ChatTitlebar() {
       }
       rightSlot={
         chat && (
-          <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities} />
+          <ChatHeaderControls
+            serverId={params.serverId}
+            chat={chat}
+            activities={activities}
+            context={context}
+          />
         )
       }
     />

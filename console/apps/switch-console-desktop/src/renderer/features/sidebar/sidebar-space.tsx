@@ -1,9 +1,13 @@
+import { Toggle } from '@switch-console/chat-ui/primitives/toggle';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { PanelLeft } from 'lucide-react';
 import { NavButtons } from '@renderer/lib/components/nav-buttons';
 import { useWorkspaceLayoutContext } from '@renderer/lib/layout/layout-provider';
 import { BoundShortcut } from '@renderer/lib/ui/shortcut';
-import { Toggle } from '@renderer/lib/ui/toggle';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 
 export function SidebarSpace() {
   const { isLeftOpen, setCollapsed } = useWorkspaceLayoutContext();

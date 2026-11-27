@@ -1,8 +1,12 @@
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { TriangleAlert } from 'lucide-react';
 import { useEffect } from 'react';
 import { events, rpc } from '@renderer/lib/ipc';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { sessionIssueChangedChannel } from '@shared/core/sessions/sessionEvents';
 
 const ISSUE_TEXT = 'This session couldn’t start or stopped on an error — open it to see why.';

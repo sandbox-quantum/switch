@@ -62,13 +62,14 @@ paths = [
 
 # Hosted agents v2 test fixtures. Each entry below needs BOTH its file path and
 # its exact line (condition = "AND"), so the same text anywhere else, or any
-# other value in the same file, is still scanned.
+# other value in the same file, is still scanned. Paths of files since moved or
+# deleted stay listed: gitleaks scans history, and older commits still carry
+# them.
 
 [[allowlists]]
 description = "Git blob ids in the box runtime's upstream-sync list"
-# 40-character hashes recording which upstream file each box copy is from.
-# upstream-packages.test.ts checks every value against the real upstream
-# file's blob id, so a value here that is not a real blob id fails that test.
+# 40-character hashes recording which upstream file each box copy was from.
+# The file is gone; only older commits carry it.
 condition = "AND"
 targetRules = ["generic-api-key"]
 paths = ['''^console/packages/switch-agent-runtime-box/upstream-packages\.json$''']
@@ -81,7 +82,7 @@ description = "Test fixture in split-runtime.test.ts"
 # environment; never issued by anything.
 condition = "AND"
 targetRules = ["generic-api-key"]
-paths = ['''^console/packages/agent-controller-box/src/split-runtime\.test\.ts$''']
+paths = ['''^console/packages/(agent-controller/src/box|agent-controller-box/src)/split-runtime\.test\.ts$''']
 regexTarget = "line"
 regexes = [
   '''^\s*ANTHROPIC_AUTH_TOKEN: 'swpg_probe_0123456789abcdef',\s*$''',
@@ -95,7 +96,7 @@ description = "Test fixture in sealed-login.web.test.ts"
 # replace it rather than allow it.
 condition = "AND"
 targetRules = ["generic-api-key"]
-paths = ['''^console/packages/agent-providers-box/src/sealed-login\.web\.test\.ts$''']
+paths = ['''^console/packages/agent-providers(-box)?/src/sealed-login\.web\.test\.ts$''']
 regexTarget = "line"
 regexes = [
   '''^\s*privateKey: 'mK9YFSnL\+gcY/ye\+4HkkiK7eVYX/u\+CQzDECYtOqRUM=',\s*$''',

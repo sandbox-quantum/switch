@@ -1,3 +1,4 @@
+import ForumOutlined from "@mui/icons-material/ForumOutlined";
 import HomeOutlined from "@mui/icons-material/HomeOutlined";
 import LocalLibraryOutlined from "@mui/icons-material/LocalLibraryOutlined";
 import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
@@ -5,7 +6,7 @@ import PowerOutlined from "@mui/icons-material/PowerOutlined";
 import SettingsOutlined from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
 import ViewQuiltOutlined from "@mui/icons-material/ViewQuiltOutlined";
-import type { ComponentType, ReactNode } from "react";
+import { type ComponentType, type ReactNode, Suspense, lazy } from "react";
 import {
   type Access,
   type Capabilities,
@@ -15,6 +16,9 @@ import {
   anyOf,
   connectorAppManagers,
   everyone,
+  gatewayChats,
+  gatewayOnboarding,
+  messageRoutingManagers,
   organizationAdmins,
   organizationAdminsOnly,
   organizationConnectorApps,
@@ -26,6 +30,7 @@ import AccountPage from "../pages/account/AccountPage";
 import AgentDetailPage from "../pages/agents/AgentDetailPage";
 import ApiKeysPage from "../pages/api-keys/ApiKeysPage";
 import AgentListPage from "../pages/agents/AgentListPage";
+import AIProvidersPage from "../pages/ai-providers/AIProvidersPage";
 import ConnectorAppsPage from "../pages/connector-apps/ConnectorAppsPage";
 import EcosystemGraphPage from "../pages/ecosystem/EcosystemGraphPage";
 import MessagingAppsPage from "../pages/messaging-apps/MessagingAppsPage";
@@ -47,8 +52,8 @@ import ReferenceDetailPage from "../pages/resources/ReferenceDetailPage";
 import ResourcesPage from "../pages/resources/ResourcesPage";
 import TemplateDetailPage from "../pages/resources/TemplateDetailPage";
 import DevicesPage from "../pages/devices/DevicesPage";
-import CreateRoomPage from "../pages/rooms/CreateRoomPage";
 import WorkspaceGuardrailsPage from "../pages/guardrails/WorkspaceGuardrailsPage";
+import CreateRoomPage from "../pages/rooms/CreateRoomPage";
 import GroupsPage from "../pages/rooms/GroupsPage";
 import RoomDetailPage from "../pages/rooms/RoomDetailPage";
 import RoomScopedDocumentView from "../pages/rooms/RoomScopedDocumentView";
@@ -59,6 +64,22 @@ import PrivateChannelRoomsPage from "../pages/workspace/PrivateChannelRoomsPage"
 import WorkspaceConnectorsPage from "../pages/workspace/WorkspaceConnectorsPage";
 import WorkspaceGeneralPage from "../pages/workspace/WorkspaceGeneralPage";
 import WorkspaceUsersPage from "../pages/workspace/WorkspaceUsersPage";
+import MessageRoutingPage from "../pages/workspace/MessageRoutingPage";
+
+const GetStartedPage = lazy(() => import("../pages/get-started/GetStartedPage"));
+const getStarted = (
+  <Suspense fallback={null}>
+    <GetStartedPage />
+  </Suspense>
+);
+
+// The chat UI is loaded only when the page is opened.
+const ChatsPage = lazy(() => import("../pages/chats/ChatsPage"));
+const chats = (
+  <Suspense fallback={null}>
+    <ChatsPage />
+  </Suspense>
+);
 
 /** Every page the signed-in dashboard has, in one table: its URL and who
  * may open it. The routes, their guards, the rail and the settings menus are
@@ -95,6 +116,9 @@ export interface RedirectRoute {
   kind: "redirect";
   path: string;
   to: string;
+  /** A redirect that holds only where `when` allows it; elsewhere the URL is
+   * a page anyone may open, showing `otherwise`. */
+  only?: { when: Rule; otherwise: ReactNode };
 }
 
 export type AppRoute = PageRoute | AreaRoute | RedirectRoute;
@@ -162,8 +186,8 @@ function areaIndex(path: string, area: SettingsArea): AreaRoute {
   return { kind: "area", path, area };
 }
 
-function redirect(path: string, to: string): RedirectRoute {
-  return { kind: "redirect", path, to };
+function redirect(path: string, to: string, only?: RedirectRoute["only"]): RedirectRoute {
+  return { kind: "redirect", path, to, only };
 }
 
 const orgConnectors = allOf(organizationAdminsOnly, serviceConnections, organizationConnectorApps);
@@ -173,11 +197,26 @@ export const ROUTES: readonly AppRoute[] = [
   page("/overview", everyone, <OverviewPage />),
 
   page("/ecosystem", everyone, <EcosystemGraphPage />),
-  page("/rooms", everyone, <RoomsPage />),
-  page("/rooms/new", everyone, <CreateRoomPage />),
-  page("/rooms/groups", everyone, <GroupsPage />),
-  page("/rooms/graph", everyone, <RoomsGraphPage />),
-  page("/rooms/:roomId", everyone, <RoomDetailPage />),
+  page("/get-started", allOf(gatewayOnboarding, agentManagement), getStarted),
+  page("/chats", gatewayChats, chats),
+  page("/chats/agents/:agentId", gatewayChats, chats),
+  page("/chats/rooms/:roomId", gatewayChats, chats),
+  page("/chats/:roomId", gatewayChats, chats),
+  // Where there are Chats, rooms are listed and opened there and a new one is
+  // made in its New room dialog, and an agent is opened there too; elsewhere
+  // the Rooms list, the New room page and the room and agent pages stay.
+  redirect("/rooms", "/chats?tab=rooms", { when: gatewayChats, otherwise: <RoomsPage /> }),
+  redirect("/rooms/new", "/chats?tab=rooms&new=room", {
+    when: gatewayChats,
+    otherwise: <CreateRoomPage />,
+  }),
+  redirect("/rooms/groups", "/settings/room-groups"),
+  redirect("/rooms/graph", "/settings/room-graph"),
+  page("/rooms/:roomId/manage", everyone, <RoomDetailPage />),
+  redirect("/rooms/:roomId", "/chats/rooms/:roomId", {
+    when: gatewayChats,
+    otherwise: <RoomDetailPage />,
+  }),
   page("/rooms/:roomId/documents/:documentId", everyone, <RoomScopedDocumentView />),
 
   page("/resources", everyone, <ResourcesPage />),
@@ -189,7 +228,11 @@ export const ROUTES: readonly AppRoute[] = [
   page("/templates/:id", everyone, <TemplateDetailPage />),
 
   page("/agents", everyone, <AgentListPage />),
-  page("/agents/:agentId", everyone, <AgentDetailPage />),
+  page("/agents/:agentId/manage", everyone, <AgentDetailPage />),
+  redirect("/agents/:agentId", "/chats/agents/:agentId", {
+    when: gatewayChats,
+    otherwise: <AgentDetailPage />,
+  }),
 
   // Everyone's connector catalogue. The deployment's connector apps, which
   // this URL once was, are in Organization settings, as Connector apps.
@@ -223,6 +266,8 @@ export const ROUTES: readonly AppRoute[] = [
     "workspace",
   ),
   settingsPage("/settings/users", "workspace", "Users", everyone, <WorkspaceUsersPage />),
+  settingsPage("/settings/room-groups", "workspace", "Room groups", everyone, <GroupsPage />),
+  settingsPage("/settings/room-graph", "workspace", "Rooms graph", everyone, <RoomsGraphPage />),
   settingsPage(
     "/settings/messaging-apps",
     "workspace",
@@ -239,8 +284,10 @@ export const ROUTES: readonly AppRoute[] = [
   ),
   settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <ApiKeysPage />),
   settingsPage("/settings/guardrails", "workspace", "Guardrails", everyone, <WorkspaceGuardrailsPage />),
+  settingsPage("/settings/message-routing", "workspace", "Message routing", messageRoutingManagers, <MessageRoutingPage />),
   // Usage & budget (pages/usage) is off until it is offered.
   redirect("/usage", "/settings"),
+  settingsPage("/settings/ai-providers", "workspace", "AI providers", agentManagement, <AIProvidersPage />),
   settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <DevicesPage />),
   personalSettingsPage("/settings/account", "Your account", everyone, <AccountPage />),
 
@@ -313,8 +360,9 @@ export const ROUTES: readonly AppRoute[] = [
  * area's rule and its own. A URL that is no page, or only a redirect, is
  * not. */
 export function accessTo(path: string, caps: Capabilities): Access | null {
-  const route = ROUTES.find((r) => r.path === path && r.kind !== "redirect");
-  if (route === undefined || route.kind === "redirect") return null;
+  const route = ROUTES.find((r) => r.path === path && (r.kind !== "redirect" || r.only));
+  if (route === undefined) return null;
+  if (route.kind === "redirect") return route.only?.when(caps).allowed ? null : everyone(caps);
   if (route.kind === "area") return AREAS[route.area].access(caps);
   return route.area === undefined
     ? route.access(caps)
@@ -399,12 +447,16 @@ function railItem(
 
 /** The rail, in order. An item shows only to someone who may open the page
  * it leads to (`accessTo`). The ecosystem graph is opened from Home, which
- * shows as current there. Each glyph is the outline of the thing the page
- * holds. The Settings cog needs no label, like the account button below it. */
+ * shows as current there; where there are Chats, rooms are listed and opened
+ * there, and Chats shows as current on their pages (Rooms, leading to a page
+ * that is then a redirect, is left off); Get started opens on a first visit, and from Home. Each
+ * glyph is the outline of the thing the page holds. The Settings cog needs no
+ * label, like the account button below it. */
 export const RAIL: readonly RailItem[] = [
   railItem("Home", "/overview", HomeOutlined, {
     activeFor: ["/overview", "/ecosystem"],
   }),
+  railItem("Chats", "/chats", ForumOutlined, { activeFor: ["/chats", "/rooms"] }),
   railItem("Agents", "/agents", SmartToyOutlined),
   railItem("Rooms", "/rooms", MeetingRoomOutlined),
   railItem("Templates", "/templates", ViewQuiltOutlined),
@@ -417,6 +469,7 @@ export const RAIL: readonly RailItem[] = [
   }),
 ];
 
+/** The rail `caps` may use. */
 export function railFor(caps: Capabilities): RailItem[] {
   return RAIL.filter((item) => accessTo(item.to, caps)?.allowed === true);
 }

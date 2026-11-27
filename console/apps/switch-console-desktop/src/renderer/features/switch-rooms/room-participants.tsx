@@ -1,21 +1,16 @@
+import { agentInitials } from '@switch-console/chat-ui/model/agent-avatar';
+import { personColour } from '@switch-console/chat-ui/model/person-colour';
 import { useQuery } from '@tanstack/react-query';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { rpc } from '@renderer/lib/ipc';
 import { cn } from '@renderer/utils/utils';
-import { agentInitials } from '@shared/core/agents/agent-avatar';
-import { personColour } from '@shared/core/people/person-colour';
 import {
   knownAgentTypeDisplayName,
   providerDisplayName,
 } from '@shared/core/providers/agent-provider-registry';
 import type { RemoteAgentSummary } from '@shared/core/switch-servers/switch-servers';
-
-/*
- * The pieces a room's members are drawn with, shared by the room's side panel
- * and its settings page.
- */
 
 /** Query key for one room's own settings — shared so a save can write the
  * server's answer straight back into what the page is reading. */
@@ -34,32 +29,6 @@ export function useRoomDetail(workspaceId: string | null, roomId: string, enable
     queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId: workspaceId as string, roomId }),
     enabled: workspaceId !== null && enabled,
   });
-}
-
-/**
- * A person's initials disc, in their colour (see `personColour`): people have
- * no picture in Switch. `userId` is their Switch user when known.
- */
-export function PersonMark({
-  name,
-  userId,
-  size,
-}: {
-  name: string;
-  userId: string | null;
-  size: 'sm' | 'md';
-}) {
-  return (
-    <span
-      className={cn(
-        'flex shrink-0 items-center justify-center rounded-full font-medium',
-        size === 'md' ? 'size-7 text-xs' : 'size-[22px] text-[10px]'
-      )}
-      style={personColour(userId ?? name)}
-    >
-      {agentInitials(name)}
-    </span>
-  );
 }
 
 /** An agent's own picture, beside the human participants' initials discs. */
@@ -81,6 +50,28 @@ export function AgentMark({
         serverId={workspaceId && workspacesStore.serverIdFor(workspaceId)}
         size={26}
       />
+    </span>
+  );
+}
+
+export function PersonMark({
+  name,
+  userId,
+  size,
+}: {
+  name: string;
+  userId: string | null;
+  size: 'sm' | 'md';
+}) {
+  return (
+    <span
+      className={cn(
+        'flex shrink-0 items-center justify-center rounded-full font-medium',
+        size === 'md' ? 'size-7 text-xs' : 'size-[22px] text-[10px]'
+      )}
+      style={personColour(userId ?? name)}
+    >
+      {agentInitials(name)}
     </span>
   );
 }

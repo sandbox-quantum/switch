@@ -1,24 +1,15 @@
+import {
+  createBuddy as createBuddyShared,
+  type TemplateRunResult,
+} from '@switch-console/chat-ui/model/create-buddy';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
-import { BUDDY_TEMPLATE_ID, buddyAgentName, findBuddy } from './buddy-identity';
+import { BUDDY_TEMPLATE_ID } from './buddy-identity';
 import { reportBuddyStep } from './buddy-telemetry';
-
-/** How many names to try when someone else in the workspace already has the one picked. */
-const NAME_ATTEMPTS = 5;
-
-export class BuddyNotCreated extends Error {}
 
 /**
  * Creates the person's buddy on this computer with `provider`, from the
- * template the server ships, and opens a private chat with it.
- *
- * The person's own agents are known, so a name of theirs is never picked;
- * someone else's buddy may hold the name, which the server refuses as taken,
- * and the next number is tried.
- *
- * A new buddy is reported by the template run, as `agent_created` with entry
- * point `switch_buddy` wherever the person set it up; a buddy the person
- * already had is opened, and reports nothing.
+ * template the server ships.
  */
 export async function createBuddy(input: {
   serverId: string;
@@ -28,58 +19,60 @@ export async function createBuddy(input: {
   person: { name: string | null; email: string | null };
 }): Promise<{ agentId: string; name: string }> {
   try {
-    return await createBuddyAgent(input);
+    return await createBuddyShared(input.person, input.provider, input.machineId, {
+      listAgents: async () => {
+        const agents = (await rpc.managedAgents.list(input.serverId)) ?? [];
+        return agents.map((agent) => ({
+          agentId: agent.agentId,
+          name: agent.name,
+          template: agent.template,
+        }));
+      },
+      getTemplate: async () => {
+        const template = await rpc.workspaces.getTemplateDetail({
+          workspaceId: input.workspaceId,
+          templateId: BUDDY_TEMPLATE_ID,
+        });
+        return { content: template.definition, name: template.name };
+      },
+      runTemplate: async ({
+        content,
+        name,
+        agentName,
+        provider,
+        machine,
+      }): Promise<TemplateRunResult> => {
+        const result = await rpc.workspaces.runTemplateDocument(input.workspaceId, {
+          template: content,
+          inputs: { agent_name: agentName, provider, machine },
+          filled: {},
+          templateName: name,
+          templateId: BUDDY_TEMPLATE_ID,
+          entryPoint: 'switch_buddy',
+        });
+        if (result.kind === 'created') {
+          const created = result.createdAgents[0];
+          if (!created)
+            return { kind: 'failed', message: 'The server created no agent for switch-buddy.' };
+          return { kind: 'created', agentId: created.agentId, name: created.name };
+        }
+        if (result.problems.some((problem) => problem.code === 'name_taken'))
+          return { kind: 'name_taken' };
+        return {
+          kind: 'failed',
+          message: result.problems.map((problem) => problem.message).join(' ') || result.message,
+        };
+      },
+      recordRun: () =>
+        rpc.workspaces.recordTemplateRun({
+          workspaceId: input.workspaceId,
+          templateId: BUDDY_TEMPLATE_ID,
+        }),
+    });
   } catch (error) {
     reportBuddyStep('create_failed', input.provider);
     throw error;
   }
-}
-
-async function createBuddyAgent(input: {
-  serverId: string;
-  workspaceId: string;
-  machineId: string;
-  provider: string;
-  person: { name: string | null; email: string | null };
-}): Promise<{ agentId: string; name: string }> {
-  const existing = (await rpc.managedAgents.list(input.serverId)) ?? [];
-  const mine = findBuddy(existing);
-  if (mine) return { agentId: mine.agentId, name: mine.name };
-  const template = await rpc.workspaces.getTemplateDetail({
-    workspaceId: input.workspaceId,
-    templateId: BUDDY_TEMPLATE_ID,
-  });
-  const taken = new Set(existing.map((agent) => agent.name));
-  for (let attempt = 0; attempt < NAME_ATTEMPTS; attempt++) {
-    const name = buddyAgentName(input.person, taken);
-    const result = await rpc.workspaces.runTemplateDocument(input.workspaceId, {
-      template: template.definition,
-      inputs: { agent_name: name, provider: input.provider, machine: input.machineId },
-      filled: {},
-      templateName: template.name,
-      templateId: BUDDY_TEMPLATE_ID,
-      entryPoint: 'switch_buddy',
-    });
-    if (result.kind === 'created') {
-      const created = result.createdAgents[0];
-      if (!created) throw new BuddyNotCreated('The server created no agent for switch-buddy.');
-      void rpc.workspaces.recordTemplateRun({
-        workspaceId: input.workspaceId,
-        templateId: BUDDY_TEMPLATE_ID,
-      });
-      return { agentId: created.agentId, name: created.name };
-    }
-    if (result.problems.some((problem) => problem.code === 'name_taken')) {
-      taken.add(name);
-      continue;
-    }
-    throw new BuddyNotCreated(
-      result.problems.map((problem) => problem.message).join(' ') || result.message
-    );
-  }
-  throw new BuddyNotCreated(
-    'Every name tried for switch-buddy is already taken in this workspace.'
-  );
 }
 
 /** The workspace the buddy belongs to: the one open on the server. */

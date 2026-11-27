@@ -11,9 +11,13 @@ from switch_core.feature_flags import (
     AGENT_MANAGEMENT,
     ALWAYS_ON_FEATURE_FLAGS,
     ECOSYSTEM_SHOW_OWNERS,
+    GATEWAY_CHATS,
+    GATEWAY_ONBOARDING,
     GATEWAY_V2,
     GROUP_CHATS,
+    HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
+    SWITCH_BUDDY,
 )
 
 _BASE_KWARGS = dict(
@@ -78,6 +82,21 @@ def test_an_unknown_flag_is_a_startup_error(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("FEATURE_FLAGS_ENABLED", "ecosystem.show_ownres")
     with pytest.raises(ValidationError, match="ecosystem.show_ownres"):
         SwitchConfig(**_BASE_KWARGS)  # type: ignore[arg-type]
+
+
+def test_getting_started_needs_chats_buddy_and_cloud_machines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEATURE_FLAGS_ENABLED", f"{GATEWAY_ONBOARDING},{GATEWAY_CHATS}")
+    with pytest.raises(
+        ValidationError, match=rf"{GATEWAY_ONBOARDING}.*{HOSTED_AGENTS}.*{SWITCH_BUDDY}"
+    ):
+        SwitchConfig(**_BASE_KWARGS)  # type: ignore[arg-type]
+    monkeypatch.setenv(
+        "FEATURE_FLAGS_ENABLED",
+        f"{GATEWAY_ONBOARDING},{GATEWAY_CHATS},{SWITCH_BUDDY},{HOSTED_AGENTS}",
+    )
+    assert SwitchConfig(**_BASE_KWARGS).feature_flags[GATEWAY_ONBOARDING]  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

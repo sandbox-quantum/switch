@@ -35,7 +35,7 @@ const bridge = (overrides: Partial<BridgeDetail>) =>
 
 function showForm(bridges: BridgeDetail[] = []) {
   vi.mocked(hooks.useBridges).mockReturnValue(result(bridges));
-  render(<RoomCreateFormBody />);
+  render(<RoomCreateFormBody preselectedAgentId={null} />);
 }
 
 const create = () => screen.getByRole<HTMLButtonElement>("button", { name: "Create" });
@@ -147,7 +147,7 @@ describe("New room: lists that could not be loaded", () => {
   it("says so, rather than offering no agents and no messaging apps", () => {
     vi.mocked(hooks.useAgents).mockReturnValue({ data: null, loading: false, error: "Not authenticated", refetch: vi.fn() });
     vi.mocked(hooks.useBridges).mockReturnValue({ data: null, loading: false, error: "500 Internal Server Error", refetch: vi.fn() });
-    render(<RoomCreateFormBody />);
+    render(<RoomCreateFormBody preselectedAgentId={null} />);
 
     expect(screen.getByText("Couldn't load the agents: Not authenticated")).toBeTruthy();
     expect(screen.getByText("Couldn't load the messaging apps: 500 Internal Server Error")).toBeTruthy();

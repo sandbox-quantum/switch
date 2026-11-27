@@ -378,6 +378,17 @@ def test_an_agent_name_goes_out_as_its_role_pill() -> None:
     assert adapter.translate_outbound("ask @flint-tracker") == "ask <@&1001>"
 
 
+def test_inline_code_agent_mention_stays_literal() -> None:
+    guild = _FakeGuild()
+    adapter = _adapter(guild)
+    _run(adapter.create_agent_identity(_agent("flint-tracker", "Tracks flint")))
+
+    assert (
+        adapter.translate_outbound("ask @flint-tracker, e.g. `@flint-tracker status`")
+        == "ask <@&1001>, e.g. `@flint-tracker status`"
+    )
+
+
 def test_a_name_that_is_not_an_agents_is_not_turned_into_a_ping() -> None:
     """Only roles this bridge minted or adopted for an agent become pills.
 

@@ -141,6 +141,31 @@ interface State {
   nativeId: string;
   client: StdioJsonRpcClient;
   turn: string | null;
+  /**
+   * Whether a `session/prompt` sent while one runs steers the running turn,
+   * for this session's executable: see {@link AcpProviderHooks.steersRunningTurn}.
+   */
+  steering: boolean;
+  /**
+   * The running turn's latest `session/prompt`, counted from the session's
+   * start: once a turn has been steered, only the answer to its latest prompt
+   * ends it. Undefined until the turn's first prompt has been sent.
+   */
+  latestPrompt: number | undefined;
+  /**
+   * The running turn's prompts in the order sent, each with its answer once
+   * it has one: a steered prompt the agent rejects hands the turn back to the
+   * one before it.
+   */
+  turnPrompts: SentPrompt[];
+  /**
+   * What steered prompts the agent rejected carried, sent again once the
+   * turn's other prompts have been answered: the host has already counted
+   * them as delivered into the turn, so they are never dropped quietly.
+   */
+  undelivered: Array<Array<Record<string, unknown>>>;
+  /** How many `session/prompt` requests the session has sent. */
+  prompts: number;
   queue: ProviderSendTurnInput[];
   items: Map<string, ProviderItem>;
   decisions: Map<string, PendingDecision>;
@@ -178,6 +203,44 @@ interface State {
   compaction: { progress: AcpCompactionProgress | undefined } | null;
 }
 
+/** How the agent answered one `session/prompt`. */
+type PromptAnswer = { reason: string } | { error: unknown };
+
+/** One `session/prompt` of the running turn. */
+interface SentPrompt {
+  seq: number;
+  content: Array<Record<string, unknown>>;
+  /** `steered` was sent into a running turn; `resent` again after the agent rejected that. */
+  kind: 'first' | 'steered' | 'resent';
+  answer?: PromptAnswer;
+}
+
+/**
+ * A turn's spend with another answer's added: each `session/prompt` answer
+ * reports only its own, and a turn whose rejected steer was sent again ran
+ * more than one.
+ */
+function addUsage(total: TokenUsage[], more: TokenUsage[]): TokenUsage[] {
+  const sum = total.map((entry) => ({ ...entry }));
+  for (const entry of more) {
+    const same = sum.find((existing) => existing.model === entry.model);
+    if (!same) sum.push({ ...entry });
+    else
+      for (const key of [
+        'inputTokens',
+        'outputTokens',
+        'cacheReadTokens',
+        'cacheWriteTokens',
+      ] as const)
+        same[key] += entry[key];
+  }
+  return sum;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 type Emittable<T = ProviderRuntimeEvent> = T extends ProviderRuntimeEvent
   ? Omit<T, 'eventId' | 'provider' | 'sessionId' | 'createdAt'>
   : never;
@@ -200,7 +263,14 @@ export class AcpAdapter implements ProviderAdapter {
     private readonly options: AcpAdapterOptions
   ) {
     this.provider = hooks.provider;
-    this.capabilities = hooks.capabilities;
+    // Steering follows the executable too: what a session advertises for a
+    // mid-turn message is read from here, so a runtime that cannot steer
+    // says so rather than having each steer refused.
+    const binaryPath = options.binaryPath ?? hooks.defaultBinary;
+    this.capabilities = {
+      ...hooks.capabilities,
+      steering: hooks.capabilities.steering && (hooks.steersRunningTurn?.(binaryPath) ?? true),
+    };
     this.logger = options.logger ?? noopLogger;
   }
 
@@ -243,6 +313,11 @@ export class AcpAdapter implements ProviderAdapter {
       nativeId: '',
       client,
       turn: null,
+      steering: this.capabilities.steering,
+      latestPrompt: undefined,
+      turnPrompts: [],
+      undelivered: [],
+      prompts: 0,
       queue: [],
       compaction: null,
       items: new Map(),
@@ -389,6 +464,17 @@ export class AcpAdapter implements ProviderAdapter {
     }
   }
 
+  /**
+   * A message sent while a turn runs steers it where the session can. Through
+   * the agent's own steering request where it has one (OpenCode's), or else
+   * as another `session/prompt`, after which the turn ends with the answer
+   * to its latest prompt: agy (1.5.17) answers the earlier prompt `end_turn`
+   * as soon as the later one arrives and carries on in the same turn, so an
+   * earlier prompt's answer ends nothing. Otherwise the message queues as a
+   * turn of its own, except one sent with `expectedTurnId`: that is refused
+   * with {@link SteerNotSentError}, having sent nothing, so the host queues it
+   * instead.
+   */
   async sendTurn(input: ProviderSendTurnInput): Promise<ProviderTurnStartResult> {
     const state = this.require(input.sessionId);
     const { steerMethod } = this.hooks;
@@ -426,10 +512,54 @@ export class AcpAdapter implements ProviderAdapter {
         if (input.expectedTurnId)
           throw new SteerNotSentError(`${this.hooks.label} had no running turn to steer.`);
       }
+    } else if (state.steering) {
+      const turnId = state.turn;
+      if (input.expectedTurnId && turnId !== input.expectedTurnId)
+        throw new SteerNotSentError('The authorized turn is no longer running.');
+      if (turnId && this.canSteer(state, input)) {
+        const context = state.context;
+        const content = await this.promptContent(state, input, context);
+        // The turn may have ended, or stopped being steerable, while the
+        // attachments were read.
+        if (state.turn === turnId && this.canSteer(state, input)) {
+          if (state.context === context) state.context = '';
+          this.settle(
+            state,
+            turnId,
+            Promise.resolve(this.prompt(state, turnId, content, 'steered'))
+          );
+          return { turnId: input.turnId, steeredInto: turnId };
+        }
+      }
+      if (input.expectedTurnId)
+        throw new SteerNotSentError(`${this.hooks.label} is not ready to take a message mid-turn.`);
+    } else if (input.expectedTurnId) {
+      throw new SteerNotSentError(`${this.hooks.label} cannot steer a running turn.`);
     }
     state.queue.push(input);
     if (!state.turn) this.drain(state);
     return { turnId: input.turnId };
+  }
+
+  /**
+   * Whether a prompt sent now would steer the running turn: not before the
+   * turn's first prompt has been sent (the second would reach the agent
+   * first), once it is being interrupted, while it waits on an approval or a
+   * question (the prompt would be read in place of the answer), behind
+   * messages already waiting, or for a message that changes the model, which
+   * runs as its own turn where the model is applied.
+   */
+  private canSteer(state: State, input: ProviderSendTurnInput): boolean {
+    return (
+      state.steering &&
+      state.turn !== null &&
+      !state.queue.length &&
+      !(input.model && !this.isCurrentModel(state, input.model)) &&
+      state.latestPrompt !== undefined &&
+      !state.interrupted &&
+      !state.decisions.size &&
+      !state.questions.size
+    );
   }
 
   private drain(state: State): void {
@@ -437,6 +567,9 @@ export class AcpAdapter implements ProviderAdapter {
     const input = state.queue.shift();
     if (!input) return;
     state.turn = input.turnId;
+    state.latestPrompt = undefined;
+    state.turnPrompts = [];
+    state.undelivered = [];
     state.interrupted = false;
     state.refusedRequest = false;
     state.messageId = randomUUID();
@@ -446,47 +579,159 @@ export class AcpAdapter implements ProviderAdapter {
     state.mcpToolCalls.clear();
     this.emit(state, { type: 'turn.started', turnId: input.turnId });
     this.emit(state, { type: 'session.state.changed', status: 'running' });
-    void this.run(state, input).then(
-      (reason) => {
-        if (state.turn !== input.turnId) return;
-        // `cancelled` answers our own `session/cancel`, or follows a request
-        // someone cancelled or declined; an agent that cancels unasked (Junie,
-        // when every model refuses it) has failed.
-        const interrupted = state.interrupted || (reason === 'cancelled' && state.refusedRequest);
-        this.complete(
-          state,
-          interrupted ? 'interrupted' : reason === 'end_turn' ? 'completed' : 'error',
-          interrupted
-            ? 'Interrupted.'
-            : reason === 'end_turn'
-              ? undefined
-              : reason === 'cancelled'
-                ? `${this.hooks.label} cancelled the turn itself, without being interrupted.`
-                : `${this.hooks.label} stopped: ${reason}`
-        );
-      },
-      (error: unknown) => {
-        if (state.turn !== input.turnId) return;
-        this.complete(
-          state,
-          state.interrupted ? 'interrupted' : 'error',
-          state.interrupted ? 'Interrupted.' : String(error)
-        );
+    this.settle(state, input.turnId, this.run(state, input));
+  }
+
+  /**
+   * Ends turn `turnId` with the answer to one of its prompts, unless a later
+   * prompt has been sent into it since: that one's answer ends it instead. A
+   * steered prompt the agent rejects outright was never taken into the turn:
+   * it leaves the turn's prompts, the turn goes on to end with the latest
+   * real answer, and its message is sent again first, still in this turn.
+   */
+  private settle(
+    state: State,
+    turnId: string,
+    prompt: Promise<{ seq: number; stopReason: Promise<string> }>
+  ): void {
+    let entry: SentPrompt | undefined;
+    const answered = (answer: PromptAnswer) => {
+      if (state.turn !== turnId) return;
+      if (!entry) {
+        // The turn's first prompt failed before it was sent.
+        this.finish(state, answer);
+        return;
       }
+      entry.answer = answer;
+      if ('error' in answer && entry.kind !== 'first' && !state.interrupted) {
+        state.turnPrompts.splice(state.turnPrompts.indexOf(entry), 1);
+        if (entry.kind === 'resent') {
+          this.complete(
+            state,
+            'error',
+            `${this.hooks.label} did not take a message sent mid-turn, sent again after the turn: ${errorText(answer.error)}`
+          );
+          return;
+        }
+        state.undelivered.push(entry.content);
+        this.emit(state, {
+          type: 'runtime.warning',
+          message: `${this.hooks.label} did not take the message sent mid-turn (${errorText(answer.error)}); it will be sent again when the turn's current work is done.`,
+        });
+        if (entry.seq !== state.latestPrompt) return;
+        const latest = state.turnPrompts.at(-1)!;
+        state.latestPrompt = latest.seq;
+        if (latest.answer) this.conclude(state, turnId, latest.answer);
+        return;
+      }
+      if (entry.seq !== state.latestPrompt) return;
+      this.conclude(state, turnId, answer);
+    };
+    void prompt
+      .then((sent) => {
+        entry = state.turnPrompts.find((sentPrompt) => sentPrompt.seq === sent.seq);
+        return sent.stopReason;
+      })
+      .then(
+        (reason) => answered({ reason }),
+        (error: unknown) => answered({ error })
+      );
+  }
+
+  /**
+   * The turn's latest prompt has its answer. Messages the agent rejected
+   * mid-turn are sent again first, together, as the turn's next prompt; once
+   * none are left the turn ends with the answer.
+   */
+  private conclude(state: State, turnId: string, answer: PromptAnswer): void {
+    const undelivered = state.undelivered.splice(0);
+    if (
+      undelivered.length &&
+      !state.interrupted &&
+      !('error' in answer) &&
+      answer.reason === 'end_turn'
+    ) {
+      this.settle(
+        state,
+        turnId,
+        Promise.resolve(this.prompt(state, turnId, undelivered.flat(), 'resent'))
+      );
+      return;
+    }
+    if (undelivered.length)
+      this.emit(state, {
+        type: 'runtime.warning',
+        message: `${undelivered.length === 1 ? 'A message' : `${undelivered.length} messages`} sent mid-turn that ${this.hooks.label} did not take ${undelivered.length === 1 ? 'was' : 'were'} not sent again: the turn ended first.`,
+      });
+    this.finish(state, answer);
+  }
+
+  /** Ends the running turn with the answer to its latest prompt. */
+  private finish(state: State, answer: PromptAnswer): void {
+    if ('error' in answer) {
+      this.complete(
+        state,
+        state.interrupted ? 'interrupted' : 'error',
+        state.interrupted ? 'Interrupted.' : String(answer.error)
+      );
+      return;
+    }
+    const { reason } = answer;
+    // `cancelled` answers our own `session/cancel`, or follows a request
+    // someone cancelled or declined; an agent that cancels unasked (Junie,
+    // when every model refuses it) has failed.
+    const interrupted = state.interrupted || (reason === 'cancelled' && state.refusedRequest);
+    this.complete(
+      state,
+      interrupted ? 'interrupted' : reason === 'end_turn' ? 'completed' : 'error',
+      interrupted
+        ? 'Interrupted.'
+        : reason === 'end_turn'
+          ? undefined
+          : reason === 'cancelled'
+            ? `${this.hooks.label} cancelled the turn itself, without being interrupted.`
+            : `${this.hooks.label} stopped: ${reason}`
     );
   }
 
-  private async run(state: State, input: ProviderSendTurnInput): Promise<string> {
+  private async run(
+    state: State,
+    input: ProviderSendTurnInput
+  ): Promise<{ seq: number; stopReason: Promise<string> }> {
     if (input.model) await this.setModel(state.id, input.model);
     const context = state.context;
-    const prompt = await this.promptContent(state, input, context);
+    const content = await this.promptContent(state, input, context);
     if (state.context === context) state.context = '';
-    const { stopReason, usage } = await state.client.request<{
-      stopReason: string;
-      usage?: AcpPromptUsage;
-    }>('session/prompt', { sessionId: state.nativeId, prompt });
-    if (usage && state.turn === input.turnId) state.usage = this.turnUsage(state, usage);
-    return stopReason;
+    return this.prompt(state, input.turnId, content, 'first');
+  }
+
+  /**
+   * Sends one `session/prompt` into turn `turnId` and makes it the turn's
+   * latest. Its number is taken as it is sent, so a later prompt is always
+   * later here. agy reports usage only on the answer that ends its turn (an
+   * earlier prompt it answers early carries none), and every answer's usage
+   * is added to the turn's.
+   */
+  private prompt(
+    state: State,
+    turnId: string,
+    prompt: Array<Record<string, unknown>>,
+    kind: SentPrompt['kind']
+  ): { seq: number; stopReason: Promise<string> } {
+    const seq = ++state.prompts;
+    state.latestPrompt = seq;
+    state.turnPrompts.push({ seq, content: prompt, kind });
+    const stopReason = state.client
+      .request<{ stopReason: string; usage?: AcpPromptUsage }>('session/prompt', {
+        sessionId: state.nativeId,
+        prompt,
+      })
+      .then(({ stopReason, usage }) => {
+        if (usage && state.turn === turnId)
+          state.usage = addUsage(state.usage, this.turnUsage(state, usage));
+        return stopReason;
+      });
+    return { seq, stopReason };
   }
 
   /** A turn's spend, under the model selected when it ended. */

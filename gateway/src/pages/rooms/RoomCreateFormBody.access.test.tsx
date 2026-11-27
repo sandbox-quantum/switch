@@ -51,7 +51,7 @@ beforeEach(() => {
   vi.mocked(hooks.useRoomAgentCandidates).mockReturnValue(data({ agent_ids: [] }));
   vi.mocked(hooks.useRoomGroups).mockReturnValue(data([]));
   vi.mocked(api.createRoom).mockResolvedValue({ id: "r1" } as never);
-  render(<RoomCreateFormBody />);
+  render(<RoomCreateFormBody preselectedAgentId={null} />);
   fireEvent.change(screen.getByLabelText(/Name/), { target: { value: "planning" } });
   fireEvent.change(screen.getByLabelText(/Description/), { target: { value: "d" } });
 });

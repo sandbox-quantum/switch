@@ -827,9 +827,26 @@ def _secret_data(s: dict, key: str, value: str | None) -> None:
         data[key] = base64.b64encode(value.encode()).decode()
 
 
-def _drop_first_entry(s: dict) -> None:
+def _change_old_entry(value: str) -> Callable[[dict], None]:
+    """The list written back with one of the entries it already held pointing somewhere else (still a value of the
+    right shape, so only the add-only rule can refuse it)."""
+
+    def apply(s: dict) -> None:
+        path = urlsplit(s["request"]["path"]).path
+        (old,) = [o["object"] for o in s["setup"] if o["path"] == path]
+        key = sorted(old["data"])[0]
+        _body(s)["data"][key] = base64.b64encode(value.encode()).decode()
+
+    return apply
+
+
+def _drop_old_entry(s: dict) -> None:
+    """The list written back without one of the entries it already held (one in the setup's copy of it, the state
+    the write replaces), not merely without the entry this write adds."""
+    path = urlsplit(s["request"]["path"]).path
+    (old,) = [o["object"] for o in s["setup"] if o["path"] == path]
     data = _body(s)["data"]
-    data.pop(sorted(data)[0])
+    data.pop(sorted(old["data"])[0])
 
 
 def _to(s: dict, method: str, path: str, body: dict | None = None) -> None:
@@ -841,8 +858,9 @@ def _as_admin(s: dict) -> None:
     s["groups"] = ADMIN["groups"]
 
 
-def _ns_update(change: Callable[[dict], None]) -> Callable[[dict], None]:
-    """The namespace sample turned into an update of that namespace by an administrator."""
+def _ns_update(change: Callable[[dict], None], admin: bool = True) -> Callable[[dict], None]:
+    """The namespace sample turned into an update of that namespace: by an administrator, or (`admin=False`) by the
+    provisioner itself."""
 
     def apply(s: dict) -> None:
         obj = copy.deepcopy(_body(s))
@@ -851,7 +869,8 @@ def _ns_update(change: Callable[[dict], None]) -> Callable[[dict], None]:
         )
         change(obj)
         _to(s, "PUT", f"/api/v1/namespaces/{obj['metadata']['name']}", obj)
-        _as_admin(s)
+        if admin:
+            _as_admin(s)
 
     return apply
 
@@ -941,8 +960,10 @@ def _room_container(key: str, value: Any) -> Callable[[dict], None]:
     return lambda s: _body(s)["spec"]["containers"][0].__setitem__(key, value)
 
 
-def _uppercase_name(s: dict) -> None:
-    name = "agents-box-k1-0123456789ABCDEF"
+def _name_out_of_form(s: dict) -> None:
+    """A valid Kubernetes name, so only the policy can refuse it: a box namespace's shape with a "g" for its last
+    hex digit."""
+    name = "agents-box-k1-0123456789abcdeg"
     meta = _body(s)["metadata"]
     meta["name"] = name
     meta["labels"]["switch.dev/box"] = name.removeprefix("agents-")
@@ -1014,6 +1035,25 @@ def _evict_other_pod(s: dict) -> None:
     _to(s, "POST", f"/api/v1/namespaces/{ns}/pods/box-1/eviction", body)
 
 
+def _evict_outside_a_box_namespace(s: dict) -> None:
+    """The drain worker's eviction, aimed at a pod named box-0 in a namespace that isn't a box's. RBAC lets it
+    through (the eviction grant is by pod name, in any namespace), so only the policy can refuse it. The pod is a
+    plain one: a box pod's gVisor class is refused outside the box namespaces."""
+    pod = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": "box-0", "namespace": "contract-plain"},
+        "spec": {"containers": [{"name": "c", "image": IMAGE["pause"]}]},
+    }
+    s["setup"] = [
+        {"path": "/api/v1/namespaces/contract-plain", "object": _ns_obj("contract-plain")},
+        {"path": "/api/v1/namespaces/contract-plain/pods/box-0", "object": pod},
+    ]
+    body = copy.deepcopy(_body(s))
+    body["metadata"]["namespace"] = "contract-plain"
+    _to(s, "POST", "/api/v1/namespaces/contract-plain/pods/box-0/eviction", body)
+
+
 def _scale_elsewhere(s: dict) -> None:
     """The scaler's start, aimed at a StatefulSet named box in a namespace that isn't a box's."""
     ns = parse_path(s["request"]["path"]).namespace
@@ -1046,8 +1086,8 @@ def _bind_role(name: str) -> Callable[[dict], None]:
 
 BAD: list[Bad] = [
     # P1: the namespaces the provisioner makes.
-    Bad("p1-an-update", NS, _ns_update(lambda o: o["metadata"]["labels"].__setitem__("x", "y")), rbac=True),
-    Bad("p1-a-name-out-of-form", NS, _uppercase_name, (P1,), "a box namespace is agents-user-k1-<16 hex> or agents-box-k1-<16 hex>"),
+    Bad("p1-an-update", NS, _ns_update(lambda o: o["metadata"]["labels"].__setitem__("x", "y"), admin=False), rbac=True),
+    Bad("p1-a-name-out-of-form", NS, _name_out_of_form, (P1,), "a box namespace is agents-user-k1-<16 hex> or agents-box-k1-<16 hex>"),
     Bad("p1-a-template-label-missing", NS, _label("app.kubernetes.io/part-of", None), (P1,), "the five template labels"),
     Bad("p1-an-extra-label", NS, _label("example.com/extra", "x"), (P1,), "no labels beyond the template's"),
     Bad("p1-a-machine-id-out-of-form", NS, _set(("metadata", "annotations", "switch.dev/machine-id"), "not-a-uuid"), (P1,), "exactly one annotation, switch.dev/machine-id, a UUID"),
@@ -1089,18 +1129,22 @@ BAD: list[Bad] = [
     Bad("p4-an-extra-volume", STS, lambda s: _tmpl(s)["volumes"].append({"name": "extra", "emptyDir": {}}), (P4,), "only the template's seven volumes"),
     # P5: the add-only lists.
     Bad("p5-box-map-deleted", BOX_MAP, lambda s: _to(s, "DELETE", s["request"]["path"]), rbac=True),
-    Bad("p5-box-map-entry-removed", BOX_MAP, _drop_first_entry, (P5,), "an existing box map entry may never change or go"),
+    Bad("p5-box-map-entry-removed", BOX_MAP, _drop_old_entry, (P5,), "an existing box map entry may never change or go"),
     Bad("p5-box-map-entry-out-of-form", BOX_MAP, lambda s: _secret_data(s, "not-a-uuid", box_namespace(_keyed(8))), (P5,), "a new entry is a machine id (UUID) to a box namespace"),
     Bad("p5-box-map-label-changed", BOX_MAP, _label("example.com/extra", "x"), (P5,), "the box map's labels, annotations and mutability"),
     Bad("p5-pool-map-deleted", POOL_MAP, lambda s: _to(s, "DELETE", s["request"]["path"]), rbac=True),
-    Bad("p5-pool-map-entry-removed", POOL_MAP, _drop_first_entry, (P5P, ADD_ONLY), "an existing pool-map entry may never change or go"),
+    Bad("p5-pool-map-entry-removed", POOL_MAP, _drop_old_entry, (P5P, ADD_ONLY), "an existing pool-map entry may never change or go"),
     Bad("p5-pool-map-entry-out-of-form", POOL_MAP, lambda s: _secret_data(s, _machine(8), user_namespace(_keyed(8))), (P5P,), "a new entry is a pool box id (UUID) to its box-keyed namespace"),
     Bad("p5-pool-map-label-changed", POOL_MAP, _label("example.com/extra", "x"), (P5P,), "the pool-map's labels, annotations and mutability"),
     Bad("p5-box-owners-deleted", OWNERS, lambda s: _to(s, "DELETE", s["request"]["path"]), rbac=True),
-    Bad("p5-box-owners-entry-removed", OWNERS, _drop_first_entry, (P5O, ADD_ONLY), "an existing box-owners entry may never change or go"),
+    Bad("p5-box-owners-entry-removed", OWNERS, _drop_old_entry, (P5O, ADD_ONLY), "an existing box-owners entry may never change or go"),
     Bad("p5-box-owners-entry-out-of-form", OWNERS, lambda s: _secret_data(s, box_namespace(_keyed(8)), "not-a-keyed-id"), (P5O,), "a new entry is a box-keyed namespace to its owner's keyed id"),
     Bad("p5-box-owners-label-changed", OWNERS, _label("example.com/extra", "x"), (P5O,), "the box-owners's labels, annotations and mutability"),
-    Bad("add-only-a-removal-entry-removed", REMOVALS, _drop_first_entry, (ADD_ONLY,), "an entry in pool-map, box-owners or box-removals never changes or goes"),
+    Bad("p5-box-map-entry-value-changed", BOX_MAP, _change_old_entry(box_namespace(_keyed(10))), (P5,), "an existing box map entry may never change or go"),
+    Bad("p5-pool-map-entry-value-changed", POOL_MAP, _change_old_entry(box_namespace(_keyed(10))), (P5P, ADD_ONLY), "an existing pool-map entry may never change or go"),
+    Bad("p5-box-owners-entry-value-changed", OWNERS, _change_old_entry(_keyed(10)), (P5O, ADD_ONLY), "an existing box-owners entry may never change or go"),
+    Bad("add-only-a-removal-entry-value-changed", REMOVALS, _change_old_entry(_machine(10)), (ADD_ONLY,), "an entry in pool-map, box-owners or box-removals never changes or goes"),
+    Bad("add-only-a-removal-entry-removed", REMOVALS, _drop_old_entry, (ADD_ONLY,), "an entry in pool-map, box-owners or box-removals never changes or goes"),
     # The reaper and the remover: one namespace delete each.
     Bad("reaper-deletes-a-secret", REAP, lambda s: _to(s, "DELETE", f"/api/v1/namespaces/{HOME}/secrets/box-map"), rbac=True),
     Bad("remover-deletes-a-secret", REMOVE, lambda s: _to(s, "DELETE", f"/api/v1/namespaces/{HOME}/secrets/box-removals"), rbac=True),
@@ -1121,7 +1165,7 @@ BAD: list[Bad] = [
     # P8: the box's RoleBindings.
     Bad("p8-an-update", WATCH, lambda s: _to(s, "PUT", s["request"]["path"] + "/switch-box-watch", _body(s)), rbac=True),
     Bad("p8-an-unlabelled-namespace", WATCH, _unlabel_namespace, (P8, P2), "only in a labelled box namespace"),
-    Bad("p8-another-name", WATCH, lambda s: (_body(s)["metadata"].__setitem__("name", "switch-extra"), _bind_role("switch-extra")(s)), (P8, P2), "the RoleBinding is named switch-box-watch or switch-operator-restart"),
+    Bad("p8-another-name", WATCH, _set(("metadata", "name"), "switch-extra"), (P8, P2), "the RoleBinding is named switch-box-watch or switch-operator-restart"),
     Bad("p8-binds-another-role", WATCH, _bind_role("switch-operator-restart"), (P8,), "each binds only the ClusterRole of its own name"),
     Bad("p8-another-subject", WATCH, lambda s: _body(s)["subjects"][0].__setitem__("name", "default"), (P8,), "its one subject is the hosted controller's account"),
     Bad("p8-a-finalizer", WATCH, _set(("metadata", "finalizers"), ["example.com/hold"]), (P8, P2), "no owners or finalizers"),
@@ -1134,7 +1178,8 @@ BAD: list[Bad] = [
     Bad("cordon-already-cordoned", CORDON, _node(lambda n: n["spec"].__setitem__("unschedulable", True)), (CORDON_ONLY,), "the operator may only cordon (unschedulable false to true)"),
     Bad("cordon-and-taint", CORDON, _set(("spec", "taints"), [{"key": "example.com/x", "effect": "NoSchedule"}]), (CORDON_ONLY,), "the operator may not change a node's spec beyond cordoning it"),
     Bad("cordon-and-label", CORDON, _set(("metadata", "labels"), {"example.com/x": "y"}), (CORDON_ONLY,), "the operator may not change a node's labels"),
-    Bad("evict-another-pod", EVICT, _evict_other_pod, (EVICT_ONLY,), "the operator may only evict box-0 in a box namespace"),
+    Bad("evict-another-pod", EVICT, _evict_other_pod, rbac=True),  # the eviction grant names box-0 only
+    Bad("evict-outside-a-box-namespace", EVICT, _evict_outside_a_box_namespace, (EVICT_ONLY,), "the operator may only evict box-0 in a box namespace"),
     Bad("placeholder-elsewhere", ROOM, lambda s: _to(s, "POST", f"/api/v1/namespaces/{HOME}/pods", _body(s)), rbac=True),
     Bad("placeholder-a-long-name", ROOM, _set(("metadata", "name"), "drain-room-" + "a" * 21), (PLACEHOLDER,), "a placeholder is named drain-room-<id>"),
     Bad("placeholder-with-env", ROOM, _room_container("env", [{"name": "X", "value": "y"}]), (PLACEHOLDER,), "a placeholder is one pause container"),

@@ -38,8 +38,8 @@ vi.mock('@renderer/features/remote-hosts/host-setup-store', () => ({
   },
 }));
 
+import { TooltipProvider } from '@switch-console/chat-ui/primitives/tooltip';
 import { HostTroubleIndicator } from '@renderer/features/remote-hosts/host-trouble-indicator';
-import { TooltipProvider } from '@renderer/lib/ui/tooltip';
 import type { HostSetupPlan, HostSetupStep } from '@shared/core/remote-hosts/setup';
 
 let container: HTMLDivElement | null = null;

@@ -1,12 +1,3 @@
-import { Check, ExternalLink, Loader2, MoreHorizontal, X } from 'lucide-react';
-import { observer } from 'mobx-react-lite';
-import { toast } from 'sonner';
-import {
-  InstalledBadge,
-  RecommendedBadge,
-  UsedBadge,
-} from '@renderer/lib/components/provider-status-badges';
-import type { HostDependencyInstallation } from '@renderer/lib/stores/use-agent-installation-statuses';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,7 +9,16 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { Check, ExternalLink, Loader2, MoreHorizontal, X } from 'lucide-react';
+import { observer } from 'mobx-react-lite';
+import { toast } from 'sonner';
+import {
+  InstalledBadge,
+  RecommendedBadge,
+  UsedBadge,
+} from '@renderer/lib/components/provider-status-badges';
+import type { HostDependencyInstallation } from '@renderer/lib/stores/use-agent-installation-statuses';
 import type {
   AgentPayload,
   InstallOption,

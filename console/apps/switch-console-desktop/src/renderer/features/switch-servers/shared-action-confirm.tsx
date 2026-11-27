@@ -1,6 +1,4 @@
-import { TriangleAlert } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   Dialog,
   DialogClose,
@@ -10,7 +8,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { TriangleAlert } from 'lucide-react';
+import { type ReactNode, useState } from 'react';
 import { remoteServerStore } from './remote-server-store';
 import { sharedWithOthers, whoElseSentence } from './shared-consoles';
 

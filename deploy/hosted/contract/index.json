@@ -2,7 +2,11 @@
   "files": [
     {
       "path": "admission/bad/add-only-a-removal-entry-removed.json",
-      "sha256": "9d19b0a099f37e34905ad515b43ca9eaec428af70436b386ca166c284653161a"
+      "sha256": "dcfaa5792a202719244d757f7ec215a062df675e22b979818c5c5101017a8fd2"
+    },
+    {
+      "path": "admission/bad/add-only-a-removal-entry-value-changed.json",
+      "sha256": "cd3b8a36ac7a97b5b141ae42811e8a5db465923442e085a668b91ea1c6bdff80"
     },
     {
       "path": "admission/bad/cordon-a-status-change.json",
@@ -26,7 +30,11 @@
     },
     {
       "path": "admission/bad/evict-another-pod.json",
-      "sha256": "03a7059f01a592e62917c0c304631fadf67475ede1ded10a0141c577fa3505c4"
+      "sha256": "82bfcfab774fd9b4b8221f13b32e52f8e4d10f70ad4595d10a9033b7b3776061"
+    },
+    {
+      "path": "admission/bad/evict-outside-a-box-namespace.json",
+      "sha256": "208abecb78ef53761e50498d3537b658fe9b0bd4ff58530e551b305b07fe97f7"
     },
     {
       "path": "admission/bad/gvisor-a-class-outside-the-box-namespaces.json",
@@ -54,7 +62,7 @@
     },
     {
       "path": "admission/bad/p1-a-name-out-of-form.json",
-      "sha256": "bbd392c14e818cdcf10d56f7a337262b1b4c2e4eb8e723440d610544f1f3aee6"
+      "sha256": "a9d96e8e9081948c4189914a3ac9326eb0f2569e445f06819457008534304052"
     },
     {
       "path": "admission/bad/p1-a-template-label-missing.json",
@@ -66,7 +74,7 @@
     },
     {
       "path": "admission/bad/p1-an-update.json",
-      "sha256": "5b81d066576a9342c5c65841ce62320efa1573c1d19a2d7e6425edc2035583ef"
+      "sha256": "6b0d197f663e8cf394141f03d72970cd7e09093a9b56c89fc1341e6c3665f3e7"
     },
     {
       "path": "admission/bad/p2-a-delete.json",
@@ -206,7 +214,11 @@
     },
     {
       "path": "admission/bad/p5-box-map-entry-removed.json",
-      "sha256": "4d7d0df09515f7790049591e49903137ac9b0e279bd2449e4237022aa06a3022"
+      "sha256": "fc810dc55509bff931be661cf522991201ea9b5a4864af633b044b4b638ab1a5"
+    },
+    {
+      "path": "admission/bad/p5-box-map-entry-value-changed.json",
+      "sha256": "e87dfc11003daf772c29d7c699a902e100ef233cc5ad7bfbc47fe92d312778ee"
     },
     {
       "path": "admission/bad/p5-box-map-label-changed.json",
@@ -222,7 +234,11 @@
     },
     {
       "path": "admission/bad/p5-box-owners-entry-removed.json",
-      "sha256": "2ff6a6c1f5c65b3bcd090e777328f52527eb5b4e12423999026c38d52f3a6be0"
+      "sha256": "89eb47a67dc4bd3866aa04b65a6fa40d6e12e7c83f73753bcc2799d7c5a167f4"
+    },
+    {
+      "path": "admission/bad/p5-box-owners-entry-value-changed.json",
+      "sha256": "c6ea364e092f6730140a33befaaa376fdb20b6c7f4f05e1a6fb7ca1100de0ccd"
     },
     {
       "path": "admission/bad/p5-box-owners-label-changed.json",
@@ -238,7 +254,11 @@
     },
     {
       "path": "admission/bad/p5-pool-map-entry-removed.json",
-      "sha256": "02a2cedaa004c9798b877966399b552702c58f252f5bfd3fd83ef208b4aaf9d8"
+      "sha256": "beb5b049f1ecbde289436ba68255e72fde807e9974105573f504c5263ef7943e"
+    },
+    {
+      "path": "admission/bad/p5-pool-map-entry-value-changed.json",
+      "sha256": "2a770c299fcfd6c1a0c0be00206ae7c2ac2c971a70af4577ba61ff614802a753"
     },
     {
       "path": "admission/bad/p5-pool-map-label-changed.json",
@@ -278,7 +298,7 @@
     },
     {
       "path": "admission/bad/p8-another-name.json",
-      "sha256": "59b94a0e37befb7b7002353fe5f6c8096ec423e2d6ecf37017b706db73c4d1ab"
+      "sha256": "f732629e8071f291d68b1775ab4e8427f525535441dfce01817d5638be114839"
     },
     {
       "path": "admission/bad/p8-another-subject.json",

@@ -1,14 +1,14 @@
-import { X } from 'lucide-react';
-import { useState } from 'react';
-import { Button } from '@renderer/lib/ui/button';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
+} from '@switch-console/chat-ui/primitives/select';
+import { X } from 'lucide-react';
+import { useState } from 'react';
 import {
   type ConnectedGitHub,
   type GitHubGrantChoice,

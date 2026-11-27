@@ -573,13 +573,6 @@ export function roomAccessOf(read: RoomVisibility): RoomAccess {
   return read === 'private' ? 'private' : 'public';
 }
 
-/** What a new channel of this kind makes a room when nobody picks: the server
- * gives a room its channel's visibility. */
-export function roomAccessForChannel(channel: NewRoomChannel): RoomAccess | null {
-  if (channel.kind === 'existing') return null; // the platform says, through the server
-  return channel.private ? 'private' : 'public';
-}
-
 /** What deleting a room does to its platform channel when asked to retire it
  * and all goes to plan (mirrors the gateway's `ChannelRetirement`): archived on Slack and
  * Mattermost, deleted on Discord, left by the bot on Telegram, and kept on

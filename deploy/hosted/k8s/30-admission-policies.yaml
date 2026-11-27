@@ -24,7 +24,7 @@ spec:
       - nodes/status
       scope: "*"
   validations:
-  - expression: request.subResource == ''
+  - expression: request.?subResource.orValue('') == ''
     message: the operator may not change a node's status
   - expression: oldObject.metadata.?labels[?'switch.dev/pool'].orValue('') == 'agents'
     message: the operator may only cordon agents machines (switch.dev/pool=agents)

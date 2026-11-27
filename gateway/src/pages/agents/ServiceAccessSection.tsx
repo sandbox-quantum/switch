@@ -161,9 +161,6 @@ export default function ServiceAccessSection({
     <>
       <Divider />
       <Stack spacing={1.5}>
-        <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
-          Service access
-        </Typography>
         <Typography variant="body2" color="text.secondary">
           What this agent may use of your own connectors. Its sessions are given
           short-lived access for what you grant, and nothing else.
@@ -173,7 +170,7 @@ export default function ServiceAccessSection({
         {grants === null && !error && <CircularProgress size={20} />}
         {grants !== null && !canGrant && (
           <Alert severity="info">
-            New grants are only for an agent Switch Console runs from a known agent type. What it
+            New grants are only for an agent run from a known agent type. What it
             has been granted can still be removed.
           </Alert>
         )}
@@ -330,7 +327,7 @@ export function serviceBlockedReason(
 ): string | null {
   if (service.unavailable_reason !== null) return service.unavailable_reason;
   if (!service.workspace_enabled)
-    return `${service.name} is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors in Switch Console.`;
+    return `${service.name} is not enabled in this workspace. Ask a workspace admin; they switch it on in Settings › Connectors.`;
   return null;
 }
 

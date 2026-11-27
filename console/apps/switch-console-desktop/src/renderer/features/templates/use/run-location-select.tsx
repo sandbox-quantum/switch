@@ -1,3 +1,10 @@
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@switch-console/chat-ui/primitives/select';
 import { useQuery } from '@tanstack/react-query';
 import { Cloud, Monitor, Server } from 'lucide-react';
 import { useMemo } from 'react';
@@ -9,13 +16,6 @@ import {
 } from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { rpc } from '@renderer/lib/ipc';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/lib/ui/select';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 
 export const LOCAL_RUN_LOCATION = 'local';
