@@ -15,6 +15,7 @@ import { mattermostRoundtrip } from "./mattermost-roundtrip.ts";
 import { operationsFrontDoor } from "./operations.ts";
 import { organizationMembers } from "./organization-members.ts";
 import { organizations } from "./organizations.ts";
+import { REPLICA_CONNECTION_SCENARIOS } from "./replica-connections.ts";
 import { REPLICA_FAULT_SCENARIOS } from "./replica-faults.ts";
 import { roomCapture } from "./room-capture.ts";
 import { roomGroupPaths } from "./room-groups.ts";
@@ -46,4 +47,5 @@ export const FAST_SCENARIOS: readonly FastScenario[] = [
   roomScheduleTools,
   // Last: each stops a replica and waits out a hand-over.
   ...REPLICA_FAULT_SCENARIOS,
+  ...REPLICA_CONNECTION_SCENARIOS,
 ];

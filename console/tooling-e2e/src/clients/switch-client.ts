@@ -142,6 +142,48 @@ export interface OpenStream {
   close(): void;
 }
 
+/** A frame a held socket sent (`{event, data}`, with an `id` on an agent's events). */
+export interface SocketFrame {
+  event: string;
+  data: Record<string, unknown>;
+  id?: string | number;
+}
+
+/**
+ * A connection socket, an agent's or a controller's, held open and answering
+ * pings, so it stays connected until it is closed or the server ends it.
+ */
+export interface HeldSocket {
+  /** The `connection_state` frame the socket opened with. */
+  state: Record<string, unknown>;
+  /** Every frame received, the opening one included, in order. */
+  frames: SocketFrame[];
+  ended: Promise<StreamEnd>;
+  close(): void;
+}
+
+/** A socket the server refused with a `refused` frame. */
+export class SocketRefused extends Error {
+  readonly detail: Record<string, unknown>;
+
+  constructor(path: string, detail: Record<string, unknown>) {
+    super(`${path} refused: ${JSON.stringify(detail)}`);
+    this.detail = detail;
+  }
+}
+
+/** A controller enrolled by the harness, with its access token. */
+export interface EnrolledController {
+  id: string;
+  accessToken: string;
+}
+
+/** A controller connection opened, for its socket to attach to. */
+export interface ControllerConnection {
+  connectionId: string;
+  generation: number;
+}
+
 export interface RouteProbe {
   status: number;
   contentType: string;
@@ -473,6 +515,150 @@ export class SwitchClient {
       void ended.then((end) => reject(new Error(`${path} closed (${end.code}) before hello`)));
     });
     return {
+      ended,
+      close: () => {
+        closedByClient = true;
+        socket.close();
+      },
+    };
+  }
+
+  /**
+   * Open the agent's connection socket (`WS /agents/{id}/connection/ws`) with
+   * its API key, as connection `connectionId` (reused to reconnect), claiming
+   * `rooms` before its stream starts. Answers every ping, so only the server
+   * or `close` ends it. Resolves on the opening `connection_state` frame;
+   * rejects if the server refuses the socket or closes it first.
+   */
+  async openAgentSocket(
+    agent: RegisteredAgent,
+    connectionId: string,
+    rooms: readonly string[],
+  ): Promise<HeldSocket> {
+    const query: Record<string, string> = {
+      connection_id: connectionId,
+      scope: "single",
+      filter: "addressed",
+    };
+    if (rooms.length > 0) query.rooms = rooms.join(",");
+    return this.holdSocket(
+      `/agents/${agent.id}/connection/ws`,
+      query,
+      { Authorization: `Bearer ${agent.apiKey}` },
+      { type: "pong" },
+    );
+  }
+
+  /**
+   * Enroll a Switch Console controller for the signed-in admin, as Console
+   * does, and exchange its credential for an access token.
+   */
+  async enrollController(name: string): Promise<EnrolledController> {
+    const enrolled = await this.gateway<{ controller_id: string; credential: string }>(
+      "POST",
+      "/management/controllers",
+      {
+        name,
+        kind: "console",
+        platform: { os: "linux", arch: "x64", os_version: "6.1.0" },
+        version: "0.1.0",
+      },
+    );
+    const token = await this.request<{ access_token: string }>(
+      "POST",
+      `/v1/management/controllers/${enrolled.controller_id}/token`,
+      { body: { credential: enrolled.credential } },
+    );
+    return { id: enrolled.controller_id, accessToken: token.access_token };
+  }
+
+  /** `DELETE /gateway/management/controllers/{id}`: revoke the controller. */
+  async revokeController(controllerId: string): Promise<void> {
+    await this.gateway("DELETE", `/management/controllers/${controllerId}`);
+  }
+
+  /** The admin's controllers as the gateway lists them: `state` is `online`, `offline`, `unknown` or `revoked`. */
+  async controllers(): Promise<{ id: string; state: string }[]> {
+    return this.gateway("GET", "/management/controllers");
+  }
+
+  /**
+   * `POST /v1/controllers/{id}/connection`: open the controller's connection,
+   * taking over any it had, wherever that is held.
+   */
+  async openControllerConnection(controller: EnrolledController): Promise<ControllerConnection> {
+    const opened = await this.request<{ connection_id: string; generation: number }>(
+      "POST",
+      `/v1/controllers/${controller.id}/connection`,
+      { token: controller.accessToken, body: { cursors: {} } },
+    );
+    return { connectionId: opened.connection_id, generation: opened.generation };
+  }
+
+  /**
+   * Attach the controller's socket (`WS /v1/controllers/{id}/connection/ws`)
+   * to an opened connection, answering every ping with its beat. Resolves on
+   * the opening `connection_state` frame; rejects if the attach is refused.
+   */
+  async openControllerSocket(
+    controller: EnrolledController,
+    connection: ControllerConnection,
+  ): Promise<HeldSocket> {
+    return this.holdSocket(
+      `/v1/controllers/${controller.id}/connection/ws`,
+      { connection_id: connection.connectionId, generation: String(connection.generation) },
+      { Authorization: `Bearer ${controller.accessToken}` },
+      { type: "pong", cursors: {} },
+    );
+  }
+
+  /**
+   * A WebSocket that answers each `ping` frame with `pong`, recording every
+   * frame. Resolves on its opening `connection_state` frame; rejects on a
+   * `refused` frame, or if it closes or fails first.
+   */
+  private async holdSocket(
+    path: string,
+    query: Record<string, string>,
+    headers: Record<string, string>,
+    pong: Record<string, unknown>,
+  ): Promise<HeldSocket> {
+    assertAllowed(this.environment, "GET", path);
+    const url = new URL(`${this.apiUrl}${path}`);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
+    const Socket = WebSocket as unknown as new (
+      url: string,
+      init: { headers: Record<string, string> },
+    ) => WebSocket;
+    const socket = new Socket(url.toString(), {
+      headers: { ...headers, ...this.requestId() },
+    });
+    const frames: SocketFrame[] = [];
+    let closedByClient = false;
+    const ended = new Promise<StreamEnd>((resolve) => {
+      socket.addEventListener("close", (event) =>
+        resolve({ by: closedByClient ? "client" : "server", code: event.code }),
+      );
+    });
+    const state = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      socket.addEventListener("message", (event) => {
+        const frame = JSON.parse(String(event.data)) as SocketFrame;
+        frames.push(frame);
+        if (frame.event === "ping") socket.send(JSON.stringify(pong));
+        if (frame.event === "connection_state") resolve(frame.data);
+        if (frame.event === "refused") {
+          reject(new SocketRefused(path, frame.data));
+        }
+      });
+      socket.addEventListener("error", () => reject(new Error(`${path} would not open`)));
+      void ended.then((end) =>
+        reject(new Error(`${path} closed (${end.code}) before its connection_state`)),
+      );
+    });
+    return {
+      state,
+      frames,
       ended,
       close: () => {
         closedByClient = true;

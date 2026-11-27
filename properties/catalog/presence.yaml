@@ -10,9 +10,13 @@ properties:
     levels: [code, system]
     owner: platform
     status: proposed
-    gaps:
-      system: waits on the two-replica lane
     notes: >
+      Checked at the system level by `src/fast/replica-connections.ts` in the
+      end-to-end harness, on the two-replica lane: an agent's socket claims a
+      room and its holder is killed, and the survivor must read the agent
+      offline within `LEASE_TTL` and one lease watch, then live once it
+      reconnects through the survivor; a controller's socket taken over while
+      its holder was paused reads online, held by the survivor.
       `process_lease.py`, with `bridges/agent/protocol/connection_rows.py` for
       agents' own connections and `management/connection_ledger.py` with
       `placement.controller_state` for controllers'. Checked at the code level

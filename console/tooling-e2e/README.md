@@ -156,18 +156,43 @@ passed or not. A teardown that leaves something behind fails the scenario.
 If `mattermost-roundtrip` passes and a provider-lane scenario fails, the fault
 is in the agent session, not in Switch, the bridge or the harness.
 
-Three more run last, and only on `just e2e-fast --replicas 2`: the replica
-fault scenarios (`src/fast/replica-faults.ts`). Each finds the replica that
-holds the Mattermost bridge and faults it: `replica-bridge-holder-killed`
-(`SIGKILL`, a crash), `replica-bridge-holder-stopped` (`SIGTERM`, a deploy) and
-`replica-bridge-holder-paused` (`SIGSTOP` past its lease, then `SIGCONT`).
-The other replica must hold the bridge within a bound derived from the
-product's own timers, every message must cross the hand-over once, and a
-paused replica must stop its work, and drop what its sockets buffered, once
-it runs again. They act through `src/clients/replicas.ts`, which stops,
-pauses, starts again (`scripts/replica.sh`) and takes out of HAProxy's
-rotation a replica, and undoes every fault after the scenario, passed or not.
-A full run of the three takes about seven minutes.
+Seven more run last, and only on `just e2e-fast --replicas 2`: the replica
+fault scenarios. Five fault the replica that holds the Mattermost bridge
+(`src/fast/replica-faults.ts`):
+
+- `replica-bridge-holder-killed` (`SIGKILL`, a crash) and
+  `replica-bridge-holder-stopped` (`SIGTERM`, a deploy). The other replica
+  must hold the bridge within a bound derived from the product's own timers,
+  and every message must cross the hand-over once.
+- `replica-bridge-holder-paused` (`SIGSTOP` past its lease, then `SIGCONT`).
+  The paused replica must stop its work, and drop what its sockets buffered,
+  once it runs again.
+- `replica-bridge-holder-paused-briefly`: the other replica is stopped, the
+  holder paused for less than its lease, and the other started during the
+  pause. The newcomer must not take the bridge while the holder's lease holds,
+  and the bridge must then settle where it hashes. It repeats until a cycle
+  where the bridge hashes to the newcomer.
+- `replica-bridge-holder-drained`: the holder is taken out of HAProxy's
+  rotation. It keeps the bridge, and both directions work through the other.
+
+Two hold a client's connection (`src/fast/replica-connections.ts`):
+
+- `replica-agent-connection-holder-killed`: an agent's socket claims a room,
+  and its holder is killed. The survivor must read the agent offline within
+  the lease and one lease watch, and live again once it reconnects.
+- `replica-controller-socket-holder-paused`: an enrolled controller's socket
+  is held by a replica that is paused, and the controller opens its
+  connection again through the other. Once resumed, the old holder must
+  evict its socket as `taken_over`, with nothing after, and an attach with
+  the old connection must be refused. The lane turns on `agent_management`
+  for this.
+
+They act through `src/clients/replicas.ts`, which stops, pauses, starts again
+(`scripts/replica.sh`) and takes out of HAProxy's rotation a replica, and
+undoes every fault after the scenario, passed or not. Who holds what is read
+from the database by `properties/history/ownership.py`, which also reports the
+timers every wait is derived from. A full run of the seven takes about ten
+minutes.
 
 ### Browser lane
 

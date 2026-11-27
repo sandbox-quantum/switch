@@ -648,11 +648,40 @@ In this order, each checker shown to fail on a planted bug:
       post made before the new holder's sockets are open is lost. The
       scenarios measure that gap rather than fail on it.
 
-      Still to come in this stage: presence and controller takeover, which
-      need the harness to hold an agent's connection and a controller's
-      socket (it has neither yet), the paused-for-less-than-the-lease case,
-      and a scenario for taking a replica out of rotation, which the hook
-      already does.
+      Then two more on the bridge, and two on the connections clients hold
+      (`src/fast/replica-connections.ts`, with an agent's socket and a
+      controller's held open by the harness and answering pings):
+      - the case the eventual-ownership model found: the other replica
+        stopped, the holder paused for less than its lease (past half of it,
+        short of the lease less one renewal interval, both from the timers),
+        and the other started during the pause. It must take nothing while
+        the holder's lease holds, and the bridge must settle where it hashes
+        within two balances. Where the bridge hashes is drawn with the new
+        process's id, so the cycle repeats, up to five times, until it hashes
+        to the newcomer;
+      - the holder taken out of HAProxy's rotation, which keeps the bridge;
+      - `presence.online-iff-lease`: an agent's socket claims a room and its
+        holder is killed. The survivor must read the agent offline within the
+        lease's lifetime and one lease watch, and live again once it
+        reconnects with the same connection id;
+      - `controller.takeover-fenced`: a controller's socket held by a paused
+        replica, and the controller opening again through the other. Once
+        resumed, the old holder must evict the replaced socket as
+        `taken_over`, with nothing after, an attach naming the replaced
+        connection must be refused, and the row must stay on the survivor.
+      `properties/history/ownership.py` reports each key's rightful owner
+      among the live processes, so `settled` waits for that, and who holds
+      each open agent and controller connection.
+
+      Each new check was seen to fail on a planted bug: a claim that takes a
+      key from a live holder, a row read as live whatever its holder's lease
+      with the lease watch off (either alone is not enough: re-reading an
+      agent's rows also drops a lapsed holder's copies), and a takeover that
+      leaves the replaced socket open. A lease renewed after it lapsed
+      reading as sure again, the review finding fixed with `ProcessLease`'s
+      lapse count, is held by a unit test: on the lane the balance usually
+      runs before the renewal, so the plant passes there.
+
    3. **Bus faults.** The listening connection is cut on its own with
       `pg_terminate_backend` on the backends whose query is `LISTEN`, which
       loses every notification sent until it reconnects; no proxy is needed.

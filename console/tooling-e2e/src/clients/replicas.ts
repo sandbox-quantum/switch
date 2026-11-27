@@ -30,6 +30,8 @@ export interface Holder {
   token: number;
   /** Whether the holder's process lease holds, by the database's clock. */
   live: boolean;
+  /** The live process that should hold the key (`ownership.owner_of`), which the work settles on. */
+  owner: string | null;
 }
 
 /** The product's timers a fault scenario's waits come from, in seconds. */
@@ -40,10 +42,26 @@ export interface Timers {
   balanceInterval: number;
   /** How often a process renews its lease (`process_lease.RENEW_EVERY_SECONDS`). */
   renewEvery: number;
+  /** How often a process checks the leases of connections held elsewhere (`connection_rows.WATCH_SECONDS`). */
+  watchSeconds: number;
+  /** How often a process reads every connection again (`signals.RECHECK_SECONDS`). */
+  recheckSeconds: number;
+}
+
+/** A connection still open by its row, and the process holding it. */
+export interface HeldConnection {
+  id: string;
+  /** The agent's id for an agent connection, the controller's for a controller's. */
+  owner: string;
+  processId: string | null;
+  /** Whether the holding process's lease holds, by the database's clock. */
+  live: boolean;
 }
 
 export interface Ownership {
   holders: Holder[];
+  agentConnections: HeldConnection[];
+  controllers: HeldConnection[];
   processes: { id: string; live: boolean }[];
   timers: Timers;
 }
@@ -210,7 +228,10 @@ export class Replicas {
     for (const kind of kinds) await this.settled(kind);
   }
 
-  /** Wait until every piece of `kind` has had the same live holder for two balances. */
+  /**
+   * Wait until every piece of `kind` has been held by the live process it
+   * belongs to for two balances.
+   */
   async settled(kind: string): Promise<Ownership> {
     const until = Date.now() + 120_000;
     let before = '';
@@ -220,7 +241,7 @@ export class Replicas {
       // A row let go of (no holder) is work that no longer runs: a bridge removed.
       const held = ownership.holders.filter((h) => h.processId !== null);
       const now = JSON.stringify(held.map((h) => [h.key, h.processId, h.live]));
-      if (now === before && live.has(1) && live.has(2) && held.every((h) => h.live)) {
+      if (now === before && live.has(1) && live.has(2) && held.every((h) => h.live && h.processId === h.owner)) {
         return ownership;
       }
       before = now;
@@ -230,7 +251,10 @@ export class Replicas {
     throw new Error(`the ${kind} work did not settle on two live replicas within 120s: ${JSON.stringify(ownership)}`);
   }
 
-  /** Who holds each piece of work of `kind`, and the timers that bound a hand-over. */
+  /**
+   * Who holds each piece of work of `kind`, who holds each open connection,
+   * and the timers that bound a hand-over.
+   */
   async ownership(kind: string): Promise<Ownership> {
     const { stdout } = await run(
       'uv',
@@ -246,9 +270,17 @@ export class Replicas {
       { env: process.env, timeout: 60_000 }
     );
     const raw = JSON.parse(stdout) as {
-      holders: { key: string; process_id: string | null; token: number; live: boolean }[];
+      holders: { key: string; process_id: string | null; token: number; live: boolean; owner: string | null }[];
+      agent_connections: { id: string; agent_id: string; process_id: string | null; live: boolean }[];
+      controllers: { id: string; connection_id: string; process_id: string | null; live: boolean }[];
       processes: { id: string; live: boolean }[];
-      timers: { lease_ttl: number; balance_interval: number; renew_every: number };
+      timers: {
+        lease_ttl: number;
+        balance_interval: number;
+        renew_every: number;
+        watch_seconds: number;
+        recheck_seconds: number;
+      };
     };
     return {
       holders: raw.holders.map((h) => ({
@@ -256,12 +288,27 @@ export class Replicas {
         processId: h.process_id,
         token: h.token,
         live: h.live,
+        owner: h.owner,
+      })),
+      agentConnections: raw.agent_connections.map((c) => ({
+        id: c.id,
+        owner: c.agent_id,
+        processId: c.process_id,
+        live: c.live,
+      })),
+      controllers: raw.controllers.map((c) => ({
+        id: c.connection_id,
+        owner: c.id,
+        processId: c.process_id,
+        live: c.live,
       })),
       processes: raw.processes,
       timers: {
         leaseTtl: raw.timers.lease_ttl,
         balanceInterval: raw.timers.balance_interval,
         renewEvery: raw.timers.renew_every,
+        watchSeconds: raw.timers.watch_seconds,
+        recheckSeconds: raw.timers.recheck_seconds,
       },
     };
   }

@@ -7,7 +7,7 @@
  * shared prefix. That only holds if no scenario ever builds a raw name itself,
  * so every name goes through {@link NameScope.name}.
  *
- * Names are `e2e-<runId><scope>-<role>`: the run, then a letter per scenario so
+ * Names are `e2e-<runId><scope>-<role>`: the run, then a character per scenario so
  * two scenarios can both ask for a `sender` without colliding, then what the
  * thing is for.
  */
@@ -17,12 +17,12 @@ export const ARTIFACT_PREFIX = 'e2e-';
 
 /**
  * The whole shape of a name {@link NameScope.name} builds: the prefix, a
- * six-character run id, a scope letter, then the role. The cleanup script
+ * six-character run id, a scope character, then the role. The cleanup script
  * deletes by this, not by the prefix alone: people name their own test
  * agents and rooms `e2e-…` on a shared deployment too, and those are not the
  * harness's to remove.
  */
-const ARTIFACT_NAME = /^e2e-[a-z0-9]{6}[a-z]-[a-z0-9._-]+$/;
+const ARTIFACT_NAME = /^e2e-[a-z0-9]{6}[a-z0-9]-[a-z0-9._-]+$/;
 
 export function isHarnessArtifact(name: string): boolean {
   return ARTIFACT_NAME.test(name);
@@ -42,7 +42,9 @@ export function shortId(): string {
   return Math.random().toString(36).slice(2, 8).padEnd(6, '0');
 }
 
-const SCOPE_LETTERS = 'abcdefghijklmnopqrstuvwxyz';
+// One character each, so every name is as long whichever scope it is in: a
+// longer scope would take from the role what a Mattermost username allows.
+const SCOPE_LETTERS = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 export class RunContext {
   readonly runId: string;

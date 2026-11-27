@@ -102,6 +102,15 @@ describe('run naming', () => {
     expect(run.owns('e2e-zzz999a-snd')).toBe(false);
   });
 
+  it('has 36 scopes, each a distinct name the cleanup recognises', () => {
+    const run = new RunContext('abc123');
+    const names = Array.from({ length: 36 }, () => run.scope().name('controller'));
+    expect(new Set(names).size).toBe(36);
+    expect(names.at(-1)).toBe('e2e-abc1239-controller');
+    expect(names.every((name) => isHarnessArtifact(name) && isValidMattermostUsername(name))).toBe(true);
+    expect(() => run.scope()).toThrow(/ran out of name scopes/);
+  });
+
   it('refuses a name too long for a bot username, or one handed out twice', () => {
     const scope = new RunContext('abc123').scope();
     expect(() => scope.name('much-too-long')).toThrow(/Shorten/);

@@ -177,6 +177,14 @@ else
   sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=follow_the_conversation|" "$ENV_FILE"
   rm -f "$ENV_FILE.bak"
   printf 'FOLLOW_THE_CONVERSATION_WINDOW_SECONDS=%s\n' "$FOLLOW_WINDOW_SECONDS" >>"$ENV_FILE"
+  if [ "$REPLICAS" = 2 ]; then
+    # The replica fault scenarios enroll a controller and hold its socket
+    # (`src/fast/replica-connections.ts`). No controller runs here, so no
+    # request card or agentic setup message is answered untagged.
+    sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=follow_the_conversation,agent_management|" \
+               -e "s|^CONTROLLER_TOKEN_SECRET=.*|CONTROLLER_TOKEN_SECRET=$(openssl rand -hex 32)|" "$ENV_FILE"
+    rm -f "$ENV_FILE.bak"
+  fi
 fi
 chmod 600 "$ENV_FILE"
 set -a; source "$ENV_FILE"; set +a

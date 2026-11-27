@@ -43,6 +43,13 @@ const MARGIN_MS = 15_000;
 /** How long a message must stay single before it counts as delivered once. */
 const ONCE_WINDOW_MS = 10_000;
 
+/**
+ * Pause cycles the brief-pause scenario tries for one where the bridge hashes
+ * to the replica started during the pause: each does with even odds, so all
+ * missing is one run in 32.
+ */
+const PAUSE_CYCLES = 5;
+
 const SUSPENDED = /^This process's lease .* was not renewed in time; stopping every piece of work it owns/;
 
 interface Setup {
@@ -127,6 +134,31 @@ async function postCopies(
   const bot = bridged.bots.get(agent.id)!;
   const posts = await mattermost.postsFrom(bridged.channel.id, bot.id, sinceMs);
   return posts.filter((post) => post.message.includes(text)).length;
+}
+
+/**
+ * Wait until the bridge is held, on a live lease, by the process it hashes
+ * to among the live ones, failing past `deadlineMs` from `sinceMs`.
+ */
+async function waitForRightfulHolder(
+  replicas: Replicas,
+  bridgeId: string | null,
+  sinceMs: number,
+  deadlineMs: number,
+  log: (message: string) => void
+): Promise<Holder> {
+  let last: Holder | null = null;
+  while (Date.now() - sinceMs < deadlineMs) {
+    last = bridgeHolder((await replicas.ownership(BRIDGE)).holders, bridgeId);
+    if (last.live && last.processId !== null && last.processId === last.owner) {
+      log(`${last.processId} holds the bridge it hashes to ${Date.now() - sinceMs}ms after the resume`);
+      return last;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(
+    `the bridge did not settle on the process it hashes to within ${deadlineMs}ms; last read: ${JSON.stringify(last)}`
+  );
 }
 
 /** An agent post appears in the channel exactly once, within `deadlineMs`. */
@@ -418,8 +450,142 @@ export const bridgeHolderPaused: FastScenario = {
   },
 };
 
+/**
+ * A pause shorter than the lease, with a replica added meanwhile: the case the
+ * eventual-ownership model found. The other replica is stopped, so the holder
+ * runs everything; the holder is paused for longer than half its lease but
+ * not long enough for its lease to lapse, and the other replica starts during
+ * the pause. The newcomer must claim nothing while the paused holder's lease
+ * holds, though the bridge may now hash to it. Once the holder runs again,
+ * the bridge must settle on whichever of the two it hashes to, within two
+ * balances, held once throughout, and a message the agent sent during the
+ * pause must be posted once. Repeated until a cycle where the bridge hashes
+ * to the newcomer (`PAUSE_CYCLES`).
+ *
+ * Past half its lease the paused holder can no longer be sure of it, so once
+ * resumed it stops its work and claims its share back (`Ownership`'s lapse
+ * latch), and logs that it stopped.
+ *
+ * @property replica.single-owner
+ * @property replica.ownership-eventual
+ */
+export const bridgeHolderPausedBriefly: FastScenario = {
+  header: header('replica-bridge-holder-paused-briefly'),
+  expectedServerErrors: [SUSPENDED],
+  async run(context) {
+    const { replicas, switchClient, names, log } = context;
+    const setup = await setUp(context);
+    const { agent, bridged, holder, timers } = setup;
+    const newcomer = otherThan(holder);
+    await roundTrip(context, setup, 'before', 'settled', 60_000);
+
+    // Past half the lease, so the holder is sure to have stopped trusting it,
+    // and short of the lease less a renewal interval, since its last renewal
+    // may have been sent up to one interval before the pause: half way.
+    const pauseMs = ((timers.leaseTtl / 2 + (timers.leaseTtl - timers.renewEvery)) / 2) * 1000;
+    const settleMs = 2 * timers.balanceInterval * 1000 + MARGIN_MS;
+
+    // The newcomer's process id, and so where the bridge hashes, is drawn as
+    // it starts. A cycle where the bridge hashes to the holder checks all but
+    // the newcomer keeping off a key it wants, so cycles repeat, each with a
+    // newcomer of a new id, until one hashes to the newcomer.
+    for (let cycle = 1; cycle <= PAUSE_CYCLES; cycle += 1) {
+      await replicas!.stop(newcomer, 'SIGTERM');
+      await replicas!.waitForRotation(newcomer, 'DOWN', 10_000);
+
+      const mark = replicas!.logMark(holder);
+      const pausedAt = Date.now();
+      replicas!.pause(holder);
+      await Promise.all([replicas!.waitForRotation(holder, 'DOWN', pauseMs), replicas!.start(newcomer)]);
+      await replicas!.waitForRotation(newcomer, 'UP', pauseMs);
+
+      // Sent while the only replica that held the bridge is paused: it waits
+      // in the room until a copy of the bridge relays it.
+      const crossing = `crossing ${names.marker(`crossing${cycle}`)}`;
+      const crossingSince = Date.now();
+      await switchClient.sendMessage(agent, bridged.room.id, crossing);
+
+      const row = bridgeHolder((await replicas!.ownership(BRIDGE)).holders, bridged.room.bridgeId);
+      const elapsed = Date.now() - pausedAt;
+      if (elapsed >= pauseMs) {
+        replicas!.resume(holder);
+        throw new Error(
+          `replica ${newcomer} took ${elapsed}ms to start and be read, past the ${pauseMs}ms pause; ` +
+            'the case needs it to start while the holder is paused'
+        );
+      }
+      const wanted = replicaOf(row.owner) === newcomer;
+      log(
+        `cycle ${cycle}: replica ${newcomer} started ${elapsed}ms into a ${pauseMs}ms pause; ` +
+          `the bridge hashes to ${wanted ? 'it' : `replica ${holder}`} (${row.owner})`
+      );
+      expect(
+        replicaOf(row.processId),
+        `replica ${newcomer} took the bridge while replica ${holder}'s lease still held: ${JSON.stringify(row)}`
+      ).toBe(holder);
+
+      await new Promise((resolve) => setTimeout(resolve, pauseMs - elapsed));
+      const resumedAt = Date.now();
+      replicas!.resume(holder);
+
+      const settled = await waitForRightfulHolder(replicas!, bridged.room.bridgeId, resumedAt, settleMs, log);
+      expect(replicaOf(settled.processId), 'the bridge settled where it hashes').toBe(wanted ? newcomer : holder);
+      expect(
+        replicas!.logSince(holder, mark).some((record) => SUSPENDED.test(record.message)),
+        `replica ${holder} ran again after a pause past half its lease and never logged that it stopped its work`
+      ).toBe(true);
+      await expectPostedOnce(context.mattermost!, bridged, agent, crossing, crossingSince, settleMs);
+      if (wanted) {
+        log(`the bridge moved to replica ${newcomer}`);
+        await roundTrip(context, setup, 'after', 'just-handed-over', 60_000);
+        return;
+      }
+      await roundTrip(context, setup, `stayed${cycle}`, 'settled', 60_000);
+    }
+    throw new Error(
+      `in ${PAUSE_CYCLES} cycles the bridge never hashed to the replica started during the pause, ` +
+        'so the case of a newcomer keeping off a key it wants was not reached'
+    );
+  },
+};
+
+/**
+ * The holder taken out of HAProxy's rotation, its sessions severed: it keeps
+ * running and keeps the bridge, whose Mattermost sockets do not go through
+ * HAProxy, while every request lands on the other replica. Both directions
+ * work once each meanwhile, and again once it is back in rotation.
+ *
+ * @property replica.single-owner
+ */
+export const bridgeHolderDrained: FastScenario = {
+  header: header('replica-bridge-holder-drained'),
+  async run(context) {
+    const { replicas, log } = context;
+    const setup = await setUp(context);
+    const { bridged, holder } = setup;
+    await roundTrip(context, setup, 'before', 'settled', 60_000);
+    const before = bridgeHolder((await replicas!.ownership(BRIDGE)).holders, bridged.room.bridgeId);
+
+    await replicas!.drain(holder);
+    expect(await replicas!.rotation(holder)).toBe('MAINT');
+    await roundTrip(context, setup, 'drained', 'settled', 60_000);
+    const during = bridgeHolder((await replicas!.ownership(BRIDGE)).holders, bridged.room.bridgeId);
+    expect(
+      [during.processId, during.token, during.live],
+      `the bridge changed hands while replica ${holder} was only out of rotation`
+    ).toEqual([before.processId, before.token, true]);
+    log(`replica ${holder} kept the bridge out of rotation (token ${during.token})`);
+
+    await replicas!.undrain(holder);
+    await replicas!.waitForRotation(holder, 'UP', 30_000);
+    await roundTrip(context, setup, 'undrained', 'settled', 60_000);
+  },
+};
+
 export const REPLICA_FAULT_SCENARIOS: readonly FastScenario[] = [
   bridgeHolderKilled,
   bridgeHolderStopped,
   bridgeHolderPaused,
+  bridgeHolderPausedBriefly,
+  bridgeHolderDrained,
 ];
