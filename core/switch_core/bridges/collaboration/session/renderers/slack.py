@@ -529,11 +529,13 @@ def render_approval_text(request: SnapshotRequest, reference: RequestReference) 
     """
     content = _approval(request)
     lines = [
-        f"> Request {escape_mrkdwn(reference.handle)}: "
-        f"{_fit(content.title, _MAX_TITLE)}"
+        _quoted(
+            f"Request {escape_mrkdwn(reference.handle)}: "
+            f"{_fit(content.title, _MAX_TITLE)}"
+        )
     ]
     if content.detail:
-        lines.append(f"> {_fit(content.detail, _MAX_DETAIL)}")
+        lines.append(_quoted(_fit(content.detail, _MAX_DETAIL)))
     if request.state == "open":
         lines += [
             f"{index}. {_fit(option.label, _MAX_LABEL)}"
@@ -735,8 +737,10 @@ def render_questions_text(request: SnapshotRequest, reference: RequestReference)
     """
     content = _questions(request)
     lines = [
-        f"> Request {escape_mrkdwn(reference.handle)}: "
-        f"{_fit(content.title, _MAX_TITLE)}"
+        _quoted(
+            f"Request {escape_mrkdwn(reference.handle)}: "
+            f"{_fit(content.title, _MAX_TITLE)}"
+        )
     ]
     if request.state == "open":
         for position, question in enumerate(content.questions, start=1):
@@ -1824,6 +1828,14 @@ def _fit_details(blocks: list[dict[str, Any]], limit: int) -> None:
         f"the {limit} Slack will take even with every one cut to "
         f"{_DETAIL_RETREAT[-1]} characters."
     )
+
+
+def _quoted(text: str) -> str:
+    """`text` as a mrkdwn quote, every line of it.
+
+    Slack quotes only the line a `>` starts, so a multi-line value quoted once
+    would carry on below the quote as if this had written it."""
+    return "\n".join(f"> {line}" for line in text.splitlines())
 
 
 def _fit(text: str, limit: int) -> str:
