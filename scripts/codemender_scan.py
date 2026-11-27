@@ -219,13 +219,14 @@ def pull_latest(dry_run: bool) -> None:
     run_cmd(["git", "reset", "--hard", "origin/main"], cwd=REPO_DIR)
 
 
-def run_scan(dry_run: bool) -> str:
-    """Run cm find --deep and return raw output."""
+def run_scan(dry_run: bool) -> None:
+    """Launch cm find --deep in the background and return immediately."""
     if dry_run:
-        print("[dry-run] Would run: cm --sandbox=false --format json --model gemini-3.8-flash-cyber find --yes .")
-        return "{}"
-    cm_env = {"GOOGLE_APPLICATION_CREDENTIALS": SA_KEY_PATH}
-    result = run_cmd(
+        print("[dry-run] Would start: cm --sandbox=false --format json --model gemini-3.8-flash-cyber find --yes .")
+        return
+    env = os.environ.copy()
+    env["GOOGLE_APPLICATION_CREDENTIALS"] = SA_KEY_PATH
+    subprocess.Popen(
         [
             "cm",
             "--sandbox=false",
@@ -235,14 +236,13 @@ def run_scan(dry_run: bool) -> str:
             "--yes",
             ".",
         ],
-        check=False,
         cwd=REPO_DIR,
-        env_override=cm_env,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
-    output = result.stdout + result.stderr
-    if result.returncode != 0:
-        raise RuntimeError(f"cm find failed (exit {result.returncode}):\n{output}")
-    return output
 
 
 
