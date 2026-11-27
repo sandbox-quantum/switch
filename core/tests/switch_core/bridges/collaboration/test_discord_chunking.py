@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from switch_core.bridges.agent.commands import COMMANDS
+from switch_core.bridges.collaboration.chunking import _hard_wrap, split_markdown
 from switch_core.bridges.collaboration.discord.chunking import (
     MAX_MESSAGE,
     chunk_message,
@@ -300,3 +301,55 @@ def test_a_fence_indented_up_to_three_spaces_still_counts() -> None:
     assert len(chunks) > 1
     assert chunks[0].endswith("\n```")
     assert all(c.startswith("```text") for c in chunks[1:])
+
+
+# Crafted text once sent the splitter into a loop that never returned, so these
+# are held to a timeout: a regression fails here rather than hanging the run.
+
+
+@pytest.mark.timeout(10)
+def test_a_fence_run_with_no_safe_cut_is_cut_at_the_budget() -> None:
+    line = "x" + "~" * 500
+
+    pieces = _hard_wrap(line, 100)
+
+    assert all(len(p) <= 100 for p in pieces), [len(p) for p in pieces]
+    assert "".join(pieces) == line
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize(
+    "line",
+    ["~" * 500, "`" * 500, "a " + "~" * 500, "```x" + "`" * 500],
+    ids=["tildes", "backticks", "after-a-word", "after-a-span-opener"],
+)
+def test_every_over_long_fence_run_is_wrapped_within_the_budget(line: str) -> None:
+    pieces = _hard_wrap(line, 100)
+
+    assert all(0 < len(p) <= 100 for p in pieces), [len(p) for p in pieces]
+    assert "".join(pieces).replace(" ", "") == line.replace(" ", "")
+
+
+@pytest.mark.timeout(10)
+def test_a_run_of_fence_characters_inside_a_code_block_fits_every_part() -> None:
+    body = "```\n" + "~" * 5000 + "\n```"
+
+    chunks = split_markdown(body, 100)
+
+    assert all(len(c) <= 100 for c in chunks), [len(c) for c in chunks]
+    assert "".join(chunks).count("~") == 5000
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("marker", ["~" * 3000, "`" * 3000], ids=["tilde", "backtick"])
+def test_a_fence_too_long_to_reopen_is_split_as_plain_text(marker: str) -> None:
+    # Closing and reopening a fence longer than the limit cannot fit in any
+    # part, so its block is split like prose rather than into parts that each
+    # overshoot the cap.
+    lines = "\n".join(f"line {i}" for i in range(400))
+    body = f"{marker}\n{lines}\n{marker}"
+
+    chunks = chunk_message(body)
+
+    assert all(len(c) <= MAX_MESSAGE for c in chunks), [len(c) for c in chunks]
+    assert "".join(chunks).replace("\n", "") == body.replace("\n", "")

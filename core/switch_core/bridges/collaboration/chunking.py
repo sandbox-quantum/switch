@@ -18,15 +18,23 @@ opener's info string contains no backtick (so a one-line span such as
 ```npm test``` opens nothing), while a tilde opener's may contain anything. A
 closing fence is a run of the opener's own character at least as long as the
 opener, followed only by whitespace.
+
+A fence run longer than a quarter of the limit cannot be closed and reopened
+and still leave room for the code, so a block opened by one is split like
+plain text: every part fits, at the cost of the later parts rendering as
+prose.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 
 _TICK = "`"
 _TILDE = "~"
 _MAX_FENCE_INDENT = 3
+# A fence run at a position, after any spaces a cut there would strip.
+_FENCE_RUN_AT = re.compile(r" *(?:```|~~~)")
 
 
 @dataclass(frozen=True)
@@ -93,11 +101,25 @@ def _first_cut_floor(line: str) -> int:
     return len(line) - len(text) + run + tail + 1
 
 
+def _hard_cut(rest: str, budget: int, floor: int) -> int:
+    """Where to cut `rest` when no space will do: the latest point at or
+    before `budget` that leaves the next piece not starting with a fence run,
+    or `budget` itself when every point would. Always at least 1, so the
+    caller makes progress."""
+    lowest = max(1, floor) if floor <= budget else 1
+    for cut in range(budget, lowest - 1, -1):
+        if not _FENCE_RUN_AT.match(rest, cut):
+            return cut
+    return budget
+
+
 def _hard_wrap(line: str, budget: int) -> list[str]:
     """Break one over-long line, preferring a space over cutting a word.
 
     No piece reads as a fence the line was not: the first keeps what makes
-    the line plain text, and no later piece starts with a fence run."""
+    the line plain text, and no later piece starts with a fence run. A run of
+    fence characters longer than `budget` leaves no such cut, and is cut at
+    `budget` regardless: every piece still fits, and the line still ends."""
     budget = max(1, budget)
     if len(line) <= budget:
         return [line]
@@ -107,13 +129,10 @@ def _hard_wrap(line: str, budget: int) -> list[str]:
     floor = _first_cut_floor(line)
     while len(rest) > budget:
         cut = rest.rfind(" ", floor, budget + 1)
-        while cut > 0 and _marker_run(rest[cut:].lstrip(" ")) >= 3:
+        while cut > 0 and _FENCE_RUN_AT.match(rest, cut):
             cut = rest.rfind(" ", floor, cut)
         if cut <= 0:
-            cut = budget
-            lowest = floor if floor <= budget else 1
-            while cut > lowest and _marker_run(rest[cut:].lstrip(" ")) >= 3:
-                cut -= 1
+            cut = _hard_cut(rest, budget, floor)
         pieces.append(rest[:cut])
         rest = rest[cut:].lstrip(" ")
         floor = 0
@@ -132,6 +151,10 @@ class _Splitter:
         # Index in `buf` of the line that opened `fence`: the source's own
         # opener, or the reopener a split put at the top of this part.
         self.opened_at: int | None = None
+        # A block whose fence is too long to close and reopen within the
+        # limit. It is split like plain text, and tracked only so that its
+        # lines are not taken for fences and its closer is recognised.
+        self.loose: _Fence | None = None
 
     def _reopener(self, fence: _Fence) -> str:
         # An info string so long it would crowd the code out of every part is
@@ -181,7 +204,19 @@ class _Splitter:
             self._start([self._reopener(fence)])
         self.opened_at = 0
 
+    def _feed_plain(self, raw: str) -> None:
+        for piece in _hard_wrap(raw, self.limit):
+            if self.buf and not self._fits(piece, 0):
+                self._flush()
+            self._append(piece)
+
     def feed(self, raw: str) -> None:
+        if self.loose is not None:
+            if _closes(raw, self.loose):
+                self.loose = None
+            self._feed_plain(raw)
+            return
+
         before = self.fence
         if before is not None and _closes(raw, before):
             if self._fits(raw, 0):
@@ -196,6 +231,10 @@ class _Splitter:
             return
 
         after = before if before is not None else _opening_fence(raw)
+        if before is None and after is not None and len(after.marker) > self.limit // 4:
+            self.loose = after
+            self._feed_plain(raw)
+            return
         open_fence = before or after
         overhead = 0
         if open_fence is not None:

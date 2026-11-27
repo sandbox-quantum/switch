@@ -788,6 +788,31 @@ class TestGoogleChatFormattingAndThreading:
             # Ensure balanced ``` fences
             assert chunk.count("```") % 2 == 0
 
+    @pytest.mark.timeout(10)
+    def test_a_language_tag_longer_than_a_chunk_is_not_reopened(self) -> None:
+        # Reopening the fence with the whole tag left no room for the code, and
+        # the splitter never returned.
+        text = "```" + "a" * 5000 + "\nbody\n```"
+
+        chunks = split_message_chunks(text, max_bytes=4096)
+
+        assert all(len(c.encode("utf-8")) <= 4096 for c in chunks)
+        assert all(c.startswith("```\n") for c in chunks[1:])
+        assert "".join(chunks).count("a") == 5000
+        assert chunks[-1].endswith("body\n```")
+
+    @pytest.mark.timeout(10)
+    @pytest.mark.parametrize("max_bytes", [8, 30, 1000])
+    def test_multibyte_text_is_split_within_the_limit(self, max_bytes: int) -> None:
+        # Every pass takes at least one character, however small the budget.
+        text = "\U0001f600" * 3000
+
+        chunks = split_message_chunks(text, max_bytes=max_bytes)
+
+        assert "".join(chunks) == text
+        if max_bytes > 10:
+            assert all(len(c.encode("utf-8")) <= max_bytes for c in chunks)
+
     @pytest.mark.asyncio
     async def test_thread_reply_threading_parameters(self) -> None:
         adapter = GoogleChatAdapter(_make_config())
