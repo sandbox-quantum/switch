@@ -73,6 +73,34 @@ version of their own to them without also giving them a release of their own.
   room, so messages sent at the same instant can no longer be counted twice
   or skipped.
 
+#### Security
+- **A Google Chat service account's `token_uri` must be Google's:
+  `https://oauth2.googleapis.com/token`, or
+  `https://accounts.google.com/o/oauth2/token` in older keys.** Any other value in the uploaded
+  JSON is refused when the bridge is saved, instead of Switch posting a signed
+  assertion to it. The token request goes through the outbound address guard
+  under the deployment's `OUTBOUND_ALLOWED_PRIVATE_HOSTS`, and a refusal names
+  only the status and Google's error code, not the response body.
+- **A Zulip bridge reaches its server only through the outbound address
+  guard**, when its credentials are checked as well as while it runs, as its
+  file downloads already did, so the server's name cannot be pointed at an
+  internal or metadata address after it was checked.
+  A message's file link is fetched only when it has the shape of a Zulip
+  upload (`/user_uploads/<realm>/…/<name>`); any other is reported as a file
+  that could not be relayed.
+- **A template param's `pattern` is checked in bounded time.** A match that
+  takes longer than 0.1 s is refused as a validation error naming the param,
+  so a backtracking pattern cannot hold the server. Saving or updating a
+  template refuses a pattern longer than 500 characters, or a default longer
+  than 10,000 checked against one; a template saved before then still loads.
+  A value given when a template is used is refused past 10,000 characters if
+  it has to match a pattern.
+  Patterns are matched with the `regex` package, which switch-core now
+  depends on; its default syntax is the same as Python's `re`.
+- **Adding or removing an agent by id no longer tells another workspace's
+  agent apart from one that does not exist.** Both are refused with the same
+  error; another workspace's agent used to fail later, with a different one.
+
 ### [0.32.2] - 2026-11-25
 
 #### Changed
@@ -8452,6 +8480,11 @@ The Switch protocol client and MCP runtime
 - **Requires the MCP TypeScript SDK 1.32.2 or later**, past its advisories for
   the Streamable HTTP server transport the session's Switch tools are served
   over.
+- **`download_attachment` takes only a media handle Switch issued**
+  (`switch-media://<id>`, or `mxc://<server>/<id>` from older history) and
+  refuses anything else before asking the server. The room id is escaped in
+  the request path, the file is always written directly inside the media
+  directory, and a download stops at 100 MiB.
 
 ### [0.8.0] - 2026-09-25
 

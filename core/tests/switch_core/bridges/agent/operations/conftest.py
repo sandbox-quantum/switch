@@ -162,6 +162,9 @@ class FakeLifecycle:
     def get_by_agent_id(self, agent_id: str) -> None:
         return None
 
+    def get_tenant_agent(self, agent_id: str, tenant_id: str) -> None:
+        return self.get_by_agent_id(agent_id)
+
 
 @pytest_asyncio.fixture
 async def env(session_factory: async_sessionmaker[AsyncSession]):

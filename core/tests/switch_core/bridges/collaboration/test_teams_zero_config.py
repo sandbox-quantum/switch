@@ -29,6 +29,7 @@ from switch_core.bridges.collaboration.teams.crypto import (
     generate_encryption_keypair,
     load_certificate_der_b64,
 )
+from switch_core.outbound import OutboundPolicy
 from switch_core.tenant_context import tenant_scope
 from tests.ownership import SoleOwner
 
@@ -190,7 +191,8 @@ async def test_verify_credentials_requests_both_scopes(fake_http: Any) -> None:
     client = fake_http(200, {"access_token": "tok", "expires_in": 3600})
 
     await TeamsAdapter.verify_credentials(
-        await TeamsAdapter.prepare_config(_raw_config())
+        await TeamsAdapter.prepare_config(_raw_config()),
+        outbound_policy=OutboundPolicy.parse(""),
     )
 
     assert client.calls == [
@@ -217,7 +219,9 @@ async def test_verify_credentials_surfaces_the_secret_id_mistake(
     )
 
     with pytest.raises(BridgeCredentialError) as excinfo:
-        await TeamsAdapter.verify_credentials(_raw_config(client_state="s"))
+        await TeamsAdapter.verify_credentials(
+            _raw_config(client_state="s"), outbound_policy=OutboundPolicy.parse("")
+        )
 
     message = str(excinfo.value)
     assert "not the client secret ID" in message
@@ -229,7 +233,9 @@ async def test_verify_credentials_keeps_an_unparseable_body(fake_http: Any) -> N
     fake_http(500, "upstream exploded")
 
     with pytest.raises(BridgeCredentialError, match="upstream exploded"):
-        await TeamsAdapter.verify_credentials(_raw_config(client_state="s"))
+        await TeamsAdapter.verify_credentials(
+            _raw_config(client_state="s"), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_verify_credentials_reports_an_unreachable_microsoft(
@@ -245,7 +251,9 @@ async def test_verify_credentials_reports_an_unreachable_microsoft(
     )
 
     with pytest.raises(BridgeCredentialError, match="Could not reach Microsoft"):
-        await TeamsAdapter.verify_credentials(_raw_config(client_state="s"))
+        await TeamsAdapter.verify_credentials(
+            _raw_config(client_state="s"), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 # ── register() wiring ────────────────────────────────────────────────────────
@@ -268,7 +276,12 @@ class _RecordingAdapter(PlatformAdapter):
         return {**connection_config, "generated": "yes"}
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         cls.events.append("verify")
         cls.seen_config = dict(connection_config)
         if cls.fail_verification:
@@ -563,7 +576,9 @@ async def test_a_200_with_no_access_token_is_a_credential_error(
     fake_http(200, {"expires_in": 3600})
 
     with pytest.raises(BridgeCredentialError, match="unusable body"):
-        await TeamsAdapter.verify_credentials(_raw_config(client_state="s"))
+        await TeamsAdapter.verify_credentials(
+            _raw_config(client_state="s"), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_a_200_that_is_not_json_is_a_credential_error(
@@ -583,7 +598,9 @@ async def test_a_200_that_is_not_json_is_a_credential_error(
     )
 
     with pytest.raises(BridgeCredentialError, match="unusable body"):
-        await TeamsAdapter.verify_credentials(_raw_config(client_state="s"))
+        await TeamsAdapter.verify_credentials(
+            _raw_config(client_state="s"), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_concurrent_registration_cannot_take_the_same_port_twice(

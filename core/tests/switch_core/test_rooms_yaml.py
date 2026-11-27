@@ -65,6 +65,8 @@ from switch_core.room_policy import visibility_for_channel
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import (
     CONSOLE_ROOM,
+    PARAM_PATTERN_MAX_LENGTH,
+    PARAM_PATTERN_VALUE_MAX_LENGTH,
     ConsoleRooms,
     ExistingPackageById,
     ExistingPackageByName,
@@ -73,6 +75,7 @@ from switch_core.rooms_yaml import (
     ParamSpec,
     RoomReader,
     RoomYamlService,
+    coerce_param,
     interpolate,
     resolve_params,
 )
@@ -2274,6 +2277,38 @@ def test_pattern_and_bounds_are_enforced(env):
         ParamSpec(type="number", pattern="x")
     with pytest.raises(ValueError, match="not a valid regular expression"):
         ParamSpec(type="string", pattern="(")
+
+
+def test_a_stored_pattern_longer_than_the_save_cap_still_loads_and_matches():
+    """The length caps are held when a template is saved (`template_lint`),
+    not when one is read, so a template stored before them keeps working."""
+    pattern = "(?:" + "a" * (PARAM_PATTERN_MAX_LENGTH + 100) + ")|b+"
+    spec = ParamSpec(type="string", pattern=pattern)
+    assert coerce_param("bbb", spec, "p") == "bbb"
+    with pytest.raises(ValueError, match="does not match the pattern"):
+        coerce_param("c", spec, "p")
+
+
+def test_a_value_too_long_to_check_against_its_pattern_is_refused():
+    spec = ParamSpec(type="string", pattern=".*")
+    longest = "x" * PARAM_PATTERN_VALUE_MAX_LENGTH
+    assert coerce_param(longest, spec, "p") == longest
+    with pytest.raises(ValueError, match="characters long"):
+        coerce_param(longest + "x", spec, "p")
+
+
+def test_a_catastrophically_backtracking_pattern_is_cut_off_and_refused():
+    spec = ParamSpec(type="string", pattern="(x+x+)+y")
+    started = time.monotonic()
+    with pytest.raises(ValueError, match="took too long"):
+        coerce_param("x" * 5000, spec, "p")
+    assert time.monotonic() - started < 5
+
+
+def test_a_pattern_default_that_backtracks_is_refused_at_resolution():
+    params = {"p": ParamSpec(type="string", pattern="(x+x+)+y", default="x" * 5000)}
+    with pytest.raises(ValueError, match="took too long"):
+        resolve_params(params, {})
 
 
 def test_label_and_the_new_fields_ride_into_the_schema(env):

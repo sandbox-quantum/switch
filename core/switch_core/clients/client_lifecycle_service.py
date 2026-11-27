@@ -783,6 +783,22 @@ class ClientLifecycleService:
                 return actor
         return None
 
+    def get_tenant_agent(self, agent_id: str, tenant_id: str) -> AgentActor | None:
+        """`tenant_id`'s running client for `agent_id`, or None.
+
+        This registry holds every tenant's clients and is not behind the
+        database's row policies, so a lookup for a tenant has to say which. An
+        agent of another tenant is None, exactly as an unknown one is, so a
+        caller cannot tell the two apart.
+        """
+        actor = self.get_by_agent_id(agent_id)
+        if actor is None:
+            return None
+        client_id = self._client_of_agent.get(agent_id)
+        if client_id is None or self._client_tenants.get(client_id) != tenant_id:
+            return None
+        return actor
+
     def get_by_type(
         self, client_type: str, tenant_id: str
     ) -> list[Actor[ClientConfig]]:

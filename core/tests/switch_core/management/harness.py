@@ -143,6 +143,9 @@ class _FakeClientLifecycle:
         """No client is ever started here."""
         return None
 
+    def get_tenant_agent(self, agent_id: str, tenant_id: str) -> None:
+        return self.get_by_agent_id(agent_id)
+
     def get(self, client_id: str) -> None:
         """No client is ever started here, so a rename has no actor to tell."""
         return None

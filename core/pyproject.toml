@@ -47,6 +47,7 @@ dependencies = [
     "cronsim>=2.6,<3",
     "tzdata>=2025.2",
     "anyio>=4,<5",
+    "regex>=2026.9.29",
 ]
 
 # Repo coordinates point at the public switch repo — see RELEASING.md.

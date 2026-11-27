@@ -48,6 +48,7 @@ from switch_core.bridges.collaboration.whatsapp.client import (
     WhatsAppGraphError,
     graph_error,
 )
+from switch_core.outbound import OutboundPolicy
 from switch_core.sessions.contract import TurnUpsert
 
 APP_ID = "1234567890123456"
@@ -377,7 +378,9 @@ class TestCredentialsAreCheckedBeforeSaving:
         graph.on("GET", f"{API}/debug_token", token_described())
         graph.on("GET", f"{API}/{PHONE_NUMBER_ID}", phone_number_read)
 
-        await WhatsAppAdapter.verify_credentials(dict(CONFIG))
+        await WhatsAppAdapter.verify_credentials(
+            dict(CONFIG), outbound_policy=OutboundPolicy.parse("")
+        )
 
         described, read = graph.requests
         assert described.url.params["input_token"] == CONFIG["access_token"]
@@ -392,7 +395,9 @@ class TestCredentialsAreCheckedBeforeSaving:
         graph.on("GET", f"{API}/{PHONE_NUMBER_ID}", phone_number_read)
 
         with pytest.raises(BridgeCredentialError) as caught:
-            await WhatsAppAdapter.verify_credentials(dict(CONFIG))
+            await WhatsAppAdapter.verify_credentials(
+                dict(CONFIG), outbound_policy=OutboundPolicy.parse("")
+            )
 
         assert f"issued for Meta app 999, not app {APP_ID}" in str(caught.value)
 
@@ -407,7 +412,9 @@ class TestCredentialsAreCheckedBeforeSaving:
         graph.on("GET", f"{API}/{PHONE_NUMBER_ID}", phone_number_read)
 
         with pytest.raises(BridgeCredentialError) as caught:
-            await WhatsAppAdapter.verify_credentials(dict(CONFIG))
+            await WhatsAppAdapter.verify_credentials(
+                dict(CONFIG), outbound_policy=OutboundPolicy.parse("")
+            )
 
         assert "whatsapp_business_messaging" in str(caught.value)
 
@@ -417,7 +424,9 @@ class TestCredentialsAreCheckedBeforeSaving:
         graph.on("GET", f"{API}/debug_token", token_described(is_valid=False))
 
         with pytest.raises(BridgeCredentialError) as caught:
-            await WhatsAppAdapter.verify_credentials(dict(CONFIG))
+            await WhatsAppAdapter.verify_credentials(
+                dict(CONFIG), outbound_policy=OutboundPolicy.parse("")
+            )
 
         assert "Session has expired" in str(caught.value)
 
@@ -431,7 +440,9 @@ class TestCredentialsAreCheckedBeforeSaving:
         )
 
         with pytest.raises(BridgeCredentialError) as caught:
-            await WhatsAppAdapter.verify_credentials(dict(CONFIG))
+            await WhatsAppAdapter.verify_credentials(
+                dict(CONFIG), outbound_policy=OutboundPolicy.parse("")
+            )
 
         assert "Error validating client secret" in str(caught.value)
         assert "code 101" in str(caught.value)
@@ -449,7 +460,9 @@ class TestCredentialsAreCheckedBeforeSaving:
         )
 
         with pytest.raises(BridgeCredentialError) as caught:
-            await WhatsAppAdapter.verify_credentials(dict(CONFIG))
+            await WhatsAppAdapter.verify_credentials(
+                dict(CONFIG), outbound_policy=OutboundPolicy.parse("")
+            )
 
         assert "Object does not exist" in str(caught.value)
         assert "code 100" in str(caught.value)
@@ -461,7 +474,9 @@ class TestCredentialsAreCheckedBeforeSaving:
         graph.on("GET", f"{API}/debug_token", down)
 
         with pytest.raises(BridgeCredentialError, match="Could not reach"):
-            await WhatsAppAdapter.verify_credentials(dict(CONFIG))
+            await WhatsAppAdapter.verify_credentials(
+                dict(CONFIG), outbound_policy=OutboundPolicy.parse("")
+            )
 
 
 class TestFailuresAreClassified:
