@@ -11,6 +11,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { systemdEnvironment, systemdExecCommand } from '@switch-console/agent-providers';
 import { z } from 'zod';
 import { ConfigurationError } from './errors';
 import { defaultDataDir } from './paths';
@@ -323,7 +324,6 @@ export function controllerSystemUnit(
   config: SeparateUsersConfig,
   run: { cli: string; envFile: string | null; path: string }
 ): string {
-  const quote = (value: string) => `"${value.replace(/(["\\])/g, '\\$1').replace(/%/g, '%%')}"`;
   const args = [
     config.node,
     run.cli,
@@ -347,8 +347,8 @@ export function controllerSystemUnit(
     '[Service]',
     `User=${config.user}`,
     `SupplementaryGroups=${separateUserNames(config.uid).group}`,
-    `ExecStart=${args.map(quote).join(' ')}`,
-    `Environment=${quote(`PATH=${run.path}`)}`,
+    `ExecStart=${systemdExecCommand(args)}`,
+    `Environment=${systemdEnvironment(`PATH=${run.path}`)}`,
     'Restart=on-failure',
     'RestartSec=5',
     'RestartPreventExitStatus=2 3 4 5 6',

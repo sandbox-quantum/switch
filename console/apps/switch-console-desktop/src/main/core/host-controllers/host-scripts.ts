@@ -1,4 +1,9 @@
-import { IS_PROCESS_ALIVE } from '@switch-console/agent-providers';
+import {
+  IS_PROCESS_ALIVE,
+  systemdEnvironment,
+  systemdExecCommand,
+  systemdText,
+} from '@switch-console/agent-providers';
 import { z } from 'zod';
 
 /**
@@ -310,16 +315,15 @@ export function systemdUnit(input: {
   sharedHost: string;
   path: string;
 }): string {
-  const quote = (value: string) => `"${value.replace(/(["\\])/g, '\\$1')}"`;
   return [
     '[Unit]',
-    `Description=${input.description}`,
+    `Description=${systemdText(input.description)}`,
     'After=network-online.target',
     'Wants=network-online.target',
     '',
     '[Service]',
-    `ExecStart=${[input.node, input.bundle, 'run', '--data-dir', input.dataDir, '--shared-host-bundle', input.sharedHost, '--updated-by-console'].map(quote).join(' ')}`,
-    `Environment=${quote(`PATH=${input.path}`)}`,
+    `ExecStart=${systemdExecCommand([input.node, input.bundle, 'run', '--data-dir', input.dataDir, '--shared-host-bundle', input.sharedHost, '--updated-by-console'])}`,
+    `Environment=${systemdEnvironment(`PATH=${input.path}`)}`,
     'Environment=SWITCH_CONTROLLER_LOG_LEVEL=info',
     'Restart=on-failure',
     'RestartSec=5',
