@@ -47,9 +47,16 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
         textDecoration: "none",
         color: "text.primary",
         "&:focus-visible": { outline: "2px solid var(--sw-ring)", outlineOffset: 2, borderRadius: "16px" },
+        // Hovering anywhere in the item, its label included, tints the pill;
+        // the item already open takes no tint.
+        ...(!active && {
+          "&:hover .rail-pill": { backgroundColor: "color-mix(in srgb, var(--sw-foreground) 10%, transparent)" },
+          "&:active .rail-pill": { backgroundColor: "color-mix(in srgb, var(--sw-foreground) 15%, transparent)" },
+        }),
       }}
     >
       <Box
+        className="rail-pill"
         sx={{
           position: "relative",
           display: "flex",
@@ -58,13 +65,8 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
           width: TARGET,
           height: TARGET,
           borderRadius: "12px",
-          // The active indicator is a subtle vertical gradient pill with a
-          // whisper of lift — never a filled accent.
-          ...(active && {
-            background: "linear-gradient(to bottom, var(--sw-card), var(--sw-secondary))",
-            border: "1px solid var(--sw-border)",
-            boxShadow: "var(--sw-shadow-rail-active)",
-          }),
+          transition: "background-color 0.15s ease",
+          ...(active && { backgroundColor: "color-mix(in srgb, var(--sw-card) 80%, transparent)" }),
         }}
       >
         <item.icon sx={{ fontSize: ICON, strokeWidth: 1.5 }} />
