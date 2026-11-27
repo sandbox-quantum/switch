@@ -312,6 +312,13 @@ async def test_a_socket_webex_closes_at_once_keeps_backing_off(
 async def test_a_socket_that_stayed_up_reconnects_quickly(
     server: Server, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # With the backoff doubling from 0.01s (jittered down to half), twelve
+    # connections take at least 10s, so reaching them inside 5s shows it reset.
     monkeypatch.setattr(webex_socket, "_STABLE_AFTER", 0.0)
     server.scripts = [_close_once_authorised(server)]
-    assert await _connections_in(server, 0.5) >= 12
+    stream = _stream(Registry(server.url), Heard())
+    stream.start()
+    try:
+        await _until(lambda: server.connections >= 12, timeout=5.0)
+    finally:
+        await stream.stop()

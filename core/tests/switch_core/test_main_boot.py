@@ -109,7 +109,7 @@ def _boot_env(tmp_path: Path, db: BootDatabase, port: int) -> dict[str, str]:
     """Only what Core needs, all throwaway: nothing leaks in from the runner's
     own environment."""
     key = tmp_path / "keyed-id.key"
-    key.write_bytes(secrets.token_bytes(32))
+    key.write_text(secrets.token_hex(32))
     key.chmod(0o600)
     return {
         "PATH": os.environ.get("PATH", ""),
