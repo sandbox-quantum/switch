@@ -105,7 +105,7 @@ def _build(
     svc.require_room_poster = _require  # type: ignore[assignment]
     svc.require_room_member = _require  # type: ignore[assignment]
     svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
-        get_by_agent_id=lambda agent_id: client
+        get_tenant_agent=lambda agent_id, tenant_id: client
     )
     svc.trust_client = _ContentTrustClient()  # type: ignore[assignment]
     svc._post_trust_alert_notice = _alert_notice  # type: ignore[method-assign]

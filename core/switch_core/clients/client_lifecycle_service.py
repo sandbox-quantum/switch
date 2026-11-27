@@ -112,7 +112,7 @@ class ClientLifecycleService:
         # Every running row is an actor; the ones that read rooms also have a
         # consumer, keyed by the same client id.
         self._clients: dict[str, Actor[ClientConfig]] = {}
-        # Agent id to the id of its client, for `get_by_agent_id`; and the
+        # Agent id to the id of its client, for `get_tenant_agent`; and the
         # agents' clients whose agent this has not seen yet, the only ones a
         # lookup the index cannot answer has to look at.
         self._client_of_agent: dict[str, str] = {}
@@ -758,7 +758,7 @@ class ClientLifecycleService:
         """Whether this process holds the client's consumer lease."""
         return self._owned.fence(client_id) is not None
 
-    def get_by_agent_id(self, agent_id: str) -> AgentActor | None:
+    def _running_agent(self, agent_id: str) -> AgentActor | None:
         # Every process runs an actor for each client, so a scan of them all
         # on every send grows with the deployment. The client found for an
         # agent is kept, and checked again on each use, as the actor may have
@@ -791,7 +791,7 @@ class ClientLifecycleService:
         agent of another tenant is None, exactly as an unknown one is, so a
         caller cannot tell the two apart.
         """
-        actor = self.get_by_agent_id(agent_id)
+        actor = self._running_agent(agent_id)
         if actor is None:
             return None
         client_id = self._client_of_agent.get(agent_id)

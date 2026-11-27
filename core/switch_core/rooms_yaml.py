@@ -1732,7 +1732,7 @@ class RoomYamlService:
             return
 
         late = await self._wait_for_kickoff_audience(
-            room.transport_room_id, admin, agent_names
+            room.tenant_id, room.transport_room_id, admin, agent_names
         )
         if late:
             fail("did not join the room in time to see the kickoff: " + ", ".join(late))
@@ -1769,6 +1769,7 @@ class RoomYamlService:
 
     async def _wait_for_kickoff_audience(
         self,
+        tenant_id: str,
         transport_room_id: str,
         admin: SystemActor,
         agent_names: list[str],
@@ -1788,7 +1789,7 @@ class RoomYamlService:
         async with self._session_factory() as session:
             agents = await self._agent_store.get_by_names(session, agent_names)
         for agent in agents:
-            client = self._client_lifecycle.get_by_agent_id(agent.id)
+            client = self._client_lifecycle.get_tenant_agent(agent.id, tenant_id)
             if client is None:
                 continue
             try:

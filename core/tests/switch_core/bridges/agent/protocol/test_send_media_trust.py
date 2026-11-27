@@ -109,7 +109,7 @@ def _build(
     svc.session_factory = session_factory  # type: ignore[assignment]
     svc.require_room_poster = _require  # type: ignore[assignment]
     svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
-        get_by_agent_id=lambda agent_id: client
+        get_tenant_agent=lambda agent_id, tenant_id: client
     )
     svc.config = SimpleNamespace(agent_media_max_bytes=1000)  # type: ignore[assignment]
     svc.trust_client = trust  # type: ignore[assignment]

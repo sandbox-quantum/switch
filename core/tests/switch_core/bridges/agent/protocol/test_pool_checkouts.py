@@ -312,7 +312,7 @@ class TestSendMessage:
                 return "$event"
 
         svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
-            get_by_agent_id=lambda _agent_id: _Client()
+            get_tenant_agent=lambda _agent_id, _tenant_id: _Client()
         )
 
         sent_message = await svc.send_message(member_id, room_id, "hello")

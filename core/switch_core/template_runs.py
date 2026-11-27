@@ -595,9 +595,11 @@ class TemplateAgents:
                 raise await self.undone(
                     created, f"creating {plan.name} failed: {_reason(error)}"
                 ) from error
-        return await self._listening(created)
+        return await self._listening(tenant_id, created)
 
-    async def _listening(self, created: list[CreatedAgent]) -> list[CreatedAgent]:
+    async def _listening(
+        self, tenant_id: str, created: list[CreatedAgent]
+    ) -> list[CreatedAgent]:
         """Wait, up to the listen timeout in all, for each new agent's client
         to be taking events, so the kickoff posted the moment the room is made
         reaches an agent created a moment before. An agent's client is taking
@@ -607,10 +609,14 @@ class TemplateAgents:
         deadline = loop.time() + self._listen_timeout
         out: list[CreatedAgent] = []
         for agent in created:
-            actor = self._protocol.client_lifecycle.get_by_agent_id(agent.agent_id)
+            actor = self._protocol.client_lifecycle.get_tenant_agent(
+                agent.agent_id, tenant_id
+            )
             while actor is None and loop.time() < deadline:
                 await asyncio.sleep(_CLIENT_POLL_SECONDS)
-                actor = self._protocol.client_lifecycle.get_by_agent_id(agent.agent_id)
+                actor = self._protocol.client_lifecycle.get_tenant_agent(
+                    agent.agent_id, tenant_id
+                )
             listening = actor is not None and await actor.wait_receiving(
                 max(0.0, deadline - loop.time())
             )
