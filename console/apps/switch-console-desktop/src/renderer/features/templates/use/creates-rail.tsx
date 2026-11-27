@@ -1,3 +1,5 @@
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { Check, ChevronRight, DoorOpen, Loader2, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import type { ParsedAgentEntry } from '@main/core/agent-templates/template-document';
@@ -5,8 +7,6 @@ import type { TemplateRoom } from '@main/core/room-templates/controller';
 import { AgentField, type EntityLists } from '@renderer/features/room-templates/entity-fields';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import { Switch } from '@renderer/lib/ui/switch';
 import { cn } from '@renderer/utils/utils';
 import type { AgentReach } from './agent-permissions';
 import type { ConnectionState } from './managed-run';

@@ -1,5 +1,4 @@
-import { type ReactNode, useState } from 'react';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   Dialog,
   DialogClose,
@@ -9,7 +8,8 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { type ReactNode, useState } from 'react';
 import type { AgentReach } from './agent-permissions';
 import { reachIsOpen, reachText, type SlotRuntime } from './creates-rail';
 

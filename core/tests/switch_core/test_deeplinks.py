@@ -206,7 +206,7 @@ class TestGatewayQueryToSwitchdash:
 
 _CONSOLE_LINKS_TS = (
     Path(__file__).resolve().parents[3]
-    / "console/apps/switch-console-desktop/src/shared/core/deeplinks/console-links.ts"
+    / "console/packages/chat-ui/src/model/console-links.ts"
 )
 
 

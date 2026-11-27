@@ -23,10 +23,10 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useModalContext: () => ({ setCloseGuard: () => {} }),
 }));
 
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import { GitHubTokenStep } from '@renderer/features/switch-servers/github-token-step';
 import { ManagedGitHubStep } from '@renderer/features/switch-servers/managed-github-step';
 import type { ServiceCalls } from '@renderer/features/switch-servers/service-calls';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 import type {
   ConnectionCatalogEntry,
   ServicePasteMethod,

@@ -1,9 +1,5 @@
-import { ShieldAlert, ShieldQuestion } from 'lucide-react';
-import { observer } from 'mobx-react-lite';
-import { useEffect, useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { Button } from '@renderer/lib/ui/button';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Checkbox } from '@switch-console/chat-ui/primitives/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -11,8 +7,12 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Spinner } from '@renderer/lib/ui/spinner';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { ShieldAlert, ShieldQuestion } from 'lucide-react';
+import { observer } from 'mobx-react-lite';
+import { useEffect, useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
 import { log } from '@renderer/utils/logger';
 import { keyTypeLabel, type HostKeyProblem } from '@shared/core/ssh/host-keys';
 import { hostKeyPromptStore } from './host-key-store';

@@ -1,8 +1,15 @@
+import { ChatPanel } from '@switch-console/chat-ui/components/chat-panel';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { DoorOpen, ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useLayoutEffect, useRef } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
-import { ChatPanel } from '@renderer/features/chats/components/chat-panel';
 import {
   ConsoleChatRedirect,
   opensAsConsoleChat,
@@ -14,9 +21,6 @@ import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon'
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
-import { Button } from '@renderer/lib/ui/button';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import { RoomConfigurationPanel } from './room-configuration-panel';
 import { roomEmbedSlotStore } from './room-embed-slot';

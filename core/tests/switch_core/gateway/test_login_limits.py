@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import bcrypt
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import BackgroundTasks, FastAPI
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -562,11 +562,13 @@ class TestTheLockLeavesOtherWaysIn:
             async with world.factory() as session:
                 response = await oidc_routes.oidc_callback(
                     request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                    background=BackgroundTasks(),
                     config=oidc_config(),
                     session=session,
                     session_factory=world.factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
 
         assert response.status_code == 303

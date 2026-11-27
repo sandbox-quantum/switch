@@ -6,7 +6,8 @@ const toast = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/lib/open-external-link', () => ({ confirmOpenExternalLink }));
 vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast }));
 
-import { contentLinkHandlers, openContentLink } from '@renderer/lib/content-link';
+import { contentLinkHandlers } from '@switch-console/chat-ui/model/content-link';
+import { openContentLink } from '@renderer/lib/content-link';
 
 function mouse(button: number) {
   const preventDefault = vi.fn();

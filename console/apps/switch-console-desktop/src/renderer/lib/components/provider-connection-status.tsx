@@ -1,7 +1,7 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { useMutation, useQuery, type QueryClient } from '@tanstack/react-query';
 import { Check, CheckCircle2, CircleAlert, Copy, Loader2, RefreshCw } from 'lucide-react';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@renderer/lib/ui/button';
 import { getProvider, type AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 function providerReadinessQueryKey(

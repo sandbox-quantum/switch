@@ -1,3 +1,13 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogContentArea,
+  DialogHeader,
+  DialogTitle,
+} from '@switch-console/chat-ui/primitives/dialog';
+import { InfoTooltip } from '@switch-console/chat-ui/primitives/info-tooltip';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink, FileText, Link2, Loader2, Package, Plus, Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
@@ -9,20 +19,10 @@ import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 import { openContentLink } from '@renderer/lib/content-link';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { Button } from '@renderer/lib/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogContentArea,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Input } from '@renderer/lib/ui/input';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import type { RoomResource, RoomResourceKind } from '@shared/core/switch-servers/switch-servers';
 import { useRoomDetail } from './room-participants';

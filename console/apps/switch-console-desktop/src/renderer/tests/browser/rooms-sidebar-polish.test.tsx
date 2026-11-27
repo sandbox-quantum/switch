@@ -1,3 +1,4 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 /**
  * In real CSS: a Console room's own Add participants button and its people in
  * their colours, and an agent's power and move buttons beside its Connectors
@@ -9,9 +10,8 @@ import { Laptop } from 'lucide-react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-import { page } from 'vitest/browser';
 import '@renderer/index.css';
-import type { ChatSummary } from '@shared/core/chats/chats';
+import { page } from 'vitest/browser';
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -41,10 +41,14 @@ vi.mock('@renderer/features/managed-agents/use-managed-agent-actions', () => ({
   useManagedAgentActions: () => ({ busy: false, setDesiredState, remove: vi.fn() }),
 }));
 
+import { ChatHostProvider } from '@switch-console/chat-ui/host';
+import { stubChatHost } from '@switch-console/chat-ui/testing';
 import { chatMembersQueryKey } from '@renderer/features/chats/chat-people';
 import { AgentProfile } from '@renderer/features/managed-agents/agent-profile';
 import { AgentProfileActions } from '@renderer/features/managed-agents/agent-profile-actions';
 import { RoomSidePanel } from '@renderer/features/switch-rooms/room-side-panel';
+// The profile draws Console's own avatars.
+import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 
 const SHOTS = '../../../../build/acceptance/rooms-sidebar';
@@ -67,7 +71,11 @@ async function mount(node: React.ReactNode, client = new QueryClient()): Promise
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () =>
-    root!.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>)
+    root!.render(
+      <QueryClientProvider client={client}>
+        <ChatHostProvider host={stubChatHost({ AgentAvatar })}>{node}</ChatHostProvider>
+      </QueryClientProvider>
+    )
   );
   return container;
 }

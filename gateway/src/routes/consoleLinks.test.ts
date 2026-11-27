@@ -10,9 +10,14 @@ import { linkedWorkspace } from "../data/workspaceLink";
 import { ROUTES } from "./routeTable";
 
 /** Whether `path` is a page or a settings area, not a redirect or nothing at
- * all: a link Switch Console opens must land where it says. */
+ * all: a link Switch Console opens must land where it says. A redirect that
+ * holds only on some servers is a page on the others, so it opens where its
+ * target does. */
 function opens(path: string): boolean {
-  return ROUTES.some((route) => route.kind !== "redirect" && route.path === `/${path}`);
+  const route = ROUTES.find((each) => each.path === `/${path}`);
+  if (route === undefined) return false;
+  if (route.kind !== "redirect") return true;
+  return route.only !== undefined && opens(route.to.slice(1).split("?")[0]);
 }
 
 /** Whether `path` is answered at all, if only by a redirect. */

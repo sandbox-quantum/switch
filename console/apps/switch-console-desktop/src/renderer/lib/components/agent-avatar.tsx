@@ -1,11 +1,11 @@
+import { agentInitials, resolveAgentAvatarSrc } from '@switch-console/chat-ui/model/agent-avatar';
+import { isBuddyIconUrl } from '@switch-console/chat-ui/model/switch-buddy';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import buddyAvatar from '@/assets/images/switch-buddy/avatar.png';
 import { isOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import { useAvatarSettings } from '@renderer/lib/stores/use-avatar-settings';
 import { cn } from '@renderer/utils/utils';
-import { agentInitials, resolveAgentAvatarSrc } from '@shared/core/agents/agent-avatar';
-import { isBuddyIconUrl } from '@shared/core/agents/switch-buddy';
 
 /**
  * The image an agent's avatar shows, or null for its initials. `buddy` says
@@ -29,9 +29,15 @@ export function agentAvatarSrc(
 /**
  * Whether an agent may wear switch-buddy's picture: the person's own buddy,
  * as their managed agents say, or an agent Console is drawing before it
- * exists (`agentId` null), whose picture Console chose itself.
+ * exists (`agentId` null), whose picture Console chose itself. An agent drawn
+ * without saying which (`agentId` undefined, as a shared chat surface may)
+ * never does.
  */
-export function wearsBuddyPicture(serverId: string | null, agentId: string | null): boolean {
+export function wearsBuddyPicture(
+  serverId: string | null,
+  agentId: string | null | undefined
+): boolean {
+  if (agentId === undefined) return false;
   return agentId === null || isOwnBuddy(serverId, agentId);
 }
 
@@ -69,8 +75,9 @@ export const AgentAvatar = observer(function AgentAvatar({
   className,
 }: {
   /** The agent on `serverId` this is the picture of, or null for one Console
-   * draws before it exists, such as a preview of the icon being chosen. */
-  agentId: string | null;
+   * draws before it exists, such as a preview of the icon being chosen.
+   * Left out, the agent is not known, and never wears switch-buddy's picture. */
+  agentId?: string | null;
   name: string;
   /** The agent's chosen icon, or null to draw one from its name — subject to
    * what `serverId` allows. */

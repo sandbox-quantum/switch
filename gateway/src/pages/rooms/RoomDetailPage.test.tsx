@@ -6,6 +6,8 @@ import * as hooks from "../../data/hooks";
 import RoomDetailPage from "./RoomDetailPage";
 
 const navigate = vi.fn();
+// Whether the server has the dashboard's Chats, where the room list then is.
+const flags = vi.hoisted(() => ({ gateway_chats: true }));
 vi.mock("react-router", () => ({
   useNavigate: () => navigate,
   useParams: () => ({ roomId: "r1" }),
@@ -14,7 +16,7 @@ vi.mock("react-router", () => ({
 vi.mock("../../data/AuthContext", () => ({
   useAuth: () => ({
     canAdminTenant: false,
-    capabilities: { administersOrganization: false, isOperator: false },
+    capabilities: { administersOrganization: false, isOperator: false, features: flags },
     session: { user: { id: "u-me" }, tenant: null, tenants: [] },
   }),
 }));
@@ -565,7 +567,7 @@ describe("RoomDetailPage archive, delete and roles", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete room" }));
 
     await waitFor(() => expect(api.deleteRoom).toHaveBeenCalledWith("r1", true));
-    expect(navigate).toHaveBeenCalledWith("/rooms", undefined);
+    expect(navigate).toHaveBeenCalledWith("/chats?tab=rooms", undefined);
   });
 
   it("says what is left to clean up when the channel could not be retired", async () => {
@@ -580,13 +582,40 @@ describe("RoomDetailPage archive, delete and roles", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete room" }));
 
     await waitFor(() =>
-      expect(navigate).toHaveBeenCalledWith("/rooms", {
+      expect(navigate).toHaveBeenCalledWith("/chats?tab=rooms", {
         state: {
           notice:
             "The room was deleted, but its Slack channel could not be archived (missing scope). Archive it in Slack by hand.",
         },
       }),
     );
+  });
+
+  it("goes back to the Rooms page, with the notice, where the server has no Chats", async () => {
+    flags.gateway_chats = false;
+    try {
+      vi.mocked(api.deleteRoom).mockResolvedValue({
+        ok: true,
+        channel: { outcome: "failed", reason: "missing scope" },
+      });
+      viewAs({ can_write: true, can_manage: true, can_unlink: false, channel_on_delete: "archived" });
+      fireEvent.click(screen.getByRole("button", { name: "Back to rooms" }));
+      expect(navigate).toHaveBeenLastCalledWith("/rooms");
+      fireEvent.click(screen.getByRole("button", { name: "Delete room" }));
+      const dialog = await screen.findByRole("dialog", { name: "Delete planning?" });
+      fireEvent.click(within(dialog).getByRole("checkbox", { name: "Also archive the Slack channel" }));
+      fireEvent.click(within(dialog).getByRole("button", { name: "Delete room" }));
+      await waitFor(() =>
+        expect(navigate).toHaveBeenCalledWith("/rooms", {
+          state: {
+            notice:
+              "The room was deleted, but its Slack channel could not be archived (missing scope). Archive it in Slack by hand.",
+          },
+        }),
+      );
+    } finally {
+      flags.gateway_chats = true;
+    }
   });
 
   it("offers no choice where the platform keeps the channel, and says so", async () => {

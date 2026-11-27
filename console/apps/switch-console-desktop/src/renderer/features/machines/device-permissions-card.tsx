@@ -1,10 +1,10 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { managedAgentLabel } from '@renderer/features/managed-agents/managed-agent-state';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
 import type {
   DeviceAgentGrant,
   DeviceConsentChoice,

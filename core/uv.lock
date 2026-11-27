@@ -2474,6 +2474,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "alembic" },
+    { name = "anyio" },
     { name = "asyncpg" },
     { name = "authlib" },
     { name = "bcrypt" },
@@ -2518,6 +2519,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.4,<4" },
     { name = "alembic", specifier = ">=1.15,<2" },
+    { name = "anyio", specifier = ">=4,<5" },
     { name = "asyncpg", specifier = ">=0.29,<1" },
     { name = "authlib", specifier = ">=1.9.1,<2" },
     { name = "bcrypt", specifier = ">=4.0,<5" },

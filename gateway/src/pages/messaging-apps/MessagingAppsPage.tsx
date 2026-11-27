@@ -175,6 +175,7 @@ export default function MessagingAppsPage() {
 
       <RegisterMessagingAppDialog
         open={registerOpen}
+        initialType=""
         onClose={() => setRegisterOpen(false)}
         onSuccess={refreshAll}
       />

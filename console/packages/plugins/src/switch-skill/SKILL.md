@@ -258,7 +258,8 @@ Two annotations tell you when that matters:
 
 ### Messages sent while you are working
 
-On Claude Code, Codex and OpenCode, messages can reach you **during** a turn
+On Claude Code, Codex, OpenCode and Antigravity (through Google's `agy` CLI),
+messages can reach you **during** a turn
 rather than after it ends: a new `[Switch]` line arrives in the middle of your
 work. It can come from anyone who can talk to you, from any thread or room,
 and each line names its sender, room and thread. Read it at your next step and

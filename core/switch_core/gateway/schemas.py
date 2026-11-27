@@ -1363,6 +1363,14 @@ class DeleteAccountRequest(BaseModel):
     email: str
 
 
+class StartOverResponse(BaseModel):
+    """`POST /auth/me/start-over`: `finished` once the account is wiped and
+    signed out; otherwise `waiting` says what it waits on, to ask again."""
+
+    finished: bool
+    waiting: str | None
+
+
 class AccountDeletionCheck(BaseModel):
     """Whether `DELETE /auth/me` would go ahead now. `refusal` is the sentence
     it would refuse with, saying what to do first, or None."""
@@ -1919,7 +1927,12 @@ class AuthConfigResponse(BaseModel):
     # response served without a session, and version disclosure is
     # authenticated everywhere (CHOO-1865).
     password_login_enabled: bool
+    # Sign-up that lands the account in a workspace, which Console offers.
     signup_enabled: bool
+    # Whether the web dashboard's sign-in page offers sign-up too, behind
+    # `gateway_onboarding`: also under "open" sign-up, where the account
+    # starts in no workspace and the dashboard has it create one.
+    web_signup_enabled: bool
     test_account_reset_enabled: bool
     oidc_enabled: bool
     oidc_provider_label: str | None

@@ -1,3 +1,8 @@
+import { contentLinkHandlers } from '@switch-console/chat-ui/model/content-link';
+import {
+  AskBeforeLoading,
+  loadsFromElsewhere,
+} from '@switch-console/chat-ui/ui/ask-before-loading';
 import React, { useEffect, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import type { ExtraProps } from 'react-markdown';
@@ -9,10 +14,9 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import type { PluggableList } from 'unified';
-import { contentLinkHandlers, openContentLink } from '@renderer/lib/content-link';
+import { openContentLink } from '@renderer/lib/content-link';
 import { useTheme } from '@renderer/lib/hooks/useTheme';
 import { cn } from '@renderer/utils/utils';
-import { AskBeforeLoading, loadsFromElsewhere } from './ask-before-loading';
 import { ExpandableImage } from './expandable-image';
 import { normalizeLatexDelimiters } from './markdown-latex';
 import { MermaidDiagram } from './mermaid-diagram';

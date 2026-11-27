@@ -1,10 +1,10 @@
+import { BUDDY_ICON_URL } from '@switch-console/chat-ui/model/switch-buddy';
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import buddyAvatar from '@/assets/images/switch-buddy/avatar.png';
-import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 
 vi.mock('@renderer/lib/ipc', () => ({
   rpc: {

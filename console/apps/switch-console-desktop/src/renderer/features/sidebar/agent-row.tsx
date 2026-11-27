@@ -1,14 +1,18 @@
+import { SidebarMenuAction, SidebarMenuRow } from '@switch-console/chat-ui/primitives/sidebar';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { Bot } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { CSSProperties, ReactNode } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { AgentStatusSlot } from './agent-status-slot';
-import { SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
 import { depthIndent } from './sidebar-store';
 
 /**

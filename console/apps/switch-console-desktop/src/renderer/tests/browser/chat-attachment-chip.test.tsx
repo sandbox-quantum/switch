@@ -11,14 +11,10 @@ import { userEvent } from 'vitest/browser';
 const media = vi.hoisted(() => vi.fn());
 const saveAttachment = vi.hoisted(() => vi.fn());
 const toast = vi.hoisted(() => vi.fn());
-vi.mock('@renderer/lib/ipc', () => ({
-  events: { on: () => () => {} },
-  rpc: { chats: { media, saveAttachment } },
-}));
-vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast }));
 
-import { ChatAttachments } from '@renderer/features/chats/components/chat-attachments';
-import type { ChatAttachment } from '@shared/core/chats/chats';
+import { ChatAttachments } from '@switch-console/chat-ui/components/chat-attachments';
+import type { ChatAttachment } from '@switch-console/chat-ui/contracts/chats';
+import { withChatHost } from '@switch-console/chat-ui/testing';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;
@@ -54,7 +50,15 @@ async function render(attachment: ChatAttachment): Promise<HTMLButtonElement> {
   document.body.appendChild(container);
   root = createRoot(container);
   await act(async () =>
-    root!.render(<ChatAttachments serverId="s" roomId="r" attachments={[attachment]} />)
+    root!.render(
+      withChatHost(<ChatAttachments serverId="s" roomId="r" attachments={[attachment]} />, {
+        media: (_serverId, roomId, uri) => media({ roomId, uri }),
+        saveAttachment: async (serverId, roomId, each) => {
+          await saveAttachment({ serverId, roomId, uri: each.uri, filename: each.filename });
+        },
+        toast,
+      })
+    )
   );
   return container.querySelector('button')!;
 }

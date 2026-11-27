@@ -6,6 +6,7 @@ import {
   VERTEX_PROVIDERS_ONLY,
   vertexLoginCredential,
 } from '@switch-console/agent-providers';
+import type { MachineLoginInput } from '@switch-console/chat-ui/contracts/machine-logins';
 import { agentMigrationService } from '@main/core/agent-migration/agent-migration';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { hostControllerService } from '@main/core/host-controllers/host-controllers';
@@ -43,7 +44,6 @@ import type {
   AdvancedConfigField,
   ManagedAgentChanges,
   ManagedAgentView,
-  MachineLoginInput,
   MachineDetail,
   MachineLoginOutcome,
   MachineSealingKey,

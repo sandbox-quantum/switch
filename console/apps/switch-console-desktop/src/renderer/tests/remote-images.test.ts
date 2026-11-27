@@ -6,15 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@renderer/lib/hooks/useTheme', () => ({
   useTheme: () => ({ effectiveTheme: 'emlight' }),
 }));
-vi.mock('@renderer/lib/open-external-link', () => ({ confirmOpenExternalLink: vi.fn() }));
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: vi.fn(() => () => {}) },
   rpc: { app: { openExternal: vi.fn() } },
 }));
 
-const { ChatMarkdown } = await import('@renderer/features/chats/ui/chat-markdown');
+const { ChatMarkdown } = await import('@switch-console/chat-ui/ui/chat-markdown');
+const { withChatHost } = await import('@switch-console/chat-ui/testing');
 const { MarkdownRenderer } = await import('@renderer/lib/ui/markdown-renderer');
-const { loadsFromElsewhere } = await import('@renderer/lib/ui/ask-before-loading');
+const { loadsFromElsewhere } = await import('@switch-console/chat-ui/ui/ask-before-loading');
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -54,7 +54,7 @@ async function loadImage() {
 }
 
 describe.each([
-  ['a chat message', () => createElement(ChatMarkdown, null, `![Pixel](${PIXEL})`)],
+  ['a chat message', () => withChatHost(createElement(ChatMarkdown, null, `![Pixel](${PIXEL})`))],
   [
     'a room document',
     () => createElement(MarkdownRenderer, { content: `![Pixel](${PIXEL})`, variant: 'compact' }),

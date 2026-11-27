@@ -42,7 +42,7 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
 }));
 
 const { DeviceConsentModal } = await import('@renderer/features/machines/device-consent-modal');
-const { Dialog, DialogContent } = await import('@renderer/lib/ui/dialog');
+const { Dialog, DialogContent } = await import('@switch-console/chat-ui/primitives/dialog');
 const { DeviceConsentPrompts } = await import('@renderer/features/machines/device-consent-prompts');
 const { DevicePermissionsCard } =
   await import('@renderer/features/machines/device-permissions-card');

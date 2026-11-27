@@ -862,6 +862,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ .Values.switchCore.signupEnabled | quote }}
 - name: GATEWAY_SIGNUP_MAX_PER_HOUR
   value: {{ .Values.switchCore.signupMaxPerHour | quote }}
+{{- if .Values.switchCore.allowTestAccountReset }}
+- name: GATEWAY_ALLOW_TEST_ACCOUNT_RESET
+  value: "true"
+{{- end }}
 {{- $signupMode := .Values.switchCore.signup.mode }}
 {{- if not (has $signupMode (list "default_tenant" "invite_only" "open")) }}
 {{- fail (printf "switchCore.signup.mode must be one of default_tenant, invite_only, open. Got %q." $signupMode) }}
@@ -907,6 +911,13 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 {{- end }}
 {{- if and (has "decision_routing" .Values.switchCore.featureFlags.enabled) (not (has "follow_the_conversation" .Values.switchCore.featureFlags.enabled)) }}
 {{- fail "The decision_routing feature flag needs follow_the_conversation in switchCore.featureFlags.enabled as well; switch-core refuses to start without it." }}
+{{- end }}
+{{- if has "gateway_onboarding" .Values.switchCore.featureFlags.enabled }}
+{{- range list "gateway_chats" "switch_buddy" "hosted_agents" }}
+{{- if not (has . $.Values.switchCore.featureFlags.enabled) }}
+{{- fail (printf "The gateway_onboarding feature flag needs %s in switchCore.featureFlags.enabled as well; switch-core refuses to start without it." .) }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- with include "switch.decisionEndpointUrl" . }}
 - name: DECISION_ENDPOINT_URL

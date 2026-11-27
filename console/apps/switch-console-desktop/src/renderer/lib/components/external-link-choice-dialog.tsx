@@ -1,12 +1,12 @@
-import { ExternalLink, Globe } from 'lucide-react';
-import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { ExternalLink, Globe } from 'lucide-react';
+import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 
 export type ExternalLinkChoice = 'switch-console-browser' | 'external-browser';
 

@@ -1,18 +1,26 @@
+import { ChatHeaderControls } from '@switch-console/chat-ui/components/chat-header';
+import { useAgentActivities } from '@switch-console/chat-ui/components/chat-panel';
+import { ServerPage } from '@switch-console/chat-ui/components/server-page';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { UNSAVED_CHAT_NAME } from '@switch-console/chat-ui/stores/direct-chat-starter';
 import { ArrowRightLeft, MoreVertical, Power, PowerOff, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { ReactNode } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
-import { ChatHeaderControls } from '@renderer/features/chats/components/chat-header';
-import { useAgentActivities } from '@renderer/features/chats/components/chat-panel';
 import { directChats } from '@renderer/features/chats/start-direct-chat';
-import { UNSAVED_CHAT_NAME } from '@renderer/features/chats/stores/direct-chat-starter';
 import {
   embeddedRoomFallbackTab,
   OpenInMessagingApp,
   RoomTabs,
 } from '@renderer/features/switch-rooms/view';
 import { homeRedirect } from '@renderer/features/switch-servers/home-target';
-import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import {
   ServerStatusPill,
   serverState,
@@ -27,14 +35,6 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { AgentChats, openAgentChat, openAgentRoom, useAgentSection } from './agent-chats';
 import { agentSectionLabel } from './agent-profile';
@@ -132,7 +132,17 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
             {/* The agent's own actions sit with its profile (`AgentProfileActions`):
             this menu is the chat's. */}
             {agent && chat && (
-              <ChatHeaderControls serverId={params.serverId} chat={chat} activities={activities} />
+              <ChatHeaderControls
+                serverId={params.serverId}
+                chat={chat}
+                activities={activities}
+                context={{
+                  currentViewId: 'managedAgent',
+                  chatRoomId: undefined,
+                  roomRoomId: undefined,
+                  agentRoomId: params.roomId,
+                }}
+              />
             )}
           </div>
         </>

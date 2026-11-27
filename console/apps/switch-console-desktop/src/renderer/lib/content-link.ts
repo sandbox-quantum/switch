@@ -1,4 +1,3 @@
-import type * as React from 'react';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { confirmOpenExternalLink } from '@renderer/lib/open-external-link';
 
@@ -21,24 +20,4 @@ export function openContentLink(href: string | undefined): void {
     title: 'Link not opened',
     description: 'Switch Console opens web links (http and https) only.',
   });
-}
-
-/**
- * Click handlers for such a link that keep every click from the browser, a
- * middle-click included, and pass a left or middle click to `follow`.
- */
-export function contentLinkHandlers(follow: () => void): {
-  onClick: React.MouseEventHandler;
-  onAuxClick: React.MouseEventHandler;
-} {
-  return {
-    onClick: (event) => {
-      event.preventDefault();
-      follow();
-    },
-    onAuxClick: (event) => {
-      event.preventDefault();
-      if (event.button === 1) follow();
-    },
-  };
 }

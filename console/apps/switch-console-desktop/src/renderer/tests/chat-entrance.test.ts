@@ -1,7 +1,7 @@
+import { introduceChat, useChatEntrance } from '@switch-console/chat-ui/components/chat-entrance';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it } from 'vitest';
-import { introduceChat, useChatEntrance } from '@renderer/features/chats/chat-entrance';
 
 function Probe({ roomId }: { roomId: string }) {
   const { firstAgent, firstOwn } = useChatEntrance(roomId);

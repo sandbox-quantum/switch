@@ -1,7 +1,7 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
-import { Button } from '@renderer/lib/ui/button';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
 /** The server as the person knows it: its name, and its address when that says more. */

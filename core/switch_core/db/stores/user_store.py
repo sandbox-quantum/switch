@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection
-from datetime import timedelta
-from typing import NamedTuple
+from datetime import UTC, datetime, timedelta
+from typing import Any, NamedTuple
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -557,6 +557,23 @@ class UserStore:
         """Remember `tenant_id` as the workspace `user` last selected, so the
         next sign-in lands there rather than asking again."""
         user.metadata_ = {**(user.metadata_ or {}), _LAST_TENANT_KEY: tenant_id}
+        await session.flush()
+
+    async def record_team_survey(
+        self, session: AsyncSession, user: User, answers: dict[str, Any]
+    ) -> None:
+        """Keep `user`'s answers to "Tell us about your team", replacing any
+        given before. The caller has checked them against the choices."""
+        user.team_survey = answers
+        user.team_survey_answered_at = datetime.now(UTC)
+        await session.flush()
+
+    async def record_license_acceptance(
+        self, session: AsyncSession, user: User, version: str
+    ) -> None:
+        """Record that `user` accepted the license whose version is `version`, now."""
+        user.license_accepted_version = version
+        user.license_accepted_at = datetime.now(UTC)
         await session.flush()
 
     async def lock_operators(self, session: AsyncSession) -> set[str]:

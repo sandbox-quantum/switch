@@ -40,7 +40,8 @@ its initial prompt is not automatically sent again.
 
 ### Messages sent while the agent is working
 
-On a provider that can steer a running turn (Claude Code, Codex and OpenCode),
+On a provider that can steer a running turn (Claude Code, Codex, OpenCode, and
+Antigravity through Google's `agy` CLI),
 a message sent while the agent is working reaches that turn instead of waiting
 for it to end. Any message that reaches the agent does: from the person who
 started the turn or anyone else who can talk to the agent, from another agent,

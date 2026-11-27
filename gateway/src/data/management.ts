@@ -3,6 +3,7 @@
 // /gateway/management, except the provider list and advanced-configuration fields, which are always
 // served; every failure comes back as {"error": {"code", "message", "retryable"}}.
 
+import type { CloudMachine as CloudMachineContract } from "@switch-console/chat-ui/contracts/switch-servers";
 import { gatewayFetch } from "./gatewayFetch";
 
 const BASE = "/gateway/management";
@@ -147,6 +148,10 @@ export interface Controller {
    * its providers; and revoke it. */
   can_edit: boolean;
   can_remove: boolean;
+  /** The key a provider login is sealed to for it; null for a controller that keeps none. Absent from older servers. */
+  public_key?: { alg: string; key: string; key_id: string } | null;
+  /** Where it makes agents' folders (an agent's is `<workspaces_dir>/<name>`); null before it has said. */
+  workspaces_dir?: string | null;
 }
 
 export interface Definition {
@@ -177,6 +182,8 @@ export interface ManagedAgent {
   status: AgentStatus | null;
   created_at: string;
   updated_at: string;
+  /** The template run that created it, as the server vouches for it; absent from older servers. */
+  template?: { id: string; key: string; revision?: number | null } | null;
   /** What the caller may do to it: start, stop, restart and edit it; and
    * stop managing it. */
   can_edit: boolean;
@@ -293,6 +300,24 @@ export function providerLabel(providers: ProviderInfo[], provider: Provider): st
   return providers.find((p) => p.id === provider)?.label ?? provider;
 }
 
+// shortcut: Cursor is the one provider Switch runs with no automatic review of
+// its own; read it from Switch once the providers list says which have one.
+const WITHOUT_AUTO_MODE = new Set(["cursor"]);
+
+/** Whether the provider reviews each action itself, so an agent of it can run in auto mode. */
+export function providerHasAutoMode(provider: Provider): boolean {
+  return !WITHOUT_AUTO_MODE.has(provider);
+}
+
+// shortcut: OpenCode is the one provider whose auto mode nothing reviews (Switch's
+// `new_agent_auto_mode`); read it from Switch once the providers list says.
+const UNREVIEWED_AUTO_MODE = new Set(["opencode"]);
+
+/** Whether auto mode on the provider runs every action unreviewed, so a new agent starts with it off. */
+export function providerAutoModeUnreviewed(provider: Provider): boolean {
+  return UNREVIEWED_AUTO_MODE.has(provider);
+}
+
 export function fetchManagedAgents(): Promise<ManagedAgent[]> {
   return request<ManagedAgent[]>("/agents");
 }
@@ -301,6 +326,8 @@ export function createManagedAgent(body: {
   name: string;
   description: string;
   display_name: string | null;
+  /** Null for the icon its name generates. */
+  icon_url: string | null;
   controller_id: string | null;
   desired_state: DesiredState;
   definition: Definition;
@@ -331,6 +358,33 @@ export function createOperation(body: {
   params: Record<string, unknown>;
 }): Promise<Operation> {
   return request<Operation>("/operations", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Where an operation sent to a device stands: still being worked on, done, or why not. */
+export type OperationOutcome =
+  | { state: "pending" }
+  | { state: "succeeded" }
+  | { state: "failed"; message: string };
+
+/**
+ * How the device took up an operation, by its id, among those sent to it:
+ * the device's own reason for one that failed, else `words` for one that ran
+ * out of time (`expired`) or failed saying nothing (`failed`).
+ */
+export async function operationOutcome(
+  controllerId: string,
+  operationId: string,
+  words: { expired: string; failed: string },
+): Promise<OperationOutcome> {
+  const listed = await request<Operation[]>(`/operations?controller_id=${encodeURIComponent(controllerId)}`);
+  const found = listed.find((operation) => operation.id === operationId);
+  if (!found || found.state === "pending" || found.state === "claimed") return { state: "pending" };
+  const error = found.result?.error as { message?: string } | undefined;
+  if (found.state === "succeeded" && !error) return { state: "succeeded" };
+  return {
+    state: "failed",
+    message: error?.message ?? (found.state === "expired" ? words.expired : words.failed),
+  };
 }
 
 /** What a device is, as people tell them apart. */
@@ -465,21 +519,7 @@ export async function unmanageOrganizationAgent(workspaceId: string, agentId: st
 }
 
 /** The caller's cloud machine, as its owner sees it from this workspace. */
-export interface CloudMachine {
-  machine_id: string;
-  state: string;
-  desired_state: string;
-  stop_reason: string | null;
-  stopped_by_admin: boolean;
-  sleeping: boolean;
-  revision: number;
-  error: string | null;
-  error_code: string | null;
-  retain_until: string | null;
-  heartbeat_at: string | null;
-  /** The controller it enrolled as here; null until it has. */
-  controller_id: string | null;
-}
+export type CloudMachine = CloudMachineContract;
 
 export type CloudMachineAction = "stop" | "start" | "retry";
 

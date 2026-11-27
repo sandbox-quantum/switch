@@ -1,9 +1,9 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { attachmentFilename } from '@switch-console/chat-ui/model/attachment-filename';
 import { app, dialog } from 'electron';
 import { getMainWindow } from '@main/app/window';
 import { markDownloaded } from '@main/core/fs/download-quarantine';
-import { attachmentFilename } from '@shared/core/chats/attachment-filename';
 
 /**
  * Save a room attachment where the person picks, under the name the chat shows

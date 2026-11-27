@@ -1,8 +1,8 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode } from 'react';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { Button } from '@renderer/lib/ui/button';
 import { type SwitchServer, type SwitchUser } from '@shared/core/switch-servers/switch-servers';
 
 export type SignedInServer = { server: SwitchServer; user: SwitchUser };

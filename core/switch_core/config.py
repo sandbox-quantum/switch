@@ -18,7 +18,9 @@ from switch_core.feature_flags import (
     ALWAYS_ON_FEATURE_FLAGS,
     BUDDY_SLACK_HANDOFF,
     DECISION_ROUTING,
+    FLAG_REQUIRES,
     FOLLOW_THE_CONVERSATION,
+    GATEWAY_ONBOARDING,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
     ORGANIZATION_CONNECTOR_APPS,
@@ -347,9 +349,12 @@ class SwitchConfig(BaseSettings):
     # Lets the password login path be disabled (OIDC-only) without code changes.
     gateway_password_login_enabled: bool = True
     # Open self sign-up with email and password: anyone who can reach the
-    # gateway can create an account in tenant zero. Only takes effect while
-    # password login is enabled and gateway_signup_mode is "default_tenant",
-    # the one mode that lands a new account in tenant zero.
+    # gateway can create an account. Only takes effect while password login is
+    # enabled and gateway_signup_mode is "default_tenant", where the account
+    # lands in tenant zero, or "open", where it lands in no workspace and the
+    # web dashboard has it create one. Sign-up does not verify that the address
+    # is the person's, so invitations to it are theirs to take: a public
+    # deployment needs email verification first.
     gateway_signup_enabled: bool = False
     # Counts every user created in the last hour (sign-up, admin-created and
     # OIDC first sign-in alike), read from the users table so it holds across
@@ -1514,16 +1519,6 @@ class SwitchConfig(BaseSettings):
                 "DECISION_TIMEOUT_SECONDS must be positive, got "
                 f"{self.decision_timeout_seconds!r}."
             )
-        if (
-            self.feature_flags[DECISION_ROUTING]
-            and not self.feature_flags[FOLLOW_THE_CONVERSATION]
-        ):
-            raise ValueError(
-                f"The {DECISION_ROUTING!r} feature flag needs "
-                f"{FOLLOW_THE_CONVERSATION!r} in FEATURE_FLAGS_ENABLED as well: "
-                "it asks about the messages the follow-the-conversation rules "
-                "leave with nobody."
-            )
         return self
 
     @model_validator(mode="after")
@@ -1564,6 +1559,13 @@ class SwitchConfig(BaseSettings):
                 f"FEATURE_FLAGS_ENABLED names unknown feature flag(s): {unknown}. "
                 f"Known flags: {sorted(KNOWN_FEATURE_FLAGS)}."
             )
+        for flag, needs in sorted(FLAG_REQUIRES.items()):
+            missing = sorted(need for need in needs if not self.feature_flags[need])
+            if self.feature_flags[flag] and missing:
+                raise ValueError(
+                    f"The {flag!r} feature flag needs {missing} in "
+                    "FEATURE_FLAGS_ENABLED as well."
+                )
         return self
 
     def _enabled_feature_flags(self) -> set[str]:
@@ -1591,6 +1593,10 @@ class SwitchConfig(BaseSettings):
     @property
     def hosted_agents_enabled(self) -> bool:
         return self.feature_flags[HOSTED_AGENTS]
+
+    @property
+    def gateway_onboarding_enabled(self) -> bool:
+        return self.feature_flags[GATEWAY_ONBOARDING]
 
     @property
     def service_connections_enabled(self) -> bool:
@@ -2139,8 +2145,14 @@ class SwitchConfig(BaseSettings):
             self.gateway_signup_enabled
             and self.gateway_password_login_enabled
             and not self.gateway_oidc_enabled
-            and self.gateway_signup_mode == "default_tenant"
+            and self.gateway_signup_mode in ("default_tenant", "open")
         )
+
+    @property
+    def gateway_signup_joins_tenant_zero(self) -> bool:
+        # Console signs people up only where the new account has a workspace:
+        # it has no step for creating one.
+        return self.gateway_signup_open and self.gateway_signup_mode == "default_tenant"
 
     @property
     def gateway_oidc_metadata_url(self) -> str:

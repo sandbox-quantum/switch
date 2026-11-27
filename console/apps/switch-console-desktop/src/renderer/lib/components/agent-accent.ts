@@ -1,6 +1,6 @@
+import { pickAccent } from '@switch-console/chat-ui/model/agent-accent';
 import { useEffect, useState } from 'react';
 import { useThirdPartyAvatarsEnabled } from '@renderer/lib/stores/use-avatar-settings';
-import { pickAccent } from '@renderer/utils/pick-accent';
 import { agentAvatarSrc, wearsBuddyPicture } from './agent-avatar';
 
 const SAMPLE_PX = 24;

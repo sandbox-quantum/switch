@@ -1,11 +1,11 @@
-import type { ReactNode } from 'react';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
+} from '@switch-console/chat-ui/primitives/select';
+import type { ReactNode } from 'react';
 
 const ANY = '__any__';
 
