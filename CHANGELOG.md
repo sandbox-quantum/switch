@@ -93,6 +93,8 @@ version of their own to them without also giving them a release of their own.
   so a backtracking pattern cannot hold the server. Saving or updating a
   template refuses a pattern longer than 500 characters, or a default longer
   than 10,000 checked against one; a template saved before then still loads.
+  A value given when a template is used is refused past 10,000 characters if
+  it has to match a pattern.
   Patterns are matched with the `regex` package, which switch-core now
   depends on; its default syntax is the same as Python's `re`.
 - **Adding or removing an agent by id no longer tells another workspace's

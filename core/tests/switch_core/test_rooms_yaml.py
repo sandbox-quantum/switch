@@ -2289,10 +2289,12 @@ def test_a_stored_pattern_longer_than_the_save_cap_still_loads_and_matches():
         coerce_param("c", spec, "p")
 
 
-def test_a_long_value_is_matched_under_the_timeout_not_refused_for_length():
+def test_a_value_too_long_to_check_against_its_pattern_is_refused():
     spec = ParamSpec(type="string", pattern=".*")
-    value = "x" * (PARAM_PATTERN_VALUE_MAX_LENGTH + 1)
-    assert coerce_param(value, spec, "p") == value
+    longest = "x" * PARAM_PATTERN_VALUE_MAX_LENGTH
+    assert coerce_param(longest, spec, "p") == longest
+    with pytest.raises(ValueError, match="characters long"):
+        coerce_param(longest + "x", spec, "p")
 
 
 def test_a_catastrophically_backtracking_pattern_is_cut_off_and_refused():

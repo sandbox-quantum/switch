@@ -87,9 +87,9 @@ PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 # A string param's `pattern` is written by the template's author, who can also
 # supply the value matched against it, and a backtracking regular expression
 # can take exponential time. Every match is cut off: a value that cannot be
-# checked in time is refused, never let through. The lengths are bounded too,
-# but only when a template is saved (`template_lint`), so one stored before
-# the bound still loads.
+# checked in time is refused, never let through. A value matched is bounded
+# when it is given; the pattern's own length only when a template is saved
+# (`template_lint`), so one stored before the bound still loads.
 PARAM_PATTERN_MAX_LENGTH = 500
 PARAM_PATTERN_VALUE_MAX_LENGTH = 10_000
 PARAM_PATTERN_TIMEOUT_SECONDS = 0.1
@@ -236,6 +236,11 @@ class ParamSpec(BaseModel):
 
 def _check_pattern(pattern: str, value: str, name: str) -> None:
     """Raise unless `value` wholly matches `pattern`, checked in bounded time."""
+    if len(value) > PARAM_PATTERN_VALUE_MAX_LENGTH:
+        raise ValueError(
+            f"param {name!r}: the value is {len(value)} characters long; at most "
+            f"{PARAM_PATTERN_VALUE_MAX_LENGTH} can be checked against its pattern"
+        )
     try:
         matched = regex.fullmatch(
             pattern,
