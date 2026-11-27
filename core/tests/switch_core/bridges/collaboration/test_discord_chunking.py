@@ -303,6 +303,33 @@ def test_a_fence_indented_up_to_three_spaces_still_counts() -> None:
     assert all(c.startswith("```text") for c in chunks[1:])
 
 
+def _render(part: str) -> tuple[list[str], list[str], bool]:
+    """How a part's lines render under CommonMark's fence rules: the lines in
+    code, the lines outside it, and whether a block is still open at the end.
+
+    Written out here rather than borrowed from the splitter, so a mistake in
+    the splitter's own reading of fences cannot hide in the check."""
+    code: list[str] = []
+    prose: list[str] = []
+    fence: tuple[str, int] | None = None
+    for line in part.split("\n"):
+        text = line.lstrip(" ")
+        indent = len(line) - len(text)
+        char = text[:1]
+        run = len(text) - len(text.lstrip(char)) if char in ("`", "~") else 0
+        after = text[run:]
+        if fence is None:
+            if indent <= 3 and run >= 3 and not (char == "`" and "`" in after):
+                fence = (char, run)
+            else:
+                prose.append(line)
+        elif indent <= 3 and char == fence[0] and run >= fence[1] and not after.strip():
+            fence = None
+        else:
+            code.append(line)
+    return code, prose, fence is not None
+
+
 # Crafted text once sent the splitter into a loop that never returned, so these
 # are held to a timeout: a regression fails here rather than hanging the run.
 
@@ -311,23 +338,30 @@ def test_a_fence_indented_up_to_three_spaces_still_counts() -> None:
 def test_a_fence_run_with_no_safe_cut_is_cut_at_the_budget() -> None:
     line = "x" + "~" * 500
 
-    pieces = _hard_wrap(line, 100)
+    pieces = _hard_wrap(line, 100, in_code=False)
 
     assert all(len(p) <= 100 for p in pieces), [len(p) for p in pieces]
-    assert "".join(pieces) == line
+    assert "".join(p.lstrip(" ") for p in pieces) == line
+    # A later piece made only of tildes would open a block; indented four
+    # spaces it is text.
+    assert all(p.startswith("    ~") for p in pieces[1:])
 
 
 @pytest.mark.timeout(10)
+@pytest.mark.parametrize("in_code", [False, True], ids=["prose", "code"])
 @pytest.mark.parametrize(
     "line",
     ["~" * 500, "`" * 500, "a " + "~" * 500, "```x" + "`" * 500],
     ids=["tildes", "backticks", "after-a-word", "after-a-span-opener"],
 )
-def test_every_over_long_fence_run_is_wrapped_within_the_budget(line: str) -> None:
-    pieces = _hard_wrap(line, 100)
+def test_every_over_long_fence_run_is_wrapped_within_the_budget(
+    line: str, in_code: bool
+) -> None:
+    pieces = _hard_wrap(line, 100, in_code=in_code)
 
     assert all(0 < len(p) <= 100 for p in pieces), [len(p) for p in pieces]
     assert "".join(pieces).replace(" ", "") == line.replace(" ", "")
+    assert all(p.startswith("    ") for p in pieces[1:])
 
 
 @pytest.mark.timeout(10)
@@ -341,15 +375,58 @@ def test_a_run_of_fence_characters_inside_a_code_block_fits_every_part() -> None
 
 
 @pytest.mark.timeout(10)
+@pytest.mark.parametrize("fence", ["```", "~~~"], ids=["backtick", "tilde"])
+def test_a_wrapped_run_of_the_block_s_own_fence_does_not_close_it(
+    fence: str,
+) -> None:
+    # Cut where it falls, the run left later pieces made only of the fence's
+    # character: each closed the reopened block, the code after it rendered as
+    # prose, and the part's closing fence opened a block that never closed.
+    code = [f"line {i}" for i in range(10)]
+    body = f"{fence}\nx" + fence[0] * 500 + "\n" + "\n".join(code) + f"\n{fence}"
+
+    chunks = split_markdown(body, 200)
+
+    assert len(chunks) > 1
+    assert all(len(c) <= 200 for c in chunks), [len(c) for c in chunks]
+    rendered = [_render(c) for c in chunks]
+    assert not any(still_open for _, _, still_open in rendered)
+    assert not any(prose for _, prose, _ in rendered), [p for _, p, _ in rendered]
+    in_code = [line for lines, _, _ in rendered for line in lines]
+    assert [line for line in in_code if line.startswith("line ")] == code
+    assert "".join(in_code).count(fence[0]) == 500
+
+
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("char", ["`", "~"], ids=["backtick", "tilde"])
+def test_a_wrapped_run_of_fence_characters_outside_a_block_opens_none(
+    char: str,
+) -> None:
+    body = "intro\nx" + char * 500 + "\nafter"
+
+    chunks = split_markdown(body, 200)
+
+    assert len(chunks) > 1
+    assert all(len(c) <= 200 for c in chunks), [len(c) for c in chunks]
+    rendered = [_render(c) for c in chunks]
+    assert not any(lines for lines, _, _ in rendered), [c for c, _, _ in rendered]
+    assert not any(still_open for _, _, still_open in rendered)
+    assert "".join(chunks).count(char) == 500
+
+
+@pytest.mark.timeout(10)
 @pytest.mark.parametrize("marker", ["~" * 3000, "`" * 3000], ids=["tilde", "backtick"])
 def test_a_fence_too_long_to_reopen_is_split_as_plain_text(marker: str) -> None:
     # Closing and reopening a fence longer than the limit cannot fit in any
     # part, so its block is split like prose rather than into parts that each
-    # overshoot the cap.
+    # overshoot the cap, and none of its fences opens a block.
     lines = "\n".join(f"line {i}" for i in range(400))
-    body = f"{marker}\n{lines}\n{marker}"
+    body = f"{marker}\n{lines}\n```js\n{marker}"
 
     chunks = chunk_message(body)
 
     assert all(len(c) <= MAX_MESSAGE for c in chunks), [len(c) for c in chunks]
-    assert "".join(chunks).replace("\n", "") == body.replace("\n", "")
+    assert "".join(chunks).replace("\n", "").replace(" ", "") == body.replace(
+        "\n", ""
+    ).replace(" ", "")
+    assert not any(_render(c)[0] or _render(c)[2] for c in chunks)
