@@ -26,7 +26,7 @@ from switch_core.addressing import can_address, parse_policy
 from switch_core.agent_refusals import AgentRefused
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
-from switch_core.clients.mentions import mention_regex, strip_emphasis
+from switch_core.clients.mentions import mention_regex, mentionable_text
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -114,7 +114,7 @@ def kickoff_fingerprint(text: str) -> str:
 
 
 def mentioned(text: str, name: str, alias: str | None) -> bool:
-    body = strip_emphasis(text)
+    body = mentionable_text(text)
     if mention_regex(name).search(body):
         return True
     return alias is not None and mention_regex(alias).search(body) is not None

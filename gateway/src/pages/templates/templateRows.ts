@@ -1,30 +1,10 @@
 import type { TemplateSummary, TemplateUseCase } from "../../data/api";
-import { absoluteTitle, formatRelative } from "../../theme/format";
 
 /** The longest name the server stores (`TEMPLATE_NAME_MAX`). */
 export const TEMPLATE_NAME_MAX = 200;
 
 /** What the catalogue calls an owner who has left the workspace. */
 export const FORMER_MEMBER = "Former member";
-
-export type TemplateKind = "agent" | "room" | "group";
-
-export const TEMPLATE_KINDS: readonly { value: TemplateKind; label: string }[] = [
-  { value: "agent", label: "Agent" },
-  { value: "room", label: "Room" },
-  { value: "group", label: "Group" },
-];
-
-/** A template's kind as the catalogue files it. The column is free text, so
- * anything the product does not name is shown as a room, as Switch Console
- * shows it. */
-export function kindOf(template: Pick<TemplateSummary, "kind">): TemplateKind {
-  return template.kind === "agent" || template.kind === "group" ? template.kind : "room";
-}
-
-export function kindLabel(kind: TemplateKind): string {
-  return TEMPLATE_KINDS.find((k) => k.value === kind)?.label ?? kind;
-}
 
 /** The server's list of use cases, in the order a picker offers them. */
 export const USE_CASES: readonly { value: TemplateUseCase; label: string }[] = [
@@ -61,16 +41,6 @@ export function createsLine(template: TemplateSummary): string | null {
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
-/** "used 2 days ago", with the exact time for a hover title; null for a
- * template never run. */
-export function lastUsed(template: TemplateSummary): { text: string; title: string } | null {
-  if (template.last_run_at === null) return null;
-  const relative = formatRelative(template.last_run_at);
-  // Past a week the recency ladder gives a date, which reads as "used on".
-  const text = /^\d{4}-/.test(relative) ? `used on ${relative}` : `used ${relative.toLowerCase()}`;
-  return { text, title: `Last used ${absoluteTitle(template.last_run_at)}` };
-}
-
 /** Why the viewer may not change or delete someone else's template, beside
  * the greyed item. */
 function ownedElsewhere(template: TemplateSummary, verb: "change" | "delete"): string {
@@ -94,7 +64,7 @@ export interface TemplateMenuItem {
  * Duplicate is everyone's; Edit follows `can_edit` and Delete `can_manage`.
  * A template that comes with Switch is changed by nobody, and removing one
  * from the workspace is done from its page, so it has no Delete here. Using
- * a template is the card's own button, not an item here. */
+ * a template leads the card's menu, ahead of these. */
 export function templateMenu(template: TemplateSummary): TemplateMenuItem[] {
   const duplicate: TemplateMenuItem = { action: "duplicate", disabledReason: null };
   if (template.official) {

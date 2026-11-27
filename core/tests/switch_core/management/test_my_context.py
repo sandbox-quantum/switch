@@ -709,3 +709,27 @@ class TestGivingAgentsServices:
 
         assert refused.status_code >= 400
         assert "Connect GitHub" in refused.text
+
+    async def test_services_carry_workspace_scoped_connector_web_urls(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        harness.protocol.service_broker = harness.broker
+        buddy_id, key, _ = await _setup(harness)
+
+        without_ui = await _context(client, buddy_id, key)
+        assert without_ui["server"]["dashboard_url"] is None
+        assert without_ui["server"]["connectors_url"] is None
+        assert _service(without_ui, "github")["url"] is None
+
+        harness.protocol.config.dashboard_base_url = "https://app.switch.test/"
+        with_ui = await _context(client, buddy_id, key)
+        tenant_id = with_ui["workspace"]["id"]
+        assert with_ui["server"]["dashboard_url"] == "https://app.switch.test/"
+        assert (
+            with_ui["server"]["connectors_url"]
+            == f"https://app.switch.test/connectors?workspace={tenant_id}"
+        )
+        assert (
+            _service(with_ui, "github")["url"]
+            == f"https://app.switch.test/connectors/github?workspace={tenant_id}"
+        )

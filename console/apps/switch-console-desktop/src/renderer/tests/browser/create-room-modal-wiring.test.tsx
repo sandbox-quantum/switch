@@ -75,7 +75,7 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useModalContext: () => ({ setCloseGuard: () => {} }),
 }));
 // The dialog's frame needs an open dialog around it; its contents are the subject here.
-vi.mock('@renderer/lib/ui/dialog', () => {
+vi.mock('@switch-console/chat-ui/primitives/dialog', () => {
   const pass = ({ children }: { children?: React.ReactNode }) => <>{children}</>;
   return {
     Dialog: pass,

@@ -1,5 +1,7 @@
-import { Alert, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
+import { Alert } from "@switch-console/chat-ui/primitives/alert";
+import { Button } from "@switch-console/chat-ui/primitives/button";
+import { Spinner } from "@switch-console/chat-ui/primitives/spinner";
 import { type InvitationPreview, acceptInvitation, previewInvitation } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { clearPendingInvite } from "../../data/sessionState";
@@ -79,41 +81,36 @@ export default function AcceptInvitePage({ token }: { token: string }) {
   return (
     <CenteredCard title="Join a workspace" subtitle={subtitle}>
       {alreadyIn !== null ? (
-        <Stack spacing={2}>
-          <Alert severity="info">{alreadyIn}</Alert>
-          <Button variant="contained" onClick={() => window.location.assign("/")}>
-            Open the workspace
-          </Button>
-        </Stack>
+        <div className="flex flex-col gap-3">
+          <Alert variant="info">{alreadyIn}</Alert>
+          <Button onClick={() => window.location.assign("/")}>Open the workspace</Button>
+        </div>
       ) : error ? (
-        <Stack spacing={2}>
-          <Alert severity="error">{error}</Alert>
-          <Button variant="outlined" onClick={decline}>
+        <div className="flex flex-col gap-3">
+          <Alert variant="destructive">{error}</Alert>
+          <Button variant="outline" onClick={decline}>
             Continue
           </Button>
-        </Stack>
+        </div>
       ) : preview === null ? (
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-          <CircularProgress size={16} />
-          <Typography variant="body2" color="text.secondary">
-            Reading the invitation…
-          </Typography>
-        </Stack>
+        <div className="flex items-center gap-2">
+          <Spinner size="sm" />
+          <span className="text-sm text-foreground-muted">Reading the invitation…</span>
+        </div>
       ) : (
-        <Stack direction="row" spacing={1}>
+        <div className="flex gap-2">
           <Button
-            variant="contained"
-            fullWidth
+            className="flex-1"
             onClick={accept}
             disabled={submitting}
-            startIcon={submitting ? <CircularProgress size={16} /> : undefined}
           >
+            {submitting && <Spinner size="sm" />}
             Accept invitation
           </Button>
-          <Button onClick={decline} disabled={submitting}>
+          <Button variant="outline" onClick={decline} disabled={submitting}>
             Decline
           </Button>
-        </Stack>
+        </div>
       )}
     </CenteredCard>
   );

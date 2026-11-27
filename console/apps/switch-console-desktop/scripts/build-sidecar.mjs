@@ -1,5 +1,6 @@
 import { rm } from 'node:fs/promises';
 import { build } from 'esbuild';
+import { assertDesktopBundle } from '../../../packages/agent-controller/scripts/box-bundle.mjs';
 
 /**
  * Bundles the Switch Console remote runtime sidecar (CHOO-1059) into a single
@@ -38,8 +39,9 @@ const guardForbiddenImports = {
 await rm('dist-sidecar/sidecar.mjs', { force: true });
 await rm('dist-sidecar/agent-controller.mjs', { force: true });
 
-await build({
+const sharedHost = await build({
   entryPoints: ['../../packages/agent-providers/src/host/shared-daemon.ts'],
+  metafile: true,
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -61,8 +63,9 @@ await build({
  * (`ELECTRON_RUN_AS_NODE=1`), so it is held to the same guard: `node:sqlite` is
  * a Node built-in, but nothing of Electron or the app's database may come in.
  */
-await build({
+const controller = await build({
   entryPoints: ['../../packages/agent-controller/src/cli.ts'],
+  metafile: true,
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -75,3 +78,8 @@ await build({
   logLevel: 'info',
   plugins: [guardForbiddenImports],
 });
+
+// Box mode's own code may ride in these bundles, but only behind a dynamic
+// import a box-mode branch makes: never run by Switch Console.
+assertDesktopBundle(sharedHost.metafile, 'shared-host.mjs');
+assertDesktopBundle(controller.metafile, 'agent-controller.mjs');

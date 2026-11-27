@@ -1,3 +1,15 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { DisclosureRow } from '@switch-console/chat-ui/primitives/disclosure-row';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@switch-console/chat-ui/primitives/dropdown-menu';
+import { PageHeader } from '@switch-console/chat-ui/primitives/page-header';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { ToggleGroup, ToggleGroupItem } from '@switch-console/chat-ui/primitives/toggle-group';
+import { TONE_DOT } from '@switch-console/chat-ui/primitives/tone-pill';
 import { MoreVertical, Pencil, Plus, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
@@ -5,25 +17,14 @@ import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-
 import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { PageHeader } from '@renderer/lib/components/page-header';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
-import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@renderer/lib/ui/dropdown-menu';
-import { Spinner } from '@renderer/lib/ui/spinner';
-import { ToggleGroup, ToggleGroupItem } from '@renderer/lib/ui/toggle-group';
 import { cn } from '@renderer/utils/utils';
 import type { MachineDetail } from '@shared/core/managed-agents/managed-agents';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { MachineIcon, TONE_DOT } from './machine-marks';
+import { MachineIcon } from './machine-marks';
 import {
   addDeviceRefusal,
   arrangeMachines,

@@ -1,16 +1,16 @@
-import { useId, useState } from 'react';
-import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
-import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
+import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
-import { Textarea } from '@renderer/lib/ui/textarea';
+} from '@switch-console/chat-ui/primitives/select';
+import { Textarea } from '@switch-console/chat-ui/primitives/textarea';
+import { useId, useState } from 'react';
+import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import type { LibraryKind, ReferenceTypeOption } from '@shared/core/switch-servers/library';
 import type { LibraryForm } from './library-form';
 import { LIBRARY_ACCESS_OPTIONS } from './library-model';

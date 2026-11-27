@@ -1,4 +1,4 @@
-import { Input } from '@renderer/lib/ui/input';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 import { cn } from '@renderer/utils/utils';
 
 interface EditableNameFieldProps {

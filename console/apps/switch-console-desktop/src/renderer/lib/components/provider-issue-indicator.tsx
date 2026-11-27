@@ -1,5 +1,9 @@
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { CircleAlert } from 'lucide-react';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { getProvider, type AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { providerProblem, useProviderReadiness } from './provider-connection-status';
 

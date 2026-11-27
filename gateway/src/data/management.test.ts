@@ -63,6 +63,7 @@ describe("createManagedAgent", () => {
         name: "pm-agent",
         description: "Writes PRDs",
         display_name: null,
+        icon_url: null,
         controller_id: "c1",
         desired_state: "running",
         definition: {

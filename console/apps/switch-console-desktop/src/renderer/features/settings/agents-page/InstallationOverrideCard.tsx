@@ -1,9 +1,9 @@
+import { Alert } from '@switch-console/chat-ui/primitives/alert';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 import { Loader2 } from 'lucide-react';
 import { useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import type { HostDependencyInstallation } from '@renderer/lib/stores/use-agent-installation-statuses';
-import { Alert } from '@renderer/lib/ui/alert';
-import { Input } from '@renderer/lib/ui/input';
 import type { Installation } from '@shared/core/providers/agent-payload';
 import { CommandActionButton } from './install-command-row';
 import { overrideProblem } from './installation-sources';

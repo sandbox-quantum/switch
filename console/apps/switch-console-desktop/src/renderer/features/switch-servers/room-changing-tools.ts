@@ -1,4 +1,4 @@
-import type { ChatActivityItem } from '@shared/core/chats/activity';
+import type { ChatActivityItem } from '@switch-console/chat-ui/contracts/activity';
 
 /**
  * The Switch tools that create rooms, rename them, archive them or change who

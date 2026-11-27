@@ -1,3 +1,4 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { describe, expect, it } from 'vitest';
 import {
   applyContextAffinity,
@@ -12,7 +13,6 @@ import {
   sectionResults,
   withoutLegacy,
 } from '@renderer/features/command-palette/search-utils';
-import type { ChatSummary } from '@shared/core/chats/chats';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import type { SearchItem } from '@shared/core/search';
 import type { RemoteRoomSummary, SwitchServer } from '@shared/core/switch-servers/switch-servers';
@@ -58,6 +58,11 @@ describe('matchRooms', () => {
   it('matches mid-word, so a term inside a compound name is still found', () => {
     expect(matchRooms(ROOMS, 'onsole').map((r) => r.id)).toEqual(['r1']);
     expect(matchRooms(ROOMS, 'lease').map((r) => r.id)).toEqual(['r3']);
+  });
+
+  it('finds a room on a messaging app, which the sidebar does not list', () => {
+    const slack = { ...room({ id: 'slack', name: 'support-escalations' }), bridgeType: 'slack' };
+    expect(matchRooms([...ROOMS, slack], 'escalations').map((r) => r.id)).toEqual(['slack']);
   });
 
   it('matches a word after a separator', () => {

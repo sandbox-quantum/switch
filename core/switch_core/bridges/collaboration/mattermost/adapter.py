@@ -3095,10 +3095,7 @@ class MattermostAdapter(PlatformAdapter):
         )
         return self._to_channel_type(channel.get("type", ""))
 
-    async def channel_deeplink(self, external_channel_id: str) -> str | None:
-        """`mattermost://<host>/<team>/channels/<name>` — opens the channel in
-        the Mattermost desktop app. Mattermost channel URLs key off the channel
-        *name* (slug), not its id, so resolve the name (cached) from the id."""
+    async def _resolve_channel_name(self, external_channel_id: str) -> str | None:
         if not external_channel_id or not self._admin_driver or not self._main_loop:
             return None
         name = self._channel_name_cache.get(external_channel_id)
@@ -3117,11 +3114,31 @@ class MattermostAdapter(PlatformAdapter):
             if not name:
                 return None
             self._channel_name_cache[external_channel_id] = name
+        return name
+
+    async def channel_deeplink(self, external_channel_id: str) -> str | None:
+        """`mattermost://<host>/<team>/channels/<name>` — opens the channel in
+        the Mattermost desktop app. Mattermost channel URLs key off the channel
+        *name* (slug), not its id, so resolve the name (cached) from the id."""
+        name = await self._resolve_channel_name(external_channel_id)
+        if not name:
+            return None
         # Prefer the public URL so the link resolves in the user's client; the
         # internal `url` may be a private/tailnet address they can't reach.
         base_url = self._config.public_url or self._config.url
         host = re.sub(r"^https?://", "", base_url).rstrip("/")
         return f"mattermost://{host}/{self._config.team_name}/channels/{name}"
+
+    async def channel_web_url(self, external_channel_id: str) -> str | None:
+        """`https://<host>/<team>/channels/<name>` — web-safe link to the
+        channel when the configured URL uses HTTPS."""
+        name = await self._resolve_channel_name(external_channel_id)
+        if not name:
+            return None
+        base_url = (self._config.public_url or self._config.url).rstrip("/")
+        if not base_url.startswith("https://"):
+            return None
+        return f"{base_url}/{self._config.team_name}/channels/{name}"
 
     async def home_deeplink(self) -> str | None:
         """`mattermost://<host>/<team>` — the team's home in the desktop app.

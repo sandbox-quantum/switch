@@ -1,5 +1,4 @@
 import AddIcon from "@mui/icons-material/Add";
-import ArrowBack from "@mui/icons-material/ArrowBack";
 import Close from "@mui/icons-material/Close";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import EditOutlined from "@mui/icons-material/EditOutlined";
@@ -20,7 +19,6 @@ import {
   Typography,
 } from "@mui/material";
 import { useCallback, useMemo, useState } from "react";
-import { useNavigate } from "react-router";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import SearchablePickerDialog, {
   type PickerOption,
@@ -469,7 +467,6 @@ function MembershipPanel({
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function GroupsPage() {
-  const navigate = useNavigate();
   // Groups are shared by the workspace, so only an admin creates, edits or
   // deletes them, or puts rooms in one; anyone who can write to a room may
   // take it out.
@@ -521,9 +518,6 @@ export default function GroupsPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back to rooms">
-          <ArrowBack />
-        </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           Room groups
         </Typography>

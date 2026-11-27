@@ -1,12 +1,12 @@
-import { CircleAlert } from 'lucide-react';
-import { useState } from 'react';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
+} from '@switch-console/chat-ui/primitives/select';
+import { CircleAlert } from 'lucide-react';
+import { useState } from 'react';
 import { cn } from '@renderer/utils/utils';
 import {
   type AddressingMode,

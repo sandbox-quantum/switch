@@ -224,6 +224,20 @@ ROUTES: dict[str, Case] = {
         json={"current_password": "wrong-password", "new_password": "a-new-password-1"},
         why="Your own: refused, the current password being wrong.",
     ),
+    "GET /gateway/auth/me/team-survey": get(f"{G}/auth/me/team-survey", SELF),
+    "PUT /gateway/auth/me/team-survey": put(
+        f"{G}/auth/me/team-survey",
+        anyone(ok=422),
+        json={"company_size": "not a choice"},
+        why="Your own: refused, the answers not being among the choices.",
+    ),
+    "GET /gateway/auth/me/license": get(f"{G}/auth/me/license", SELF),
+    "PUT /gateway/auth/me/license": put(
+        f"{G}/auth/me/license",
+        anyone(ok=409),
+        json={"version": "not-the-current-one"},
+        why="Your own: refused, the version not being the current license's.",
+    ),
     "GET /gateway/auth/me/deletion": get(f"{G}/auth/me/deletion", SELF),
     "DELETE /gateway/auth/me": Case(
         Ask("DELETE", f"{G}/auth/me"),
@@ -232,6 +246,11 @@ ROUTES: dict[str, Case] = {
     ),
     "POST /gateway/auth/me/reset-test-account": Case(
         Ask("POST", f"{G}/auth/me/reset-test-account"),
+        anyone(ok=422),
+        why="Your own: refused without the account's e-mail typed to confirm it.",
+    ),
+    "POST /gateway/auth/me/start-over": Case(
+        Ask("POST", f"{G}/auth/me/start-over"),
         anyone(ok=422),
         why="Your own: refused without the account's e-mail typed to confirm it.",
     ),
@@ -1549,6 +1568,7 @@ STREAMS: dict[str, Case] = {
 UNAUTHENTICATED: dict[str, str] = {
     "GET /gateway/agents/known-types": "The agent types any client may register.",
     "GET /gateway/auth/config": "How to sign in, read before anyone has.",
+    "GET /gateway/license": "The license, which sign-up links to before any account exists.",
     "GET /gateway/auth/oidc/callback": "A sign-in coming back from the identity provider.",
     "GET /gateway/auth/oidc/login": "Starting a sign-in.",
     "POST /gateway/auth/oidc/exchange": "Finishing a sign-in with its one-time code.",

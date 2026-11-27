@@ -67,6 +67,7 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     # no workspace; each workspace is left in a `tenant_session` of its own.
     ("DELETE", "/auth/me"),
     ("POST", "/auth/me/reset-test-account"),
+    ("POST", "/auth/me/start-over"),
     # Reads the caller's `users` row, and asks each workspace in its own
     # `tenant_session`, as the deletion it checks for does.
     ("GET", "/auth/me/deletion"),
@@ -108,6 +109,8 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("GET", "/service-connections/{service}/flows/callback"),
     # No caller yet: the sign-in surface and what it hands back.
     ("GET", "/auth/config"),
+    # The license text, which sign-up links to before any account exists.
+    ("GET", "/license"),
     ("GET", "/auth/oidc/login"),
     ("GET", "/auth/oidc/callback"),
     ("POST", "/auth/oidc/exchange"),
@@ -127,6 +130,7 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # asking whether it would be refused.
     ("DELETE", "/auth/me"),
     ("POST", "/auth/me/reset-test-account"),
+    ("POST", "/auth/me/start-over"),
     ("GET", "/auth/me/deletion"),
     # What a signed-in caller's session resolves to — including that it
     # resolves to no workspace, which is the answer a caller with none needs.

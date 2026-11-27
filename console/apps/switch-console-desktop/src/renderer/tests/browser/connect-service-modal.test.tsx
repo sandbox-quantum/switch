@@ -32,8 +32,8 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useModalContext: () => ({ setCloseGuard: () => {} }),
 }));
 
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import { ConnectServiceModal } from '@renderer/features/connectors/connect-service-modal';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 
 function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEntry {
   return {
