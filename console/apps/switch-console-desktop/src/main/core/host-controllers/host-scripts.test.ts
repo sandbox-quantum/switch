@@ -325,4 +325,25 @@ describe('the systemd unit', () => {
     expect(unit).toContain('Restart=on-failure');
     expect(unit).toContain('RestartPreventExitStatus=2 3 4 5 6');
   });
+
+  it('escapes systemd specifiers and variables, and refuses a newline', () => {
+    const input = {
+      description: 'Switch agent controller (server 100%n)',
+      node: '/usr/bin/node',
+      bundle: '/home/ada/100%h/$HOME/agent-controller-x.mjs',
+      dataDir: '/home/ada/state',
+      sharedHost: '/home/ada/shared-host-y.mjs',
+      path: '/opt/50%u/bin:/usr/bin',
+    };
+    const unit = systemdUnit(input);
+    expect(unit).toContain('Description=Switch agent controller (server 100%%n)');
+    expect(unit).toContain('"/home/ada/100%%h/$$HOME/agent-controller-x.mjs"');
+    expect(unit).toContain('Environment="PATH=/opt/50%%u/bin:/usr/bin"');
+    expect(() =>
+      systemdUnit({ ...input, dataDir: '/home/ada/state\nExecStartPre=/bin/sh' })
+    ).toThrow(/control characters/);
+    expect(() => systemdUnit({ ...input, description: 'x\nExecStartPre=/bin/sh' })).toThrow(
+      /control characters/
+    );
+  });
 });

@@ -94,6 +94,12 @@ export { execProvider, findOnPath, spawnProvider, stopProvider } from './provide
 export { replaceFile } from './host/replace-file';
 export { IS_PROCESS_ALIVE, isProcessAlive, type PidOrigin } from './process-alive';
 export {
+  systemdEnvironment,
+  systemdExecArgument,
+  systemdExecCommand,
+  systemdText,
+} from './systemd-unit';
+export {
   isStopMessage,
   onStopRequest,
   requestChildStop,
