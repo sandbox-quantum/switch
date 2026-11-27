@@ -1,6 +1,12 @@
 # Switch Cloud machines
 
-A Switch Cloud machine is a box: a Kubernetes StatefulSet named `box` in a
+Every new Switch Cloud machine is a box. Hosted agents v1, where a machine is
+an EC2 VM the v1 hosted controller runs (`chart/`, `machine/`, `terraform/`),
+is frozen: a person who already has a v1 machine keeps it, running, waking and
+managed as before, and no new v1 machine is made. The rest of this section
+describes boxes.
+
+A box is a Kubernetes StatefulSet named `box` in a
 namespace of its own (`agents-user-<keyed id>`) on the box cluster, one per
 user whatever workspaces they use it in. It runs the standard
 `switch-agent-controller`, the program a laptop or an SSH host runs agents
@@ -27,7 +33,11 @@ agent controller does.
 
 Picking "Switch Cloud" in Switch Console claims the user's machine
 (`POST /gateway/hosted-machines/ensure`) and creates a managed agent on the
-machine's controller for this workspace once it has reported. With a warm pool (`HOSTED_POOL_SIZE`), the claim takes a box made
+machine's controller for this workspace once it has reported. Someone who
+already has a live v1 machine is served by it, as before, and never gets a box.
+Anyone else gets a box; on a server with no box cluster (no `provisioner_token`
+in the hosted controller config, or no keyed-id key) the claim says "Hosted
+agents aren't available here yet." With a warm pool (`HOSTED_POOL_SIZE`), the claim takes a box made
 ahead of time; otherwise Core writes a provision action and the box operator
 makes the box (`HOSTED_BOX_PROVISIONING`, capped by
 `HOSTED_PROVISIONS_PER_MINUTE` and `HOSTED_BOX_CEILING`). A box is given only to
@@ -309,9 +319,9 @@ stays until you delete it.
 ## Machine lifecycle
 
 When the last managed agent leaves a user's machine, its box is scaled to
-zero and its disk kept for `HOSTED_DISK_RETENTION_DAYS`. A new agent in that
-time starts the box again on the kept disk; after it, the box and its disk are
-removed and the machine with it.
+zero, or a v1 machine's instance terminated, and its disk kept for
+`HOSTED_DISK_RETENTION_DAYS`. A new agent in that time starts the machine again
+on the kept disk; after it, the disk is deleted and the machine with it.
 
 An idle machine is put to sleep after `HOSTED_IDLE_STOP_MINUTES`: its
 controller reports no running session and nothing kept it active. A message
@@ -319,11 +329,14 @@ addressed to one of its agents wakes it, and the room is told so. A machine its
 owner stopped stays stopped.
 
 A box is never rebooted by the agent; a new box image is rolled out by the
-platform.
+platform. A v1 machine installs security updates every day and reboots itself
+within 7 days of one that needs a reboot, a new kernel say, even while sessions
+run ([machine/README.md](machine/README.md), "Security updates and reboots");
+its controllers stop reporting for the minute or two the reboot takes.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `HOSTED_LAUNCH_CAPACITY` | 0 | Machines at once, at most 100. 0 disables. |
+| `HOSTED_LAUNCH_CAPACITY` | 0 | Boxes at once, at most 100. 0 disables. v1 machines are not counted. |
 | `HOSTED_IDLE_STOP_MINUTES` | 30 | Idle minutes before a machine sleeps. 0 disables. At most 1440. |
 | `HOSTED_DISK_RETENTION_DAYS` | 7 | Days a disk is kept after its last agent leaves. 1–90. |
 
