@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 import switch_core
 from switch_core.db.base import Base
-from switch_core.db.models import RoomGroup, Tenant
+from switch_core.db.models import TENANT_ZERO_ID, RoomGroup, Tenant
 from switch_core.db.rls_ddl import (
     GLOBAL_TABLES,
     POLICY_NAME,
@@ -274,12 +274,29 @@ class TestWriteSideNeedsWithCheck:
             )
 
 
+async def _a_row_to_filter(rls_harness: RLSHarness) -> None:
+    """Give the policy a row to evaluate. The policy compares each row with
+    `require_tenant_id()`, which Postgres evaluates once, when the first row
+    reaches the comparison. An index scan reaches it at once; a sequential
+    scan of a table holding no rows never does, and the query returns nothing
+    rather than raising. Which of the two a table gets depends on its
+    statistics, so without a row the raise would depend on the plan."""
+    async with rls_harness.owner() as session:
+        await session.execute(
+            insert(RoomGroup.__table__).values(
+                id="group-to-filter", name="to-filter", tenant_id=TENANT_ZERO_ID
+            )
+        )
+        await session.commit()
+
+
 class TestNoTenantSetRaises:
     async def test_a_query_with_no_tenant_bound_raises(
         self, rls_harness: RLSHarness
     ) -> None:
         """Not "returns nothing" — that would be indistinguishable from an
         empty tenant. `require_tenant_id()` fails closed instead."""
+        await _a_row_to_filter(rls_harness)
         async with rls_harness.restricted() as session:
             with pytest.raises(DBAPIError, match="app.tenant_id is not set"):
                 await session.execute(select(RoomGroup))
@@ -296,6 +313,7 @@ class TestNoTenantSetRaises:
         Issued as raw SQL rather than through `tenant_session`, because the
         value would have to be constructed by hand to get here at all.
         """
+        await _a_row_to_filter(rls_harness)
         async with rls_harness.restricted() as session:
             await session.execute(
                 text("SELECT set_config('app.tenant_id', '   ', true)")

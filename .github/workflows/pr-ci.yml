@@ -318,7 +318,8 @@ jobs:
       # (`least_duration` with no durations file to read). The slow tests sit
       # together, so equal contiguous slices would leave one runner with most
       # of the time; dealt out, the three come within a few percent of each
-      # other. Within a runner, one pytest-xdist worker per CPU. The Postgres
+      # other. Within a runner, one pytest-xdist worker per CPU, and an idle
+      # worker takes tests queued behind a slow one (`worksteal`). The Postgres
       # fixture is session-scoped, and a session is per worker, so each worker
       # boots and owns a container of its own: no test shares a database with
       # another running at the same time.
@@ -328,7 +329,7 @@ jobs:
       - name: pytest
         run: >-
           uv run --project core pytest -c core/pyproject.toml core/tests/
-          -n auto
+          -n auto --dist worksteal
           --splits 3 --group ${{ matrix.group }}
           --splitting-algorithm least_duration
           --timeout 300

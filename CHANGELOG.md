@@ -57,6 +57,11 @@ version of their own to them without also giving them a release of their own.
   the machine runs.** Cloud machines have every provider installed, so a login
   nobody had given for a provider no agent used kept the "AI provider logins
   missing or expired on cloud machines" monitor alerting for good.
+- **An agent's unread count no longer depends on how Postgres plans the
+  query when several messages share a timestamp.** The message the count
+  starts from is now picked by its timestamp and then its position in the
+  room, so messages sent at the same instant can no longer be counted twice
+  or skipped.
 
 ### [0.32.2] - 2026-11-25
 
