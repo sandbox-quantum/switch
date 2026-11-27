@@ -55,11 +55,6 @@ const MAX_READ_SIZE = 100 * 1024 * 1024;
  */
 const DEFAULT_MAX_BYTES = 200 * 1024;
 
-/**
- * Allowed characters for glob patterns to prevent shell command injection.
- */
-const SAFE_GLOB_PATTERN = /^[a-zA-Z0-9_./*?[\]{},@+% -]+$/;
-
 const isNotFound = (error: unknown) =>
   error instanceof FileSystemError && error.code === FileSystemErrorCodes.NOT_FOUND;
 
@@ -172,14 +167,6 @@ export class SshFileSystem implements FileSystemProvider {
           // Skip hidden files if not included
           if (!options?.includeHidden && item.filename.startsWith('.')) {
             continue;
-          }
-
-          // Apply filter if provided
-          if (options?.filter) {
-            const filterRegex = new RegExp(options.filter);
-            if (!filterRegex.test(item.filename)) {
-              continue;
-            }
           }
 
           const entryPath = this.relativePath(`${fullPath}/${item.filename}`);
@@ -632,64 +619,6 @@ export class SshFileSystem implements FileSystemProvider {
     return result.stdout.trim();
   }
 
-  async glob(pattern: string, options?: { cwd?: string; dot?: boolean }): Promise<string[]> {
-    if (!pattern || typeof pattern !== 'string' || !pattern.trim()) {
-      throw new FileSystemError(
-        'Glob pattern is required',
-        FileSystemErrorCodes.INVALID_PATH,
-        pattern
-      );
-    }
-
-    if (!SAFE_GLOB_PATTERN.test(pattern)) {
-      throw new FileSystemError('Invalid glob pattern', FileSystemErrorCodes.INVALID_PATH, pattern);
-    }
-
-    const cwd = options?.cwd ? this.resolveRemotePath(options.cwd) : this.remotePath;
-
-    if (pattern.startsWith('/')) {
-      const normalized = this.normalizePosixPath(pattern);
-      if (!this.isWithinBase(normalized)) {
-        throw new FileSystemError(
-          'Path traversal detected: path escapes base directory',
-          FileSystemErrorCodes.PATH_ESCAPE,
-          pattern
-        );
-      }
-    } else {
-      if (this.hasTraversingParentSegments(pattern)) {
-        throw new FileSystemError(
-          'Path traversal detected: path escapes base directory',
-          FileSystemErrorCodes.PATH_ESCAPE,
-          pattern
-        );
-      }
-      const resolved = pathPosix.resolve(cwd, pattern);
-      if (!this.isWithinBase(resolved)) {
-        throw new FileSystemError(
-          'Path traversal detected: path escapes base directory',
-          FileSystemErrorCodes.PATH_ESCAPE,
-          pattern
-        );
-      }
-    }
-
-    const dotSetup = options?.dot ? 'shopt -s dotglob;' : '';
-    const escapedPattern = pattern.replace(/ /g, '\\ ');
-    const command = `${dotSetup} shopt -s nullglob; cd -- ${quoteShellArg(cwd)} && printf '%s\\n' ${escapedPattern}`;
-    try {
-      const result = await this.exec(command);
-      if (result.exitCode !== 0) return [];
-      const lines = result.stdout.trim().split('\n').filter(Boolean);
-      return lines.filter((entry) => {
-        const resolved = pathPosix.resolve(cwd, entry);
-        return this.isWithinBase(resolved);
-      });
-    } catch {
-      return [];
-    }
-  }
-
   async copyLocalFile(localAbsPath: string, destRelPath: string): Promise<void> {
     const sftp = await this.getSftp();
     const remoteFull = this.resolveRemotePath(destRelPath);
@@ -797,14 +726,6 @@ export class SshFileSystem implements FileSystemProvider {
         if (isNaN(lineNum)) continue;
 
         const relPath = this.relativePath(filePath);
-
-        // Apply file pattern filter if provided
-        if (options?.filePattern) {
-          const patternRegex = new RegExp(options.filePattern);
-          if (!patternRegex.test(relPath)) {
-            continue;
-          }
-        }
 
         seenFiles.add(filePath);
 
@@ -1030,22 +951,6 @@ export class SshFileSystem implements FileSystemProvider {
 
     // Path must start with base path
     return normalizedPath === normalizedBase || normalizedPath.startsWith(`${normalizedBase}/`);
-  }
-
-  /**
-   * Check if a glob pattern contains '..' path segments after any wildcard character.
-   */
-  private hasTraversingParentSegments(pattern: string): boolean {
-    const segments = pattern.split('/');
-    let seenWildcard = false;
-    for (const seg of segments) {
-      if (/[*?[{]/.test(seg)) {
-        seenWildcard = true;
-      } else if (seg === '..' && seenWildcard) {
-        return true;
-      }
-    }
-    return false;
   }
 
   /**

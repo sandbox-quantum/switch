@@ -10,7 +10,6 @@ import {
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import parcelWatcher from '@parcel/watcher';
-import { glob } from 'glob';
 import ignore from 'ignore';
 import { log } from '@main/lib/logger';
 import type { FileWatchEvent } from '@shared/core/fs/fs';
@@ -358,13 +357,6 @@ export class LocalFileSystem implements FileSystemProvider {
             mode: stat.mode,
           };
 
-          if (options.filter) {
-            const filterRegex = new RegExp(options.filter);
-            if (!filterRegex.test(item.name)) {
-              continue;
-            }
-          }
-
           entries.push(entry);
 
           if (entries.length >= maxEntries) {
@@ -554,14 +546,6 @@ export class LocalFileSystem implements FileSystemProvider {
             }
           }
 
-          // Check file pattern if specified
-          if (options.filePattern) {
-            const filePatternRegex = new RegExp(options.filePattern.replace(/\*/g, '.*'));
-            if (!filePatternRegex.test(item.name)) {
-              continue;
-            }
-          }
-
           filesSearched++;
 
           try {
@@ -667,84 +651,6 @@ export class LocalFileSystem implements FileSystemProvider {
     }
   }
 
-  async saveAttachment(
-    // srcPath is taken as-is (no resolvePath/containment check) — callers must only ever
-    // pass a path sourced from a native dialog or an app-written temp file (e.g.
-    // app.getPath('temp')/'downloads'/'userData'), never a raw string from the renderer/IPC.
-    srcPath: string,
-    subdir?: string
-  ): Promise<{
-    success: boolean;
-    absPath?: string;
-    relPath?: string;
-    fileName?: string;
-    error?: string;
-  }> {
-    const ALLOWED_ATTACHMENT_EXTENSIONS = new Set([
-      '.png',
-      '.jpg',
-      '.jpeg',
-      '.gif',
-      '.webp',
-      '.bmp',
-      '.svg',
-    ]);
-
-    try {
-      try {
-        await fs.access(srcPath);
-      } catch {
-        return { success: false, error: 'Source file not found' };
-      }
-
-      const ext = extname(srcPath).toLowerCase();
-      if (!ALLOWED_ATTACHMENT_EXTENSIONS.has(ext)) {
-        return { success: false, error: 'Unsupported attachment type' };
-      }
-
-      const normalizedSubdir =
-        typeof subdir === 'string' ? subdir.replace(/\\/g, '/').replace(/^\/+/, '') : undefined;
-      const targetRel = join('.switchdash', normalizedSubdir ?? 'attachments');
-      const destDir = this.resolvePath(targetRel);
-      const switchdashDir = join(this.rootPath, '.switchdash');
-      const switchdashPrefix = switchdashDir.endsWith(sep) ? switchdashDir : switchdashDir + sep;
-      if (!destDir.startsWith(switchdashPrefix) && destDir !== switchdashDir) {
-        throw new FileSystemError(
-          `Path traversal detected: ${subdir}`,
-          FileSystemErrorCodes.PATH_ESCAPE,
-          subdir
-        );
-      }
-
-      await fs.mkdir(destDir, { recursive: true });
-
-      const baseName = basename(srcPath);
-      let destName = baseName;
-      let counter = 1;
-      let destAbs = join(destDir, destName);
-
-      while (true) {
-        try {
-          await fs.access(destAbs);
-          // File exists — try next name
-          const nameWithoutExt = basename(baseName, ext);
-          destName = `${nameWithoutExt}-${counter}${ext}`;
-          destAbs = join(destDir, destName);
-          counter++;
-        } catch {
-          // File does not exist — safe to write here
-          break;
-        }
-      }
-
-      await fs.copyFile(srcPath, destAbs);
-      const relPath = this.relPath(destAbs);
-      return { success: true, absPath: destAbs, relPath, fileName: destName };
-    } catch (err: unknown) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  }
-
   async readImage(path: string): Promise<{
     success: boolean;
     dataUrl?: string;
@@ -806,11 +712,6 @@ export class LocalFileSystem implements FileSystemProvider {
 
   async realPath(path: string): Promise<string> {
     return fs.realpath(this.resolvePath(path));
-  }
-
-  async glob(pattern: string, options?: { cwd?: string; dot?: boolean }): Promise<string[]> {
-    const cwd = options?.cwd ? this.resolvePath(options.cwd) : this.rootPath;
-    return glob(pattern, { cwd, dot: options?.dot ?? false, absolute: false });
   }
 
   async copyFile(src: string, dest: string): Promise<void> {

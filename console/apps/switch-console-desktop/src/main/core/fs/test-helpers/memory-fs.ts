@@ -67,10 +67,6 @@ export class MemoryFs implements FileSystemProvider {
     return path;
   }
 
-  async glob(): Promise<string[]> {
-    return Array.from(this.files.keys());
-  }
-
   async copyFile(src: string, dest: string): Promise<void> {
     const content = this.files.get(src);
     if (content === undefined) throw new Error(`not found: ${src}`);

@@ -89,17 +89,6 @@ describe('LocalFileSystem', () => {
       expect(result.entries.some((e) => e.path === '.hidden')).toBe(true);
     });
 
-    it('should apply filter pattern', async () => {
-      fs.writeFileSync(path.join(tempDir, 'test.ts'), 'typescript');
-      fs.writeFileSync(path.join(tempDir, 'test.js'), 'javascript');
-      fs.writeFileSync(path.join(tempDir, 'readme.md'), 'markdown');
-
-      const result = await fsService.list('', { filter: '.*\\.ts$' });
-
-      expect(result.entries).toHaveLength(1);
-      expect(result.entries[0].path).toBe('test.ts');
-    });
-
     it('should truncate when maxEntries reached', async () => {
       for (let i = 0; i < 10; i++) {
         fs.writeFileSync(path.join(tempDir, `file${i}.txt`), 'content');
@@ -313,12 +302,6 @@ describe('LocalFileSystem', () => {
       const result = await fsService.search('foo', { fileExtensions: ['.ts'] });
 
       expect(result.matches.every((m) => m.filePath.endsWith('.ts'))).toBe(true);
-    });
-
-    it('should filter by file pattern', async () => {
-      const result = await fsService.search('foo', { filePattern: '*.md' });
-
-      expect(result.total).toBe(0);
     });
 
     it('should be case-insensitive by default', async () => {
@@ -653,103 +636,6 @@ describe('LocalFileSystem', () => {
 
       expect(result.truncated).toBe(true);
       expect(result.content.length).toBe(50);
-    });
-  });
-
-  describe('saveAttachment', () => {
-    let srcFile: string;
-
-    beforeEach(() => {
-      srcFile = path.join(tempDir, 'source.png');
-      fs.writeFileSync(srcFile, 'fake-png-data');
-    });
-
-    it('should save attachment to default .switchdash/attachments directory', async () => {
-      const result = await fsService.saveAttachment(srcFile);
-
-      expect(result.success).toBe(true);
-      expect(result.fileName).toBe('source.png');
-      expect(result.relPath).toBe('.switchdash/attachments/source.png');
-      expect(result.absPath).toBe(path.join(tempDir, '.switchdash', 'attachments', 'source.png'));
-      expect(fs.existsSync(result.absPath!)).toBe(true);
-    });
-
-    it('should save attachment to valid custom subdirectory', async () => {
-      const result = await fsService.saveAttachment(srcFile, 'custom-sub');
-
-      expect(result.success).toBe(true);
-      expect(result.fileName).toBe('source.png');
-      expect(result.relPath).toBe('.switchdash/custom-sub/source.png');
-      expect(result.absPath).toBe(path.join(tempDir, '.switchdash', 'custom-sub', 'source.png'));
-      expect(fs.existsSync(result.absPath!)).toBe(true);
-    });
-
-    it('should deduplicate filename when destination already exists', async () => {
-      const first = await fsService.saveAttachment(srcFile);
-      const second = await fsService.saveAttachment(srcFile);
-
-      expect(first.success).toBe(true);
-      expect(first.fileName).toBe('source.png');
-
-      expect(second.success).toBe(true);
-      expect(second.fileName).toBe('source-1.png');
-      expect(fs.existsSync(second.absPath!)).toBe(true);
-    });
-
-    it('should fail when source file does not exist', async () => {
-      const result = await fsService.saveAttachment(path.join(tempDir, 'missing.png'));
-
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('Source file not found');
-    });
-
-    it('should reject unsupported attachment extension', async () => {
-      const badFile = path.join(tempDir, 'payload.exe');
-      fs.writeFileSync(badFile, 'bad-data');
-
-      const result = await fsService.saveAttachment(badFile);
-
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('Unsupported attachment type');
-    });
-
-    it('should block path traversal escaping rootPath via subdir', async () => {
-      const outsideDir = path.join(tempDir, '..', 'arbitrary-dir');
-      const result = await fsService.saveAttachment(srcFile, '../../../../tmp/arbitrary-dir');
-
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('Path traversal detected');
-      expect(fs.existsSync(outsideDir)).toBe(false);
-    });
-
-    it('should block path traversal escaping .switchdash within rootPath via subdir', async () => {
-      const result = await fsService.saveAttachment(srcFile, '../outside');
-
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('Path traversal detected');
-      expect(fs.existsSync(path.join(tempDir, 'outside'))).toBe(false);
-    });
-
-    it('should block path traversal when subdir is parent dir ..', async () => {
-      const result = await fsService.saveAttachment(srcFile, '..');
-
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('Path traversal detected');
-    });
-
-    it('should block path traversal attempting to target sibling named like .switchdash', async () => {
-      const result = await fsService.saveAttachment(srcFile, '../.switchdash-fake');
-
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('Path traversal detected');
-      expect(fs.existsSync(path.join(tempDir, '.switchdash-fake'))).toBe(false);
-    });
-
-    it('should block backslash path traversal via subdir', async () => {
-      const result = await fsService.saveAttachment(srcFile, '..\\..\\..\\..\\tmp');
-
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('Path traversal detected');
     });
   });
 });
