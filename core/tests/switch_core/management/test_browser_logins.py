@@ -205,7 +205,7 @@ class TestBrowserSignIn:
         assert codex.status_code == 200, codex.text
         assert second_seen["state"] == "pending"
 
-    async def test_a_cloud_device_signs_in_only_claude_through_a_browser(
+    async def test_a_cloud_device_signs_in_only_claude_and_codex_through_a_browser(
         self, harness: Harness
     ) -> None:
         async with harness.client() as client:
@@ -224,8 +224,9 @@ class TestBrowserSignIn:
                 for provider in ("claude", "codex", "cursor", "antigravity", "opencode")
             }
 
-        # Only Claude's setup token goes through the provider gateway.
+        # Only Claude's setup token and Codex's ChatGPT sign-in go through the provider gateway.
         assert answered.pop("claude").status_code == 200
+        assert answered.pop("codex").status_code == 200
         for provider, response in answered.items():
             assert response.status_code == 422, (provider, response.text)
 

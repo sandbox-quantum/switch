@@ -278,11 +278,14 @@ describe("GetStartedPage", () => {
     expect(screen.queryByText(/Waiting for Switch Cloud to start…/)).toBeNull();
   });
 
-  it("offers no browser sign-in on Switch Cloud for any provider but Claude Code", async () => {
+  it("offers no browser sign-in on Switch Cloud for any provider but Claude Code and Codex", async () => {
     device.snapshot = snapshot({ controller: reporting(["codex", "opencode", "cursor", "antigravity"]) });
     renderPage();
     fireEvent.click(await screen.findByRole("button", { name: "Set up AI provider" }));
-    for (const name of [/Codex/, /OpenCode/, /Cursor CLI/, /Antigravity/]) {
+    fireEvent.click(await screen.findByRole("button", { name: /Codex/, pressed: false }));
+    expect(screen.getByLabelText("Sign in with browser").getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Choose another provider" }));
+    for (const name of [/OpenCode/, /Cursor CLI/, /Antigravity/]) {
       fireEvent.click(await screen.findByRole("button", { name, pressed: false }));
       expect(screen.queryByLabelText("Sign in with browser")).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: "Choose another provider" }));

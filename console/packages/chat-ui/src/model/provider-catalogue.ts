@@ -62,11 +62,11 @@ const BROWSER_SIGN_IN = new Set(['claude', 'codex', 'cursor', 'antigravity', 'op
 /**
  * Those a Switch Cloud device signs in through a browser. Its agents' CLIs
  * never hold the real login: the provider gateway does, and of these sign-ins
- * it fronts only Claude Code's setup token. Codex's and OpenCode's ChatGPT
- * tokens refresh and rotate, and Cursor and Antigravity keep theirs inside
- * the CLI.
+ * it fronts Claude Code's setup token and Codex's ChatGPT sign-in, which it
+ * renews itself. OpenCode keeps its ChatGPT sign-in in a file of its own the
+ * gateway doesn't front, and Cursor and Antigravity keep theirs inside the CLI.
  */
-const CLOUD_BROWSER_SIGN_IN = new Set(['claude']);
+const CLOUD_BROWSER_SIGN_IN = new Set(['claude', 'codex']);
 
 /** What a browser sign-in asks of the person, by provider, once the machine shows its page. */
 const BROWSER_HINTS: Record<string, string> = {

@@ -166,11 +166,12 @@ V1_OPERATION_KINDS = frozenset(
 # The providers a machine's controller can sign in through a browser.
 BROWSER_SIGN_IN = frozenset({"claude", "codex", "cursor", "antigravity", "opencode"})
 # Those a cloud device can. Its agents' CLIs never hold the real login: the
-# provider gateway fronts it, and of these sign-ins it fronts only Claude's
-# setup token (`gatewayPlanFor` in the controller's box mode). Codex's and
-# OpenCode's ChatGPT tokens refresh and rotate, and Cursor and Antigravity keep
+# provider gateway fronts it (`gatewayPlanFor` in the controller's box mode),
+# and of these sign-ins it fronts Claude's setup token and Codex's ChatGPT
+# sign-in, which it renews itself. OpenCode keeps its ChatGPT sign-in in a
+# file of its own the gateway doesn't front, and Cursor and Antigravity keep
 # their login inside the CLI.
-CLOUD_BROWSER_SIGN_IN = frozenset({"claude"})
+CLOUD_BROWSER_SIGN_IN = frozenset({"claude", "codex"})
 
 # What a Switch Cloud machine's controller is called, whatever enrolled it.
 CLOUD_MACHINE_NAME = "Switch Cloud"

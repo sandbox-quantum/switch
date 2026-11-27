@@ -197,7 +197,7 @@ describe("AIProvidersPage", () => {
     expect(calls.find((call) => call.path.endsWith("/sign-in-code"))?.body).toEqual({ code: "abc#def" });
   });
 
-  it("offers a browser sign-in on a Switch Cloud device for Claude Code only", async () => {
+  it("offers a browser sign-in on a Switch Cloud device for Claude Code and Codex only", async () => {
     answer({
       "GET /management/controllers": [
         200,
@@ -218,8 +218,8 @@ describe("AIProvidersPage", () => {
 
     renderPage();
     await waitFor(() => fireEvent.click(within(providerRow("Codex")).getByRole("button", { name: /Give login/ })));
-    expect(screen.queryByLabelText("Sign in with browser")).toBeNull();
-    expect(screen.getByLabelText("API key", { selector: "input[type=password]" })).toBeTruthy();
+    expect(screen.getByLabelText("Sign in with browser").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByLabelText("API key")).toBeTruthy();
   });
 
   it("offers no login where the device keeps no key to seal one to, or is offline", async () => {

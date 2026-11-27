@@ -90,15 +90,16 @@ describe('providerReportSettled', () => {
 });
 
 describe('browserSignInKind', () => {
-  it('signs each provider in on a machine of your own, and only Claude Code on a cloud device', () => {
+  it('signs each provider in on a machine of your own, and only Claude Code and Codex on a cloud device', () => {
     expect(browserSignInKind('claude', false)).toEqual({
       value: 'browser',
       label: 'Sign in with browser',
     });
     for (const provider of ['claude', 'codex', 'cursor', 'antigravity', 'opencode'])
       expect(browserSignInKind(provider, false)?.value).toBe('browser');
-    expect(browserSignInKind('claude', true)?.value).toBe('browser');
-    for (const provider of ['codex', 'cursor', 'antigravity', 'opencode', 'pi'])
+    for (const provider of ['claude', 'codex'])
+      expect(browserSignInKind(provider, true)?.value).toBe('browser');
+    for (const provider of ['cursor', 'antigravity', 'opencode', 'pi'])
       expect(browserSignInKind(provider, true)).toBeNull();
     expect(browserSignInKind('pi', false)).toBeNull();
   });
