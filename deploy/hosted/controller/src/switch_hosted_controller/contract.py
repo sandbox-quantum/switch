@@ -81,7 +81,9 @@ IMAGE = {
     "egress_lists": "registry.example/switch-hosted-controller@" + _digest("e"),
     "pause": "registry.example/pause@" + _digest("f"),
 }
-SERVER_IP = "192.0.2.10"
+#: Core's host name and the range its private endpoint's addresses sit in: a documentation name and range.
+SERVER_HOST = "switch-core.example.net"
+SERVER_CIDRS = ("192.0.2.0/28",)
 API_SERVER_IPS = ("192.0.2.11", "192.0.2.12")
 AGENTS_SUBNET = "198.51.100.0/24"
 CLUSTER_VPC_CIDR = "198.51.100.0/22"
@@ -133,8 +135,9 @@ TIERS: dict[str, dict[str, str]] = {
 def operator_config() -> box_operator.OperatorConfig:
     return box_operator.config_from(
         {
-            "server_ip": SERVER_IP,
-            "server_url": "https://" + SERVER_IP,
+            "server_host": SERVER_HOST,
+            "server_cidrs": list(SERVER_CIDRS),
+            "server_url": "https://" + SERVER_HOST,
             "image": IMAGE["box"],
             "storage_class": STORAGE_CLASS,
             "proxy_host": PROXY_HOST,
@@ -171,7 +174,8 @@ def fills() -> dict[str, Any]:
         "__PREVIOUS_BOX_IMAGE_1__": IMAGE["box_previous_1"],
         "__PREVIOUS_BOX_IMAGE_2__": IMAGE["box_previous_2"],
         "__PREVIOUS_BOX_IMAGE_3__": IMAGE["box_previous_3"],
-        "__SERVER_IP__": SERVER_IP,
+        "__SERVER_HOST__": SERVER_HOST,
+        "__SERVER_CIDR__": SERVER_CIDRS[0],
         "__ZONE__": ZONE,
         "kubernetes_service_ip": KUBERNETES_SERVICE_IP,
     }
@@ -1389,7 +1393,7 @@ def rendered() -> dict[str, bytes]:
 _DOC_NETWORKS = [
     ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/22", "203.0.113.0/24")
 ]
-_ALLOWED_HOSTS = {"registry.example", "kubernetes.example", PROXY_HOST}
+_ALLOWED_HOSTS = {"registry.example", "kubernetes.example", PROXY_HOST, SERVER_HOST}
 _IP = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d{1,3}){3})(?:/\d{1,2})?(?![\d.])")
 _KEYED = re.compile(r"k1-[0-9a-f]{16}")
 

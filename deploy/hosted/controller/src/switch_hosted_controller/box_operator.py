@@ -28,6 +28,7 @@ from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from uuid import UUID
 
+from . import server_endpoint as endpoint
 from .box_names import (
     BOX_NAMESPACE_RE,
     REMOVALS_SECRET,
@@ -124,7 +125,10 @@ class BoxSize:
 
 @dataclass(frozen=True)
 class OperatorConfig:
-    server_ip: str
+    server_host: str  # Core's host name: its URL, and NO_PROXY
+    server_cidrs: tuple[
+        str, ...
+    ]  # the private ranges it resolves to: the box's one direct route out, on 443
     server_url: str
     image: str
     storage_class: str
@@ -176,18 +180,20 @@ def config_from(raw: Any, ca_cert: str, managed_settings: str) -> OperatorConfig
     if not isinstance(raw, dict):
         raise ConfigError("the configuration must be an object")
     known = {
-        "server_ip", "server_url", "image", "storage_class", "proxy_host", "proxy_port", "zones", "sizes",
+        "server_host", "server_cidrs", "server_url", "image", "storage_class", "proxy_host", "proxy_port", "zones", "sizes",
         "ceiling", "default_size", "split", "allowed_images", "earlier_box_cas",
     }  # fmt: skip
+    if "server_ip" in raw:
+        raise ConfigError("server_ip is no longer read: give server_host and server_cidrs instead")
     unknown = set(raw) - known
     if unknown:
         raise ConfigError(f"unknown configuration keys: {sorted(unknown)}")
-    server_ip = raw.get("server_ip")
-    if not isinstance(server_ip, str) or not re.fullmatch(r"(\d{1,3}\.){3}\d{1,3}", server_ip):
-        raise ConfigError("server_ip must be an IPv4 address")
-    server_url = raw.get("server_url")
-    if not isinstance(server_url, str) or not server_url.startswith("https://"):
-        raise ConfigError("server_url must be an https URL")
+    try:
+        server_host = endpoint.server_host(raw.get("server_host"))
+        server_cidrs = endpoint.server_cidrs(raw.get("server_cidrs"))
+        server_url = endpoint.check_server_url(raw.get("server_url"), server_host)
+    except endpoint.EndpointError as exc:
+        raise ConfigError(str(exc)) from None
     image = raw.get("image")
     if not isinstance(image, str) or not DIGEST_IMAGE_RE.fullmatch(image):
         raise ConfigError("image must be pinned by its full sha256 digest")
@@ -277,8 +283,9 @@ def config_from(raw: Any, ca_cert: str, managed_settings: str) -> OperatorConfig
     if not managed_settings.lstrip().startswith("{"):
         raise ConfigError("the managed settings file must hold a JSON object")
     return OperatorConfig(
-        server_ip=server_ip,
-        server_url=server_url.rstrip("/"),
+        server_host=server_host,
+        server_cidrs=server_cidrs,
+        server_url=server_url,
         image=image,
         storage_class=storage_class,
         proxy_host=proxy_host,
@@ -503,7 +510,7 @@ def box_objects(action: ProvisionAction, config: OperatorConfig) -> list[tuple[s
                     "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}],
                 },
                 {
-                    "to": [{"ipBlock": {"cidr": f"{config.server_ip}/32"}}],
+                    "to": [{"ipBlock": {"cidr": cidr}} for cidr in config.server_cidrs],
                     "ports": [{"protocol": "TCP", "port": 443}],
                 },
                 {
@@ -702,7 +709,7 @@ def _box_pod_spec(
 ) -> dict:
     """The split box (two containers on loopback, two disks), as split template v2 has it. Fixed apart from the image
     digest, the agents' size and the server address, all from the operator's own configuration."""
-    no_proxy = f"{config.server_ip},.svc,.cluster.local,localhost,127.0.0.1"
+    no_proxy = f"{config.server_host},.svc,.cluster.local,localhost,127.0.0.1"
     proxy_url = f"http://{config.proxy_host}:{config.proxy_port}"
     common = [
         {"name": "NO_PROXY", "value": no_proxy},

@@ -12,7 +12,8 @@
   "__PREVIOUS_BOX_IMAGE_1__": "registry.example/hosted-agents-box@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "__PREVIOUS_BOX_IMAGE_2__": "registry.example/hosted-agents-box@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "__PREVIOUS_BOX_IMAGE_3__": "registry.example/hosted-agents-box@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-  "__SERVER_IP__": "192.0.2.10",
+  "__SERVER_CIDR__": "192.0.2.0/28",
+  "__SERVER_HOST__": "switch-core.example.net",
   "__ZONE__": "xx-example-1a",
   "kubernetes_service_ip": "203.0.113.1"
 }

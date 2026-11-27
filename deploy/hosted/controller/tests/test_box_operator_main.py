@@ -347,8 +347,9 @@ def test_the_start_line_names_the_ceiling_default_size_and_sizes(tmp_path, monke
     from switch_hosted_controller import box_operator_main as bom
 
     raw = {
-        "server_ip": "10.0.0.10",
-        "server_url": "https://10.0.0.10",
+        "server_host": "switch-core.example.net",
+        "server_cidrs": ["10.0.0.0/28"],
+        "server_url": "https://switch-core.example.net",
         "image": "registry.example/box@sha256:" + "a" * 64,
         "storage_class": "gp3",
         "proxy_host": "squid.egress-proxy.svc",

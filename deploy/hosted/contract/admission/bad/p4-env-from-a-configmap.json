@@ -75,7 +75,7 @@
               "env": [
                 {
                   "name": "SWITCH_SERVER",
-                  "value": "https://192.0.2.10"
+                  "value": "https://switch-core.example.net"
                 },
                 {
                   "name": "SWITCH_MACHINE_NAME",
@@ -148,11 +148,11 @@
                 },
                 {
                   "name": "NO_PROXY",
-                  "value": "192.0.2.10,.svc,.cluster.local,localhost,127.0.0.1"
+                  "value": "switch-core.example.net,.svc,.cluster.local,localhost,127.0.0.1"
                 },
                 {
                   "name": "no_proxy",
-                  "value": "192.0.2.10,.svc,.cluster.local,localhost,127.0.0.1"
+                  "value": "switch-core.example.net,.svc,.cluster.local,localhost,127.0.0.1"
                 },
                 {
                   "name": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
@@ -269,11 +269,11 @@
                 },
                 {
                   "name": "NO_PROXY",
-                  "value": "192.0.2.10,.svc,.cluster.local,localhost,127.0.0.1"
+                  "value": "switch-core.example.net,.svc,.cluster.local,localhost,127.0.0.1"
                 },
                 {
                   "name": "no_proxy",
-                  "value": "192.0.2.10,.svc,.cluster.local,localhost,127.0.0.1"
+                  "value": "switch-core.example.net,.svc,.cluster.local,localhost,127.0.0.1"
                 },
                 {
                   "name": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
@@ -534,7 +534,7 @@
                 "env": [
                   {
                     "name": "SWITCH_SERVER",
-                    "value": "https://192.0.2.10"
+                    "value": "https://switch-core.example.net"
                   },
                   {
                     "name": "SWITCH_MACHINE_NAME",
@@ -607,11 +607,11 @@
                   },
                   {
                     "name": "NO_PROXY",
-                    "value": "192.0.2.10,.svc,.cluster.local,localhost,127.0.0.1"
+                    "value": "switch-core.example.net,.svc,.cluster.local,localhost,127.0.0.1"
                   },
                   {
                     "name": "no_proxy",
-                    "value": "192.0.2.10,.svc,.cluster.local,localhost,127.0.0.1"
+                    "value": "switch-core.example.net,.svc,.cluster.local,localhost,127.0.0.1"
                   },
                   {
                     "name": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
@@ -728,11 +728,11 @@
                   },
                   {
                     "name": "NO_PROXY",
-                    "value": "192.0.2.10,.svc,.cluster.local,localhost,127.0.0.1"
+                    "value": "switch-core.example.net,.svc,.cluster.local,localhost,127.0.0.1"
                   },
                   {
                     "name": "no_proxy",
-                    "value": "192.0.2.10,.svc,.cluster.local,localhost,127.0.0.1"
+                    "value": "switch-core.example.net,.svc,.cluster.local,localhost,127.0.0.1"
                   },
                   {
                     "name": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
@@ -1089,7 +1089,7 @@
               "to": [
                 {
                   "ipBlock": {
-                    "cidr": "192.0.2.10/32"
+                    "cidr": "192.0.2.0/28"
                   }
                 }
               ]

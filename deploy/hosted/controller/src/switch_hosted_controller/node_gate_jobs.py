@@ -13,6 +13,8 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from . import server_endpoint as endpoint
+
 GATE1_TAINT = "switch.dev/gate1"
 LEVEL_TAINT = "switch.dev/level"
 MANAGED_BY = "switch-node-gate"
@@ -21,7 +23,6 @@ NODE_ANNOTATION = "switch.dev/check-node"
 CHECK_LABEL = "switch.dev/check"  # the label squid's NetworkPolicy admits for check namespaces
 
 DIGEST_IMAGE_RE = re.compile(r"[a-z0-9][a-z0-9./-]*(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")
-IPV4_RE = re.compile(r"(\d{1,3}\.){3}\d{1,3}")
 LABEL_RE = re.compile(r"[A-Za-z0-9 ._:/()-]{1,64}")
 URL_RE = re.compile(r"https?://[A-Za-z0-9._:\-/?=]+")  # __NODE_IP__ is filled inside the pod
 DNS_NAME_RE = re.compile(r"[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?")
@@ -62,7 +63,10 @@ class ProxyEntry:
 class GateConfig:
     python_image: str
     alpine_image: str
-    server_ip: str  # the one address a box reaches directly, on 443
+    server_host: str  # Core's host name, which a box reaches directly
+    server_cidrs: tuple[
+        str, ...
+    ]  # the private ranges it resolves to: a box's one direct route out, on 443
     proxy_host: str  # e.g. squid.egress-proxy.svc
     proxy_namespace: str  # where the egress proxy runs: the only namespace a check pod may reach
     proxy_port: int
@@ -83,8 +87,8 @@ class GateConfig:
         fixed = [
             ProxyEntry(
                 "ALLOW",
-                f"server direct {self.server_ip}",
-                f"https://{self.server_ip}/health",
+                f"server direct {self.server_host}",
+                f"https://{self.server_host}/health",
                 False,
             ),
             ProxyEntry(
@@ -114,7 +118,15 @@ def gate_config_from(raw: Mapping) -> GateConfig:
 
     python_image = need("python_image", DIGEST_IMAGE_RE, "an image pinned by sha256 digest")
     alpine_image = need("alpine_image", DIGEST_IMAGE_RE, "an image pinned by sha256 digest")
-    server_ip = need("server_ip", IPV4_RE, "an IPv4 address")
+    if "server_ip" in raw:
+        raise GateConfigError(
+            "server_ip is no longer read: give server_host and server_cidrs instead"
+        )
+    try:
+        server_host = endpoint.server_host(raw.get("server_host"))
+        server_cidrs = endpoint.server_cidrs(raw.get("server_cidrs"))
+    except endpoint.EndpointError as exc:
+        raise GateConfigError(str(exc)) from None
     proxy_host = need("proxy_host", DNS_NAME_RE, "a host name")
     proxy_namespace = need(
         "proxy_namespace", re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"), "a namespace name"
@@ -152,7 +164,8 @@ def gate_config_from(raw: Mapping) -> GateConfig:
     return GateConfig(
         python_image,
         alpine_image,
-        server_ip,
+        server_host,
+        server_cidrs,
         proxy_host,
         proxy_namespace,
         port,
@@ -244,7 +257,7 @@ def namespace_objects(
                         "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}],
                     },
                     {
-                        "to": [{"ipBlock": {"cidr": f"{config.server_ip}/32"}}],
+                        "to": [{"ipBlock": {"cidr": cidr}} for cidr in config.server_cidrs],
                         "ports": [{"protocol": "TCP", "port": 443}],
                     },
                     {
@@ -351,7 +364,7 @@ NODE_IP_ENV = {"name": "NODE_IP", "valueFrom": {"fieldRef": {"fieldPath": "statu
 
 FIRST_SECOND = """
 import time, socket, os, ssl, urllib.request as u
-T0=time.time(); n=os.environ["NODE_IP"]; ROUTES=__ROUTES__; SERVER=os.environ["SERVER_IP"]
+T0=time.time(); n=os.environ["NODE_IP"]; ROUTES=__ROUTES__; SERVER=os.environ["SERVER_HOST"]
 def tcp(h,p,to=1.5):
     s=socket.socket(); s.settimeout(to)
     try: s.connect((h,p)); return "OPEN"
@@ -410,7 +423,7 @@ def check_jobs(check: str, ns: str, node: str, config: GateConfig) -> list[dict]
     """The Jobs for one check, in the order their results are read: gate 1 is first-second, kubelet, imds."""
     common_env = [
         NODE_IP_ENV,
-        {"name": "SERVER_IP", "value": config.server_ip},
+        {"name": "SERVER_HOST", "value": config.server_host},
         {"name": "PROXY_HOST", "value": config.proxy_host},
         {"name": "PROXY_PORT", "value": str(config.proxy_port)},
     ]
