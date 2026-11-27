@@ -1,5 +1,8 @@
 import CheckOutlined from "@mui/icons-material/CheckOutlined";
-import { Box, Stack, Typography } from "@mui/material";
+import CloseOutlined from "@mui/icons-material/CloseOutlined";
+import { Box, Dialog, IconButton, Stack, Typography } from "@mui/material";
+import type { SxProps, Theme } from "@mui/material";
+import { useId, useState } from "react";
 
 const PERKS = [
   "A free cloud device to host your agents",
@@ -39,14 +42,15 @@ function Hero() {
     <Box aria-hidden sx={{ position: "relative", height: 240, overflow: "hidden" }}>
       <Box
         component="img"
-        src="/free-beta/sky.png"
+        src="/free-beta/sky.webp"
         alt=""
         sx={{
           position: "absolute",
           left: -11,
           top: -24,
+          // The top half of the artwork: the hero never shows more.
           width: 557,
-          height: 1077,
+          height: 538.5,
           maxWidth: "none",
           objectFit: "cover",
           opacity: 0.8,
@@ -89,47 +93,46 @@ function Hero() {
   );
 }
 
-/** What the Free Beta offers on Switch Cloud, as a card. */
-export default function FreeBetaPanel() {
+/** The Switch-blue pill the Free Beta is named in. */
+const PILL_SX: SxProps<Theme> = {
+  px: 1,
+  py: "2px",
+  borderRadius: "999px",
+  border: "1px solid var(--sw-brand-blue)",
+  backgroundColor: "color-mix(in oklch, var(--sw-brand-blue) 40%, transparent)",
+  color: "oklch(0.360 0.060 212.9)",
+  fontFamily: "inherit",
+  fontSize: "0.75rem",
+  fontWeight: 500,
+  lineHeight: "16px",
+  // The light theme's deep blue ink is unreadable on the dark card.
+  '[data-mui-color-scheme="dark"] &': {
+    backgroundColor: "color-mix(in oklch, var(--sw-brand-blue) 20%, transparent)",
+    color: "var(--sw-brand-blue)",
+  },
+};
+
+const CARD_SX: SxProps<Theme> = {
+  width: 480,
+  maxWidth: "100%",
+  borderRadius: "16px",
+  backgroundColor: "var(--sw-card)",
+  overflow: "hidden",
+};
+
+/** The Free Beta's sky, characters and copy: the body of both its card and
+ *  its dialog, so the two can't drift. */
+function FreeBetaContent({ titleId }: { titleId: string }) {
   return (
-    <Box
-      component="section"
-      aria-labelledby="free-beta-title"
-      sx={{
-        width: 480,
-        maxWidth: "100%",
-        borderRadius: "16px",
-        border: "1px solid var(--sw-border)",
-        backgroundColor: "var(--sw-card)",
-        overflow: "hidden",
-      }}
-    >
+    <>
       <Hero />
       <Stack sx={{ px: 5, pb: 5, gap: 3 }}>
         <Stack sx={{ alignItems: "flex-start", gap: 2 }}>
-          <Box
-            component="span"
-            sx={{
-              px: 1,
-              py: "2px",
-              borderRadius: "999px",
-              border: "1px solid var(--sw-brand-blue)",
-              backgroundColor: "color-mix(in oklch, var(--sw-brand-blue) 40%, transparent)",
-              color: "oklch(0.360 0.060 212.9)",
-              fontSize: "0.75rem",
-              fontWeight: 500,
-              lineHeight: "16px",
-              // The light theme's deep blue ink is unreadable on the dark card.
-              '[data-mui-color-scheme="dark"] &': {
-                backgroundColor: "color-mix(in oklch, var(--sw-brand-blue) 20%, transparent)",
-                color: "var(--sw-brand-blue)",
-              },
-            }}
-          >
+          <Box component="span" sx={PILL_SX}>
             Free Beta for Switch Cloud
           </Box>
           <Typography
-            id="free-beta-title"
+            id={titleId}
             component="h2"
             sx={{ fontSize: "23px", fontWeight: 500, lineHeight: 1.25, letterSpacing: "-0.02em", color: "text.primary" }}
           >
@@ -150,6 +153,64 @@ export default function FreeBetaPanel() {
           ))}
         </Stack>
       </Stack>
+    </>
+  );
+}
+
+/** What the Free Beta offers on Switch Cloud, as a card. */
+export function FreeBetaPanel() {
+  const titleId = useId();
+  return (
+    <Box component="section" aria-labelledby={titleId} sx={{ ...CARD_SX, border: "1px solid var(--sw-border)" }}>
+      <FreeBetaContent titleId={titleId} />
     </Box>
+  );
+}
+
+/** The top bar's "Free Beta" pill, which opens what the beta offers. */
+export function FreeBetaButton() {
+  const titleId = useId();
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Box
+        component="button"
+        type="button"
+        aria-haspopup="dialog"
+        onClick={() => setOpen(true)}
+        sx={{
+          ...PILL_SX,
+          cursor: "pointer",
+          "&:hover": { backgroundColor: "color-mix(in oklch, var(--sw-brand-blue) 55%, transparent)" },
+          "&:focus-visible": { outline: "2px solid var(--sw-ring)", outlineOffset: 2 },
+        }}
+      >
+        Free Beta
+      </Box>
+      <Dialog
+        open={open}
+        onClose={() => setOpen(false)}
+        aria-labelledby={titleId}
+        slotProps={{ paper: { sx: { ...CARD_SX, m: 2, position: "relative", backgroundImage: "none" } } }}
+      >
+        <FreeBetaContent titleId={titleId} />
+        <IconButton
+          aria-label="Close"
+          onClick={() => setOpen(false)}
+          sx={{
+            position: "absolute",
+            top: 16,
+            right: 16,
+            width: 32,
+            height: 32,
+            color: "text.primary",
+            backgroundColor: "color-mix(in oklch, var(--sw-card) 80%, transparent)",
+            "&:hover": { backgroundColor: "var(--sw-card)" },
+          }}
+        >
+          <CloseOutlined sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Dialog>
+    </>
   );
 }

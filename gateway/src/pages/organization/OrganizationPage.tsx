@@ -6,7 +6,7 @@ import EditableField from "../../components/EditableField";
 import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { useLoad } from "../workspace/useLoad";
 import OrganizationAuditSection from "./OrganizationAuditSection";
-import FreeBetaPanel from "./billing/FreeBetaPanel";
+import { FreeBetaPanel } from "../../components/FreeBeta";
 import OrganizationConnectorsSettings from "./connectors/OrganizationConnectorsSettings";
 import OrganizationIssuesNotice from "./OrganizationIssuesNotice";
 import OrganizationDevicesSettings from "./devices/OrganizationDevicesSettings";

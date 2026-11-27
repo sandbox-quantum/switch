@@ -6,6 +6,7 @@ import { Alert, Box, Button, IconButton, Snackbar, Stack, Tooltip, Typography } 
 import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { Link as RouterLink, useLocation, useNavigate } from "react-router";
+import { FreeBetaButton } from "../components/FreeBeta";
 import { useAuth } from "../data/AuthContext";
 import { useOrganizationRenamed } from "../data/organizationEvents";
 import {
@@ -242,6 +243,7 @@ export default function TopBar() {
 
       <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
         <DevRoleSlot />
+        <FreeBetaButton />
         <LinkButton href={HELP_URL} icon={<HelpOutlineOutlined sx={{ fontSize: 20 }} />} label="Help" />
         <LinkButton
           href={DOCS_URL}

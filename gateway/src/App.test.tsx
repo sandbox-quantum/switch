@@ -741,6 +741,16 @@ describe("the layout", () => {
       expect(screen.getByText("Rooms", { selector: "span > span" })).toBeTruthy();
     });
 
+    it("opens what the Free Beta offers from its pill, and closes it again", async () => {
+      mockFetch(signedInAs("member"));
+      renderAt("/rooms");
+      fireEvent.click(await screen.findByRole("button", { name: "Free Beta" }));
+      const dialog = await screen.findByRole("dialog", { name: "Build your human-agent hybrid team now." });
+      expect(within(dialog).getByText("Free until 18 Feb 2027")).toBeTruthy();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    });
+
     it("leads with the product badge, which offers Switch Trust in a new tab", async () => {
       mockFetch(signedInAs("member"));
       renderAt("/rooms");
