@@ -5277,6 +5277,12 @@ version of their own to them without also giving them a release of their own.
   whose name contained placeholder text such as `{{path_raw}}` had its path
   substituted a second time, unquoted, into the shell command that opens it.
 
+- **A location's files stay inside it, links included.** Reading, writing
+  and listing files in a location checked only the path as written, so a
+  symbolic link inside the folder to a place outside it was followed; links
+  are now resolved first, a dangling one included, and one leading out of the
+  location is refused.
+
 - **Cancelling an attachment upload checks the id.** The session host deleted
   `<id>.part` for whatever id it was sent, so an id such as `../x` could delete
   a file outside its upload folder.

@@ -599,6 +599,39 @@ describe('LocalFileSystem', () => {
       await fsService.write('internal_dir/new.txt', 'new inside content');
       expect(fs.readFileSync(path.join(subDir, 'new.txt'), 'utf-8')).toBe('new inside content');
     });
+
+    it('should block a dangling symlink whose target runs through a linked directory outside root', async () => {
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-outside-'));
+      try {
+        // `hop` points inside the root by name, but through `out`, a link outside it.
+        fs.symlinkSync(outsideDir, path.join(tempDir, 'out'));
+        const realRoot = fs.realpathSync(tempDir);
+        fs.symlinkSync(path.join(realRoot, 'out', 'created.txt'), path.join(tempDir, 'hop'));
+
+        await expect(fsService.write('hop', 'evil')).rejects.toMatchObject({
+          code: FileSystemErrorCodes.PATH_ESCAPE,
+        });
+        expect(fs.existsSync(path.join(outsideDir, 'created.txt'))).toBe(false);
+      } finally {
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should allow writing through a dangling symlink that points inside root', async () => {
+      fs.symlinkSync(path.join(tempDir, 'later.txt'), path.join(tempDir, 'pending'));
+
+      await fsService.write('pending', 'inside');
+      expect(fs.readFileSync(path.join(tempDir, 'later.txt'), 'utf-8')).toBe('inside');
+    });
+
+    it('should refuse a symlink loop', async () => {
+      fs.symlinkSync(path.join(tempDir, 'b'), path.join(tempDir, 'a'));
+      fs.symlinkSync(path.join(tempDir, 'a'), path.join(tempDir, 'b'));
+
+      await expect(fsService.write('a', 'x')).rejects.toMatchObject({
+        code: FileSystemErrorCodes.PATH_ESCAPE,
+      });
+    });
   });
 
   describe('large file handling', () => {
