@@ -401,17 +401,13 @@ def config(**overrides: Any) -> MatrixConnectionConfig:
 
 
 def serve(monkeypatch: pytest.MonkeyPatch, homeserver: FakeHomeserver) -> None:
-    """Route both of the adapter's HTTP clients to `homeserver`, noting which
-    client each connection was made with and the policy it was given."""
+    """Route the adapter's HTTP clients to `homeserver`, noting the policy
+    each was made with."""
 
     def client(base_url: str) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=base_url, transport=httpx.MockTransport(homeserver.handle)
         )
-
-    def unguarded(base_url: str) -> httpx.AsyncClient:
-        homeserver.clients.append(("unguarded", None))
-        return client(base_url)
 
     def guarded(
         policy: OutboundPolicy, *, base_url: str, **_: Any
@@ -420,7 +416,6 @@ def serve(monkeypatch: pytest.MonkeyPatch, homeserver: FakeHomeserver) -> None:
         return client(base_url)
 
     monkeypatch.setattr(matrix_adapter, "guarded_async_client", guarded)
-    monkeypatch.setattr(matrix_adapter, "open_http", unguarded)
 
     async def no_sleep(seconds: float) -> None:
         homeserver.waits.append(seconds)

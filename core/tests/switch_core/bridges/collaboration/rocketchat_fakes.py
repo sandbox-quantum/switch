@@ -28,9 +28,6 @@ BOT_ID = "bot-user-id"
 BOT_USERNAME = "switchbot"
 ROOM = "room-1"
 
-# Held before any test replaces `httpx.AsyncClient` to reach `verify_credentials`.
-_AsyncClient = httpx.AsyncClient
-
 Handler = Callable[["Call"], httpx.Response | dict[str, Any]]
 
 
@@ -60,6 +57,7 @@ def refused(status: int, error: str, error_type: str | None = None) -> httpx.Res
 class FakeRocketChat:
     def __init__(self) -> None:
         self.calls: list[Call] = []
+        self.policies: list[OutboundPolicy] = []
         self.files: dict[str, bytes] = {}
         self._posted = 0
         self.handlers: dict[str, Handler] = {
@@ -85,7 +83,7 @@ class FakeRocketChat:
 
     def client(self, **kwargs: Any) -> httpx.AsyncClient:
         kwargs.pop("verify", None)
-        return _AsyncClient(transport=self.transport(), **kwargs)
+        return httpx.AsyncClient(transport=self.transport(), **kwargs)
 
     def _post_message(self, call: Call) -> dict[str, Any]:
         self._posted += 1

@@ -136,18 +136,6 @@ _operation_budget: ContextVar[list[float] | None] = ContextVar(
 _MEDIA_REDIRECTS = 3
 
 
-def open_http(base_url: str) -> httpx.AsyncClient:
-    """An unguarded client, for checking credentials before a bridge exists.
-
-    The homeserver URL has already been through the deployment's outbound
-    policy by then (`CollaborationBridgeLifecycleService.check_outbound_urls`).
-    A running bridge connects through `guarded_async_client` instead. Neither
-    follows redirects: a homeserver's client API does not redirect, and the
-    token must not be carried to wherever a redirect points.
-    """
-    return httpx.AsyncClient(base_url=base_url, timeout=_REQUEST_TIMEOUT)
-
-
 def _segment(value: str) -> str:
     """One path segment: room ids, event ids and user ids all carry `!$@:`."""
     return quote(value, safe="")

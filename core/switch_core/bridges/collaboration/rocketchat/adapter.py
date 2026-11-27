@@ -54,7 +54,11 @@ from switch_core.bridges.collaboration.rocketchat.rest import (
     RocketChatApiError,
     RocketChatRest,
 )
-from switch_core.outbound import OutboundPolicy, guarded_async_client
+from switch_core.outbound import (
+    OutboundPolicy,
+    OutboundURLRefused,
+    guarded_async_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -249,22 +253,25 @@ class RocketChatAdapter(PlatformAdapter):
     ) -> None:
         """Ask Rocket.Chat who the token belongs to (`me`), as `start` will.
 
-        `server_url` has been through the outbound policy before this is
-        called, and redirects are not followed, so the token is only sent
-        where Switch may connect.
+        Through the guarded client, which does not follow redirects, so the
+        token is only sent where the outbound policy lets Switch connect.
         """
         config = RocketChatConnectionConfig.model_validate(connection_config)
-        async with httpx.AsyncClient(
-            base_url=config.server_url,
+        async with guarded_async_client(
+            outbound_policy,
             verify=config.verify_tls,
+            base_url=config.server_url,
             timeout=_REQUEST_TIMEOUT_SECONDS,
-            trust_env=False,
         ) as client:
             rest = RocketChatRest(
                 client, user_id=config.bot_user_id, token=config.personal_access_token
             )
             try:
                 me = await rest.get("me")
+            except OutboundURLRefused as exc:
+                raise BridgeCredentialError(
+                    f"Switch may not connect to Rocket.Chat at {config.server_url}: {exc}"
+                ) from exc
             except RocketChatApiError as exc:
                 if exc.status == 401:
                     raise BridgeCredentialError(

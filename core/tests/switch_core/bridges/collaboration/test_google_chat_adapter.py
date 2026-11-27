@@ -25,6 +25,11 @@ from switch_core.bridges.collaboration.google_chat.auth import (
     GoogleAuthManager,
     validate_token_uri,
 )
+from switch_core.bridges.collaboration.google_chat.client import (
+    CHAT_API_BASE,
+    PUBSUB_API_BASE,
+    GoogleChatClient,
+)
 from switch_core.bridges.collaboration.google_chat.formatting import (
     markdown_to_google_chat,
     split_message_chunks,
@@ -383,6 +388,76 @@ class TestGoogleChatConfigurationAndCredentials:
                 await GoogleChatAdapter.verify_credentials(
                     cfg.model_dump(), outbound_policy=OutboundPolicy.parse("")
                 )
+
+    def test_a_tenant_cannot_point_the_api_at_another_host(self) -> None:
+        """The service-account token goes with every call, so the hosts are
+        Google's whatever the connection config says."""
+        properties = GoogleChatConnectionConfig.model_json_schema()["properties"]
+        assert "api_base_url" not in properties
+        assert "pubsub_base_url" not in properties
+        adapter = GoogleChatAdapter(
+            _make_config(
+                api_base_url="http://10.0.0.5/v1",
+                pubsub_base_url="http://10.0.0.5/pubsub",
+            )
+        )
+        assert adapter.client.chat_api_base == CHAT_API_BASE
+        assert adapter.client.pubsub_api_base == PUBSUB_API_BASE
+
+    def test_the_adapters_api_calls_are_held_to_its_policy(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        with pytest.raises(RuntimeError, match="outbound policy"):
+            adapter.client._http_client
+        policy = OutboundPolicy.parse("10.0.0.0/8")
+        adapter.set_outbound_policy(policy)
+        assert adapter.client._http_client.policy is policy
+
+    @pytest.mark.asyncio
+    async def test_an_api_call_to_an_address_the_policy_blocks_is_refused(
+        self,
+    ) -> None:
+        auth = GoogleAuthManager(
+            {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
+        )
+        client = GoogleChatClient(auth, chat_api_base="http://127.0.0.1:9/v1")
+        client.set_outbound_policy(OutboundPolicy.parse(""))
+        with patch.object(
+            GoogleAuthManager,
+            "get_service_account_token",
+            new=AsyncMock(return_value="fake-token"),
+        ):
+            with pytest.raises(BridgeOperationError, match="not a public address"):
+                await client.list_spaces()
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_verification_calls_the_api_under_the_policy_given(self) -> None:
+        policy = OutboundPolicy.parse("10.0.0.0/8")
+        seen: list[tuple[OutboundPolicy, str]] = []
+
+        async def fake_request(
+            self: GuardedAsyncClient, method: str, url: str, **_: Any
+        ) -> httpx.Response:
+            seen.append((self.policy, url))
+            return httpx.Response(200, json={})
+
+        with (
+            patch.object(
+                GoogleAuthManager,
+                "get_service_account_token",
+                new=AsyncMock(return_value="fake-token"),
+            ),
+            patch.object(GuardedAsyncClient, "request", fake_request),
+        ):
+            await GoogleChatAdapter.verify_credentials(
+                _make_config().model_dump(), outbound_policy=policy
+            )
+
+        [(pubsub_policy, pubsub_url), (chat_policy, chat_url)] = seen
+        assert pubsub_url.startswith(PUBSUB_API_BASE)
+        assert chat_url.startswith(CHAT_API_BASE)
+        assert pubsub_policy is policy
+        assert chat_policy is policy
 
     def test_classify_failure(self) -> None:
         assert (

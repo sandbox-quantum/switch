@@ -312,14 +312,21 @@ class TestOutboundPolicy:
         await adapter.stop()
         assert homeserver.clients == [("guarded", adapter.outbound_policy)]
 
-    async def test_only_the_credential_check_uses_an_unguarded_client(
+    async def test_the_credential_check_connects_through_the_policy_it_is_given(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """It runs after the lifecycle checked the URL against the policy, and
-        before there is a bridge to hold one."""
         homeserver = FakeHomeserver()
         serve(monkeypatch, homeserver)
-        await MatrixAdapter.verify_credentials(
-            dict(VALID), outbound_policy=OutboundPolicy.parse("")
-        )
-        assert homeserver.clients == [("unguarded", None)]
+        policy = OutboundPolicy.parse("")
+        await MatrixAdapter.verify_credentials(dict(VALID), outbound_policy=policy)
+        assert homeserver.clients == [("guarded", policy)]
+
+    async def test_the_credential_check_refuses_an_address_the_policy_blocks(
+        self,
+    ) -> None:
+        """The token is not sent to a loopback homeserver the operator did not allow."""
+        with pytest.raises(BridgeCredentialError, match="may not connect"):
+            await MatrixAdapter.verify_credentials(
+                {**VALID, "homeserver_url": "http://127.0.0.1:9"},
+                outbound_policy=OutboundPolicy.parse(""),
+            )

@@ -58,7 +58,7 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     RetireOutcome,
 )
-from switch_core.outbound import OutboundPolicy
+from switch_core.outbound import OutboundPolicy, guarded_async_client
 
 logger = logging.getLogger(__name__)
 
@@ -105,14 +105,6 @@ class GoogleChatConnectionConfig(BridgeConnectionConfig):
     slash_command_map: dict[str, str] | None = Field(
         default=None,
         description="Optional mapping from numeric Google Chat slash command IDs to Switch command names.",
-    )
-    api_base_url: str | None = Field(
-        default=None,
-        description="Optional base URL override for Google Chat API (for local simulators/testing).",
-    )
-    pubsub_base_url: str | None = Field(
-        default=None,
-        description="Optional base URL override for Cloud Pub/Sub API (for local simulators/testing).",
     )
 
     @field_validator("service_account_json")
@@ -169,13 +161,7 @@ class GoogleChatAdapter(PlatformAdapter):
             user_client_secret=config.user_client_secret,
             user_refresh_token=config.user_refresh_token,
         )
-        client_kwargs: dict[str, Any] = {}
-        if config.api_base_url:
-            client_kwargs["chat_api_base"] = config.api_base_url
-        if config.pubsub_base_url:
-            client_kwargs["pubsub_api_base"] = config.pubsub_base_url
-
-        self.client = GoogleChatClient(self.auth_manager, **client_kwargs)
+        self.client = GoogleChatClient(self.auth_manager)
         self.workspace_events_mgr = WorkspaceEventsManager(
             self.client,
             config.topic_id,
@@ -196,6 +182,7 @@ class GoogleChatAdapter(PlatformAdapter):
     def set_outbound_policy(self, policy: OutboundPolicy) -> None:
         super().set_outbound_policy(policy)
         self.auth_manager.set_outbound_policy(policy)
+        self.client.set_outbound_policy(policy)
 
     def set_session_factory(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -239,14 +226,8 @@ class GoogleChatAdapter(PlatformAdapter):
         auth.set_outbound_policy(outbound_policy)
         auth.validate_service_account_structure()
 
-        client_kwargs: dict[str, Any] = {}
-        if config.api_base_url:
-            client_kwargs["chat_api_base"] = config.api_base_url
-        if config.pubsub_base_url:
-            client_kwargs["pubsub_api_base"] = config.pubsub_base_url
-
-        async with httpx.AsyncClient(timeout=30.0) as http_client:
-            client = GoogleChatClient(auth, http_client=http_client, **client_kwargs)
+        async with guarded_async_client(outbound_policy, timeout=30.0) as http_client:
+            client = GoogleChatClient(auth, http_client=http_client)
             # 1. Verify token minting
             await auth.get_service_account_token()
 
