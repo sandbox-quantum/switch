@@ -92,6 +92,9 @@ version of their own to them without also giving them a release of their own.
   naming the param, so a backtracking pattern cannot hold the server.
   Patterns are matched with the `regex` package, which switch-core now
   depends on; its default syntax is the same as Python's `re`.
+- **Adding or removing an agent by id no longer tells another workspace's
+  agent apart from one that does not exist.** Both are refused with the same
+  error; another workspace's agent used to fail later, with a different one.
 
 ### [0.32.2] - 2026-11-25
 

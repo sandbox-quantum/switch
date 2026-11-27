@@ -137,3 +137,28 @@ def test_a_type_is_found_without_looking_at_every_client() -> None:
 
     service._forget("client-admin")
     assert service.get_by_type("admin", _TENANT) == []
+
+
+def test_an_agent_is_found_for_its_own_tenant_only() -> None:
+    """The registry holds every tenant's clients; another tenant's agent is
+    answered as None, the same as one that is not running at all."""
+    service = _running(3)
+    service._track("client-b", _actor("agent-b"), "agent", "tenant-b")
+
+    assert service.get_tenant_agent("agent-1", _TENANT) is service._clients["client-1"]
+    assert (
+        service.get_tenant_agent("agent-b", "tenant-b") is service._clients["client-b"]
+    )
+    assert service.get_tenant_agent("agent-b", _TENANT) is None
+    assert service.get_tenant_agent("agent-1", "tenant-b") is None
+    assert service.get_tenant_agent("agent-nobody", _TENANT) is None
+
+
+def test_an_agent_whose_row_comes_later_is_held_to_its_tenant() -> None:
+    service = _running(1)
+    late = _actor(None)
+    service._track("client-late", late, "agent", "tenant-b")
+    late._agent = SimpleNamespace(id="agent-late")  # type: ignore[assignment]
+
+    assert service.get_tenant_agent("agent-late", _TENANT) is None
+    assert service.get_tenant_agent("agent-late", "tenant-b") is late
