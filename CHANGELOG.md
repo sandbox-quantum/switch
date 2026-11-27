@@ -80,6 +80,12 @@ version of their own to them without also giving them a release of their own.
   assertion to it. The token request goes through the outbound address guard,
   and a refusal names only the status and Google's error code, not the
   response body.
+- **A running Zulip bridge reaches its server only through the outbound
+  address guard**, as its file downloads already did, so the server's name
+  cannot be pointed at an internal or metadata address after it was checked.
+  A message's file link is fetched only when it has the shape of a Zulip
+  upload (`/user_uploads/<realm>/…/<name>`); any other is reported as a file
+  that could not be relayed.
 
 ### [0.32.2] - 2026-11-25
 

@@ -41,7 +41,7 @@ from switch_core.bridges.collaboration.zulip.adapter import (
     ZulipConnectionConfig,
     ZulipError,
 )
-from switch_core.outbound import OutboundPolicy
+from switch_core.outbound import GuardedAsyncClient, OutboundPolicy, OutboundURLRefused
 
 from .session_fixtures import open_request
 
@@ -94,7 +94,9 @@ class Zulip:
 def server(monkeypatch: pytest.MonkeyPatch) -> Zulip:
     fake = Zulip()
 
-    def client(config: ZulipConnectionConfig) -> httpx.AsyncClient:
+    def client(
+        config: ZulipConnectionConfig, policy: OutboundPolicy | None = None
+    ) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=config.server_url,
             auth=(config.bot_email, config.api_key),
@@ -107,6 +109,7 @@ def server(monkeypatch: pytest.MonkeyPatch) -> Zulip:
         )
 
     monkeypatch.setattr(zulip, "_client", client)
+    monkeypatch.setattr(zulip, "_verify_client", client)
     monkeypatch.setattr(zulip, "_download_client", download_client)
     fake.on(
         "GET",
@@ -514,13 +517,37 @@ async def test_a_start_that_fails_closes_its_client(server: Zulip) -> None:
         ),
     )
     adapter = ZulipAdapter(config=ZulipConnectionConfig.model_validate(CONFIG))
+    adapter.set_outbound_policy(OutboundPolicy.parse(""))
 
     async def ignore(item: Any) -> None:
         return None
 
     with pytest.raises(ZulipError):
         await adapter.start(ignore, ignore, ignore, ignore, ignore)
+    assert adapter._http is not None
     assert adapter._http.is_closed
+
+
+def test_the_api_client_is_held_to_the_outbound_policy() -> None:
+    policy = OutboundPolicy.parse("10.0.0.0/8")
+    client = zulip._client(ZulipConnectionConfig.model_validate(CONFIG), policy)
+    assert isinstance(client, GuardedAsyncClient)
+    assert client.policy is policy
+
+
+async def test_the_api_client_refuses_a_link_local_server() -> None:
+    config = ZulipConnectionConfig.model_validate(
+        {**CONFIG, "server_url": "https://169.254.169.254"}
+    )
+    async with zulip._client(config, OutboundPolicy.parse("")) as client:
+        with pytest.raises(OutboundURLRefused):
+            await client.get("/api/v1/users/me")
+
+
+async def test_the_api_is_not_called_before_start() -> None:
+    adapter = ZulipAdapter(config=ZulipConnectionConfig.model_validate(CONFIG))
+    with pytest.raises(RuntimeError, match="before it started"):
+        await adapter._call("GET", "/api/v1/users/me")
 
 
 # ── Outbound ─────────────────────────────────────────────────────────────────
@@ -942,6 +969,57 @@ async def test_a_linked_upload_too_large_to_relay_is_reported_not_dropped(
     assert heard[0].attachments == []
     [failure] = heard[0].attachment_failures
     assert failure.filename == "big.bin"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "2/ab/../../users/me",
+        "../api/v1/users/me",
+        "2/ab/..",
+        "2/ab/x%2F..%2Fy",
+        "2/ab/%2e%2e",
+        "2/ab/notes.txt?x=1",
+        "ab/cd/notes.txt",
+        "2/notes.txt",
+    ],
+)
+async def test_a_link_that_is_not_a_zulip_upload_is_reported_and_not_fetched(
+    server: Zulip, path: str
+) -> None:
+    server.on("GET", "/api/v1/messages", _topic_rooted_at(15))
+    adapter, heard = await _started(server)
+
+    await adapter._relay(_message(content=f"see [notes.txt](/user_uploads/{path})"), [])
+
+    assert heard[0].attachments == []
+    [failure] = heard[0].attachment_failures
+    assert failure.filename == "notes.txt"
+    assert "not a Zulip upload" in failure.reason
+    assert not [r for r in server.requests if "user_uploads" in r.url.path]
+
+
+async def test_an_upload_with_an_encoded_name_is_fetched(server: Zulip) -> None:
+    server.on("GET", "/api/v1/messages", _topic_rooted_at(15))
+    server.on(
+        "GET",
+        "/api/v1/user_uploads/2/AbC_d-9/café.txt",
+        lambda r: _ok(url="/user_uploads/temporary/t3"),
+    )
+    server.on(
+        "GET",
+        "/user_uploads/temporary/t3",
+        lambda r: httpx.Response(200, content=b"hi"),
+    )
+    adapter, heard = await _started(server)
+
+    await adapter._relay(
+        _message(content="[café.txt](/user_uploads/2/AbC_d-9/caf%C3%A9.txt)"), []
+    )
+
+    assert heard[0].attachment_failures == []
+    [file] = heard[0].attachments
+    assert file.data == b"hi"
 
 
 # ── Work marks ───────────────────────────────────────────────────────────────

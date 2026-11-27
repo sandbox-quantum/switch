@@ -102,6 +102,15 @@ _ACTIVITY_EMOJI: dict[ActivityMark, str] = {"working": "eyes", "queued": "hourgl
 _REACTION_AS_ASKED = ("REACTION_ALREADY_EXISTS", "REACTION_DOES_NOT_EXIST")
 # A file a person attached, as Zulip writes its link into the message.
 _UPLOAD_LINK = re.compile(r"\[([^\]]*)\]\(/user_uploads/([^)\s]+)\)")
+# What follows `/user_uploads/` in a link Zulip writes: the realm id, one or
+# more random segments, and the file's sanitised, percent-encoded name. The
+# bot fetches it with its own credentials, so nothing that could step out of
+# `/api/v1/user_uploads/` is accepted: no `.` or `..` segment, query or
+# fragment, and no percent-encoded dot, slash, backslash or control character.
+_UPLOAD_PATH = re.compile(
+    r"\d{1,20}/(?:[A-Za-z0-9_-]{1,128}/){1,4}(?!\.{1,2}$)"
+    r"(?:[A-Za-z0-9._~+-]|%(?![01]|2[EeFf]|5[Cc])[0-9A-Fa-f]{2}){1,255}"
+)
 # `@**name**` and `@_**name**` (silent), each optionally `|user_id`.
 _MENTION = re.compile(r"@_?\*\*([^*|]+)(?:\|\d+)?\*\*")
 # The `@` of a mention that notifies: `@**Name**` for a person, `@*group*` for
@@ -184,7 +193,7 @@ class ZulipAdapter(PlatformAdapter):
     def __init__(self, *, config: ZulipConnectionConfig) -> None:
         super().__init__()
         self._config = config
-        self._http = _client(config)
+        self._http: httpx.AsyncClient | None = None
         self._bot_user_id: int | None = None
         self._bot_name = ""
         self._message_limit = _DEFAULT_MESSAGE_LIMIT
@@ -206,7 +215,9 @@ class ZulipAdapter(PlatformAdapter):
     @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
         config = ZulipConnectionConfig.model_validate(connection_config)
-        async with _client(config) as http:
+        # `server_url` has passed the outbound policy just before this is
+        # called; a running bridge connects through the guarded client.
+        async with _verify_client(config) as http:
             try:
                 me = await _call(http, "GET", "/api/v1/users/me")
             except ZulipError as exc:
@@ -247,6 +258,7 @@ class ZulipAdapter(PlatformAdapter):
     ) -> None:
         self._on_message = on_message
         self._on_command = on_command
+        self._http = _client(self._config, self.outbound_policy)
         try:
             me = await self._call("GET", "/api/v1/users/me")
         except BaseException:
@@ -284,7 +296,8 @@ class ZulipAdapter(PlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._listener = None
-        await self._http.aclose()
+        if self._http is not None:
+            await self._http.aclose()
 
     async def _listen(self) -> None:
         """Hear the organization through one event queue, made again when it lapses.
@@ -518,6 +531,14 @@ class ZulipAdapter(PlatformAdapter):
         async with _download_client(self.outbound_policy) as download:
             for name, path in links:
                 filename = name or path.rsplit("/", 1)[-1]
+                if not _UPLOAD_PATH.fullmatch(path):
+                    failures.append(
+                        AttachmentFailure(
+                            filename=filename,
+                            reason="its link is not a Zulip upload",
+                        )
+                    )
+                    continue
                 try:
                     grant = await self._call("GET", f"/api/v1/user_uploads/{path}")
                     fetched = await self._download(
@@ -1008,14 +1029,27 @@ class ZulipAdapter(PlatformAdapter):
         return _MASS_MENTION.sub(lambda match: f"@​{match.group(1)}", text)
 
     async def _call(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        if self._http is None:
+            raise RuntimeError("The Zulip adapter called its API before it started")
         return await _call(self._http, method, path, **kwargs)
 
 
-def _client(config: ZulipConnectionConfig) -> httpx.AsyncClient:
+def _client(config: ZulipConnectionConfig, policy: OutboundPolicy) -> httpx.AsyncClient:
+    """The bot's API client, connecting only where the outbound policy allows."""
+    return guarded_async_client(
+        policy,
+        base_url=config.server_url,
+        auth=(config.bot_email, config.api_key),
+        timeout=httpx.Timeout(30.0),
+    )
+
+
+def _verify_client(config: ZulipConnectionConfig) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=config.server_url,
         auth=(config.bot_email, config.api_key),
         timeout=httpx.Timeout(30.0),
+        trust_env=False,
     )
 
 
