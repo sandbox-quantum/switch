@@ -94,12 +94,52 @@ describe('buildProxyJumpArgs', () => {
     expect(buildProxyJumpArgs(jumpSpec, 'dest.internal', 22)).toEqual(expectedArgs);
   });
 
-  it.each(['-oProxyCommand=evil', 'alice@-bad-host', 'good,-bad', 'bastion:-22'])(
-    'rejects option-like or invalid jump specs: %s',
-    (jumpSpec) => {
-      expect(() => buildProxyJumpArgs(jumpSpec, 'dest.internal', 22)).toThrow('Invalid ProxyJump');
-    }
-  );
+  it.each([
+    '-oProxyCommand=evil',
+    'alice@-bad-host',
+    'good,-bad',
+    'bastion:-22',
+    'ok.example.com,-oProxyCommand=x',
+    'ok.example.com,alice@-oProxyCommand=x',
+    'ok.example.com,-oProxyCommand=x@hop.example.com',
+    'ok.example.com,hop.example.com:0',
+    'ok.example.com,hop.example.com:65536',
+    'ok.example.com,hop.example.com:22x',
+    'ok.example.com:22 -oProxyCommand=x,hop.example.com',
+    'ok.example.com,hop example.com',
+    'ok.example.com,hop.example.com\n-oProxyCommand=x',
+    'ok.example.com,hop.example.com\u0000',
+    'ok.example.com,,hop.example.com',
+    'ok.example.com,',
+    'ok.example.com,@hop.example.com',
+    'ok.example.com,hop.example.com:',
+    'ok.example.com,hop.example.com:abc',
+    'ok.example.com,[::1',
+    'ok.example.com,[::1]x',
+    'ok.example.com,hop;id.example.com',
+  ])('rejects option-like or invalid jump specs: %j', (jumpSpec) => {
+    expect(() => buildProxyJumpArgs(jumpSpec, 'dest.internal', 22)).toThrow('Invalid ProxyJump');
+  });
+
+  it('passes the preceding hops on to ssh rebuilt from their checked parts', () => {
+    const args = buildProxyJumpArgs(
+      ' alice@one.example.com:0022 , two.example.com ,three.example.com',
+      'dest.internal',
+      22
+    );
+    expect(args[args.indexOf('-J') + 1]).toBe('alice@one.example.com:22,two.example.com');
+  });
+
+  it.each([
+    ['-oProxyCommand=x', 22],
+    ['dest internal', 22],
+    ['dest.internal', 0],
+    ['dest.internal', 70_000],
+  ])('rejects an unsafe destination %s:%s', (destHost, destPort) => {
+    expect(() => buildProxyJumpArgs('bastion', destHost, destPort)).toThrow(
+      'Invalid ProxyJump destination'
+    );
+  });
 });
 
 describe('spawnProxyJump', () => {

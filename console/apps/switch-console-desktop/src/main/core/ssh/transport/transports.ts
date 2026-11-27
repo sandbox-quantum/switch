@@ -109,79 +109,93 @@ export function childToDuplex(child: SshChild): Duplex {
   return duplex;
 }
 
-function parseJumpSpec(spec: string): { user?: string; host: string; port?: number } {
-  let rest = spec.trim();
+type JumpHop = { user?: string; host: string; port?: number };
+
+const UNSAFE_HOP_CHARS = /[\s\x00-\x1f\x7f]/;
+const PORT_DIGITS = /^\d+$/;
+
+function parsePort(raw: string, hop: string): number {
+  const port = PORT_DIGITS.test(raw) ? Number(raw) : Number.NaN;
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+    throw new Error(`Invalid ProxyJump port: ${hop}`);
+  }
+  return port;
+}
+
+// Every hop is checked in full, and the hops passed on to `ssh -J` are rebuilt
+// from the checked parts rather than forwarded as written, so nothing the
+// parser skipped over (a trailing `22 -oProxyCommand=…` after a port, say)
+// reaches ssh.
+function parseJumpHop(hop: string): JumpHop {
+  if (!hop || UNSAFE_HOP_CHARS.test(hop) || hop.startsWith('-')) {
+    throw new Error(`Invalid ProxyJump host: ${JSON.stringify(hop)}`);
+  }
+
+  let rest = hop;
   let user: string | undefined;
   const atIndex = rest.lastIndexOf('@');
   if (atIndex !== -1) {
     user = rest.slice(0, atIndex);
     rest = rest.slice(atIndex + 1);
+    if (!user || user.startsWith('-') || !SAFE_USERNAME.test(user)) {
+      throw new Error(`Invalid ProxyJump user: ${hop}`);
+    }
   }
 
+  let host: string;
+  let port: number | undefined;
   if (rest.startsWith('[')) {
     const bracketEnd = rest.indexOf(']');
-    if (bracketEnd !== -1) {
-      const host = rest.slice(0, bracketEnd + 1);
-      const suffix = rest.slice(bracketEnd + 1);
-      if (suffix.startsWith(':')) {
-        const port = Number.parseInt(suffix.slice(1), 10);
-        return Number.isFinite(port) ? { user, host, port } : { user, host };
-      }
-      return { user, host };
+    if (bracketEnd === -1) throw new Error(`Invalid ProxyJump host: ${hop}`);
+    host = rest.slice(0, bracketEnd + 1);
+    const suffix = rest.slice(bracketEnd + 1);
+    if (suffix) {
+      if (!suffix.startsWith(':')) throw new Error(`Invalid ProxyJump host: ${hop}`);
+      port = parsePort(suffix.slice(1), hop);
+    }
+  } else {
+    const colonIndex = rest.indexOf(':');
+    if (colonIndex === -1) {
+      host = rest;
+    } else {
+      host = rest.slice(0, colonIndex);
+      port = parsePort(rest.slice(colonIndex + 1), hop);
+    }
+    if (host.includes('[') || host.includes(']')) {
+      throw new Error(`Invalid ProxyJump host: ${hop}`);
     }
   }
 
-  const colonIndex = rest.lastIndexOf(':');
-  if (colonIndex > 0) {
-    const port = Number.parseInt(rest.slice(colonIndex + 1), 10);
-    if (Number.isFinite(port)) {
-      return { user, host: rest.slice(0, colonIndex), port };
-    }
+  if (!host || host.startsWith('-') || !SAFE_SSH_ALIAS.test(host)) {
+    throw new Error(`Invalid ProxyJump host: ${hop}`);
   }
-
-  return { user, host: rest };
+  return { user, host, port };
 }
 
-function validateJumpHost(
-  jump: { user?: string; host: string; port?: number },
-  rawSpec: string
-): void {
-  if (!jump.host || jump.host.startsWith('-') || !SAFE_SSH_ALIAS.test(jump.host)) {
-    throw new Error(`Invalid ProxyJump host: ${rawSpec}`);
-  }
-  if (
-    jump.user !== undefined &&
-    (!jump.user || jump.user.startsWith('-') || !SAFE_USERNAME.test(jump.user))
-  ) {
-    throw new Error(`Invalid ProxyJump user: ${rawSpec}`);
-  }
-  if (
-    jump.port !== undefined &&
-    (!Number.isInteger(jump.port) || jump.port <= 0 || jump.port > 65_535)
-  ) {
-    throw new Error(`Invalid ProxyJump port: ${rawSpec}`);
-  }
+function formatJumpHop(hop: JumpHop): string {
+  const userPart = hop.user ? `${hop.user}@` : '';
+  const portPart = hop.port !== undefined ? `:${hop.port}` : '';
+  return `${userPart}${hop.host}${portPart}`;
 }
 
 export function buildProxyJumpArgs(jumpSpec: string, destHost: string, destPort: number): string[] {
-  const jumps = jumpSpec
-    .split(',')
-    .map((jump) => jump.trim())
-    .filter(Boolean);
-  if (jumps.length === 0) {
+  if (!jumpSpec.trim()) {
     throw new Error('ProxyJump is empty');
   }
-
-  for (const jump of jumps) {
-    validateJumpHost(parseJumpSpec(jump), jump);
+  const hops = jumpSpec.split(',').map((hop) => parseJumpHop(hop.trim()));
+  if (!destHost || destHost.startsWith('-') || !SAFE_HOSTNAME.test(destHost)) {
+    throw new Error(`Invalid ProxyJump destination host: ${destHost}`);
+  }
+  if (!Number.isInteger(destPort) || destPort <= 0 || destPort > 65_535) {
+    throw new Error(`Invalid ProxyJump destination port: ${destPort}`);
   }
 
-  const precedingJumps = jumps.slice(0, -1);
-  const last = parseJumpSpec(jumps[jumps.length - 1]!);
+  const precedingHops = hops.slice(0, -1);
+  const last = hops[hops.length - 1]!;
   const args = [...DEFAULT_SSH_ARGS];
 
-  if (precedingJumps.length > 0) {
-    args.push('-J', precedingJumps.join(','));
+  if (precedingHops.length > 0) {
+    args.push('-J', precedingHops.map(formatJumpHop).join(','));
   }
   if (last.port !== undefined) {
     args.push('-p', String(last.port));
