@@ -58,6 +58,7 @@ from switch_core.bridges.collaboration.teams.auth import (
     TokenRequestRefused,
     token_endpoint,
 )
+from switch_core.bridges.collaboration.teams.graph import odata_string
 from switch_core.bridges.collaboration.teams.identity import REQUIRED_GRAPH_ROLES
 from switch_core.bridges.collaboration.teams.shared_app import PLATFORM, TeamsSharedApp
 
@@ -314,7 +315,7 @@ class TeamsAppInstaller(MessagingAppInstaller):
             existing = await http.get(
                 f"{_GRAPH}/appCatalogs/teamsApps",
                 params={
-                    "$filter": f"externalId eq '{self._package.manifest_id}'",
+                    "$filter": f"externalId eq {odata_string(self._package.manifest_id)}",
                     "$expand": "appDefinitions($select=id,version,authorization)",
                 },
                 headers=headers,
