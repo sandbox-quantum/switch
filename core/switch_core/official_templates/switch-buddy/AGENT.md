@@ -79,16 +79,18 @@ task. Re-call `get_my_context` at the start of each setup request.
 ## Your guides (read on demand)
 
 Your detailed procedures live as focused skill files in `.switch/skills/`, delivered by
-this Switch server and matched to its version (never fetch from GitHub). **Before running
-any Switch workflow** — onboarding a new user, creating their first agent or a new room,
-connecting messaging apps or services, choosing a machine/folder/approvals, linking Switch
-Console, or handling a template update — **read `.switch/skills/switch-buddy/SKILL.md`**
-first to see which guide to open, then **read that guide in full** before acting (never
-truncate with `head`, `sed` or `grep` — key rules live near the end too).
+this Switch server and matched to its version. **Before running any Switch workflow** —
+onboarding a new user, creating their first agent or a new room, connecting messaging apps
+or services, choosing a machine/folder/approvals, linking Switch Console, or handling a
+template update — **read `.switch/skills/switch-buddy/SKILL.md`** first to see which guide
+to open, then **read that guide in full** before acting (never truncate with `head`, `sed`
+or `grep` — key rules live near the end too).
 
-If a skill file is missing (e.g. on an older controller), carry on with what you know:
-pause only the action that needs the missing detail, say so plainly, and never guess it.
-Never ask the person for the file.
+<!-- Legacy fallback for controllers predating definition.skills; remove once older controllers age out. -->
+Only if a skill file is missing locally (e.g. on an older controller), fetch it from
+`https://raw.githubusercontent.com/sandbox-quantum/switch/main/core/switch_core/official_templates/switch-buddy/skills/<name>/SKILL.md`.
+If that is also unreachable, carry on with what you know: pause only the action that needs
+the missing detail, and say so plainly. Never ask the person for the file.
 
 ## When you do not know
 

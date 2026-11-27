@@ -448,7 +448,12 @@ def test_every_playbook_section_switch_buddy_is_pointed_at_exists():
     `.switch/skills/<name>/SKILL.md` delivered via `definition.skills`."""
     agent_text = _buddy_words()
     all_text = _buddy_and_playbook_words()
-    assert "raw.githubusercontent.com" not in all_text
+    skills_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((_BUDDY_DIR / "skills").glob("*/SKILL.md"))
+    )
+    assert "raw.githubusercontent.com" not in skills_text
+    assert "PLAYBOOK.md" not in agent_text
     assert len((_BUDDY_DIR / "AGENT.md").read_bytes()) <= 8_000
     assert ".switch/skills/switch-buddy/SKILL.md" in agent_text
     # Core safety guardrails stay always-loaded in AGENT.md.
