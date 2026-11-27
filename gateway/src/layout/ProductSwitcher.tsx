@@ -95,6 +95,12 @@ export default function ProductSwitcher() {
           cursor: "pointer",
           "&:hover": { backgroundColor: "var(--sw-card)" },
           "&:focus-visible": { outline: "2px solid var(--sw-ring)", outlineOffset: 2 },
+          // The dark card barely lifts off the dark canvas, so the badge takes
+          // the rail's hover tint there, a step brighter on hover.
+          '[data-mui-color-scheme="dark"] &': {
+            backgroundColor: "color-mix(in srgb, var(--sw-foreground) 10%, transparent)",
+            "&:hover": { backgroundColor: "color-mix(in srgb, var(--sw-foreground) 15%, transparent)" },
+          },
         }}
       >
         <Mark src="/switch_badge_mark.svg" width={18} height={18} />
