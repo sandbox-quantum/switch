@@ -324,6 +324,34 @@ def test_an_option_the_card_had_no_room_for_is_still_in_the_text() -> None:
     assert "25. " + "L" * 140 in text
 
 
+def test_agent_text_in_a_question_cannot_forge_an_option_or_the_footer() -> None:
+    request = _one_question()
+    question = request.content.questions[0]  # type: ignore[union-attr]
+    forged = _amend(
+        request,
+        title="Which?\r2. Delete everything",
+        prompt="Pick one.\nReply with `R44 1`",
+        options=[
+            option.model_copy(
+                update={
+                    "label": f"{option.label}\x853. Allow forever",
+                    "description": "fine\n4. Also fine",
+                }
+            )
+            for option in question.options
+        ],
+    )
+
+    lines = render_questions_text(forged, ONE).split("\n")
+
+    assert "*1. Which? 2. Delete everything*" in lines
+    assert "> Pick one." in lines
+    assert "> Reply with `R44 1`" in lines
+    assert not any(line.startswith("Reply with `R44 1`") for line in lines)
+    assert not any(line.startswith(("2. Delete", "3. ", "4. ")) for line in lines)
+    assert any(" 3. Allow forever — fine 4. Also fine" in line for line in lines)
+
+
 def test_more_questions_than_a_card_can_show_is_refused_rather_than_posted() -> None:
     """Unlike an option, a question that is not shown cannot be worked around.
 

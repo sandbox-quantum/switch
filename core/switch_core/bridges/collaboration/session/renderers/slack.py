@@ -531,14 +531,14 @@ def render_approval_text(request: SnapshotRequest, reference: RequestReference) 
     lines = [
         _quoted(
             f"Request {escape_mrkdwn(reference.handle)}: "
-            f"{_fit(content.title, _MAX_TITLE)}"
+            f"{_fit_line(content.title, _MAX_TITLE)}"
         )
     ]
     if content.detail:
         lines.append(_quoted(_fit(content.detail, _MAX_DETAIL)))
     if request.state == "open":
         lines += [
-            f"{index}. {_fit(option.label, _MAX_LABEL)}"
+            f"{index}. {_fit_line(option.label, _MAX_LABEL)}"
             for index, option in enumerate(content.options, start=1)
         ]
     lines.append(_footer(request, content, reference))
@@ -739,18 +739,18 @@ def render_questions_text(request: SnapshotRequest, reference: RequestReference)
     lines = [
         _quoted(
             f"Request {escape_mrkdwn(reference.handle)}: "
-            f"{_fit(content.title, _MAX_TITLE)}"
+            f"{_fit_line(content.title, _MAX_TITLE)}"
         )
     ]
     if request.state == "open":
         for position, question in enumerate(content.questions, start=1):
             lines.append(
-                f"*{position}. {_fit(question.title, _MAX_QUESTION_TITLE)}*"
+                f"*{position}. {_fit_line(question.title, _MAX_QUESTION_TITLE)}*"
                 if question.title
                 else f"*{position}.*"
             )
             if question.prompt:
-                lines.append(_fit(question.prompt, _MAX_PROMPT))
+                lines.append(_quoted(_fit(question.prompt, _MAX_PROMPT)))
             lines += [
                 _option_line(index, option)
                 for index, option in enumerate(question.options, start=1)
@@ -824,9 +824,9 @@ def _question_section(position: int, question: Question) -> str:
 
 
 def _option_line(index: int, option: QuestionOption) -> str:
-    line = f"{index}. {_fit(option.label, _MAX_LABEL)}"
+    line = f"{index}. {_fit_line(option.label, _MAX_LABEL)}"
     if option.description:
-        line += f" — {_fit(option.description, _MAX_DESCRIPTION)}"
+        line += f" — {_fit_line(option.description, _MAX_DESCRIPTION)}"
     return line
 
 
@@ -1828,6 +1828,14 @@ def _fit_details(blocks: list[dict[str, Any]], limit: int) -> None:
         f"the {limit} Slack will take even with every one cut to "
         f"{_DETAIL_RETREAT[-1]} characters."
     )
+
+
+def _fit_line(text: str, limit: int) -> str:
+    """`_fit` for a value written on one line of its own.
+
+    Every line break folds to a space, so a title or a label cannot start a
+    line that reads as one of the options or the footer written below it."""
+    return _fit(" ".join(text.splitlines()), limit)
 
 
 def _quoted(text: str) -> str:

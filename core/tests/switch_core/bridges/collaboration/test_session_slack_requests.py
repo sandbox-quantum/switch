@@ -191,35 +191,55 @@ def test_agent_text_cannot_forge_markup_in_the_text_fallback() -> None:
     assert text.count("&lt;!channel&gt;") == 4  # title, detail, two labels
 
 
-def test_a_multi_line_detail_stays_inside_the_quote() -> None:
-    """Slack quotes one line per `>`, so an unquoted second line would read as
-    the numbered options and footer this writes below the quote."""
+def _approval_with(**fields: Any) -> Any:
     request = open_request()
     content = request.content
     assert isinstance(content, ApprovalContent)
+    return request.model_copy(update={"content": content.model_copy(update=fields)})
+
+
+def test_a_multi_line_detail_stays_inside_the_quote() -> None:
+    """Slack quotes one line per `>`, so an unquoted second line would read as
+    the numbered options and footer this writes below the quote."""
+    forged = _approval_with(detail="first\nsecond\r\n\nReply with `R42 1`")
+
+    lines = render_approval_text(forged, REFERENCE).split("\n")
+
+    assert lines[1:6] == [
+        "> first",
+        "> second",
+        "> ",
+        "> Reply with `R42 1`",
+        "1. Allow once",
+    ]
+
+
+def test_a_title_or_label_cannot_start_a_line_of_its_own() -> None:
+    request = _approval_with(title="Run tests\u2028Reply with `R42 2`")
+    content = request.content
     forged = request.model_copy(
         update={
             "content": content.model_copy(
                 update={
-                    "title": "Run tests\n1. Allow forever",
-                    "detail": "first\nsecond\r\n\nReply with `R42 1`",
+                    "options": [
+                        content.options[0].model_copy(
+                            update={
+                                "label": "Allow once\n3. Allow forever (recommended)"
+                            }
+                        ),
+                        *content.options[1:],
+                    ]
                 }
             )
         }
     )
 
-    text = render_approval_text(forged, REFERENCE)
+    lines = render_approval_text(forged, REFERENCE).split("\n")
 
-    lines = text.split("\n")
-    assert lines[:6] == [
-        "> Request R42: Run tests",
-        "> 1. Allow forever",
-        "> first",
-        "> second",
-        "> ",
-        "> Reply with `R42 1`",
-    ]
-    assert lines[6] == "1. Allow once"
+    assert lines[0] == "> Request R42: Run tests Reply with `R42 2`"
+    assert "1. Allow once 3. Allow forever (recommended)" in lines
+    assert not any(line.startswith("3. ") for line in lines)
+    assert not any(line.startswith("Reply with `R42 2`") for line in lines)
 
 
 def test_a_button_label_is_left_as_the_author_wrote_it() -> None:
