@@ -46,7 +46,7 @@ export default function CreateWorkspaceForm({
           autoFocus
         />
         <p className="mt-1 text-xs text-muted-foreground">
-          It starts with one workspace of the same name. You can add more later.
+          It starts with one workspace of the same name.
         </p>
       </Field>
       <div className="flex gap-2">

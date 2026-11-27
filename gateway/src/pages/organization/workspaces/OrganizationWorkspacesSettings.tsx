@@ -1,5 +1,4 @@
-import Add from "@mui/icons-material/Add";
-import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
 import InfoTip from "../../../components/InfoTip";
 import PageHeader from "../../../components/PageHeader";
@@ -7,7 +6,6 @@ import SuccessSnackbar from "../../../components/SuccessSnackbar";
 import { useAuth } from "../../../data/AuthContext";
 import { fetchCurrentOrganization, fetchOrganizationWorkspaces } from "../../../data/api";
 import { useLoad } from "../../workspace/useLoad";
-import CreateWorkspaceDialog from "./CreateWorkspaceDialog";
 import WorkspacesTable from "./WorkspacesTable";
 
 /** Organization settings › Workspaces: every workspace in
@@ -20,11 +18,9 @@ export default function OrganizationWorkspacesSettings() {
   const organization = useLoad(loadOrganization);
   const loadWorkspaces = useCallback(() => fetchOrganizationWorkspaces(), []);
   const workspaces = useLoad(loadWorkspaces);
-  const [createOpen, setCreateOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // The session too: the switcher lists the workspaces by name, and whether
-  // another may be created follows the allowance a new one uses up.
+  // The session too: the switcher lists the workspaces by name.
   const refetchWorkspaces = workspaces.refetch;
   const onChanged = useCallback(async () => {
     await Promise.all([refetchWorkspaces(), recheck()]);
@@ -51,13 +47,6 @@ export default function OrganizationWorkspacesSettings() {
             </InfoTip>
           </Stack>
         }
-        actions={
-          session.can_add_workspace && (
-            <Button variant="contained" startIcon={<Add />} onClick={() => setCreateOpen(true)}>
-              Create workspace
-            </Button>
-          )
-        }
       />
       {error !== null ? (
         <Alert severity="error">{error}</Alert>
@@ -71,19 +60,6 @@ export default function OrganizationWorkspacesSettings() {
           workspaces={workspaces.data!}
           onChanged={onChanged}
           onNotice={setNotice}
-        />
-      )}
-      {organization.data && (
-        <CreateWorkspaceDialog
-          open={createOpen}
-          organizationName={organization.data.name}
-          existingNames={(workspaces.data ?? []).map((workspace) => workspace.name)}
-          onClose={() => setCreateOpen(false)}
-          onCreated={(name) => {
-            setCreateOpen(false);
-            setNotice(`Created ${name}.`);
-            void onChanged();
-          }}
         />
       )}
       <SuccessSnackbar message={notice} onClose={() => setNotice(null)} />

@@ -27,6 +27,9 @@ import AuthLayout, {
   TEXT_LINK,
 } from "./AuthLayout";
 
+export const PRODUCT_NAME = "Switch Rooms";
+export const PRIVACY_POLICY_URL = "https://www.sandboxaq.com/privacy-policy";
+
 /** What a new person's workspace is called until they name it. */
 export function suggestedWorkspaceName(name: string): string {
   const first = name.trim().split(/\s+/)[0];
@@ -74,8 +77,9 @@ export default function LoginPage() {
     authConfig?.oidc_provider_label ?? null,
   );
   const canSignUp = passwordLoginEnabled && authConfig?.web_signup_enabled === true;
-  // Under open sign-up a new account joins no workspace, so it names its own.
-  const ownWorkspace = canSignUp && authConfig?.signup_mode === "open";
+  // Under open sign-up a new account joins no workspace, so it names its own,
+  // unless it came to accept an invitation.
+  const ownWorkspace = canSignUp && authConfig?.signup_mode === "open" && readPendingInvite() === null;
   const oidcOpensAccounts = oidcEnabled && authConfig?.signup_mode === "open";
   const name = `${firstName.trim()} ${lastName.trim()}`.trim();
   const workspaceName = workspace ?? suggestedWorkspaceName(name);
@@ -165,17 +169,22 @@ export default function LoginPage() {
 
   return (
     <AuthLayout
-      heading={creating ? "Sign up for Switch" : "Sign in to Switch"}
+      heading={creating ? `Sign up for ${PRODUCT_NAME}` : `Sign in to ${PRODUCT_NAME}`}
       subheading={subheading}
       footer={
-        creating && (
-          <>
-            By creating an account, you agree to the{" "}
-            <button type="button" className="cursor-pointer underline underline-offset-2" onClick={() => setReadingLicense(true)}>
-              license
-            </button>
-          </>
-        )
+        <div className="flex flex-col items-center gap-2">
+          {creating && (
+            <span>
+              By creating an account, you agree to the{" "}
+              <button type="button" className="cursor-pointer underline underline-offset-2" onClick={() => setReadingLicense(true)}>
+                license
+              </button>
+            </span>
+          )}
+          <a href={PRIVACY_POLICY_URL} target="_blank" rel="noreferrer" className="underline underline-offset-2">
+            Privacy Policy
+          </a>
+        </div>
       }
     >
       {creating && ownWorkspace && <SignUpSteps active={step === "workspace" ? 1 : 0} />}

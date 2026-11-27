@@ -2310,11 +2310,6 @@ export async function inviteToOrganizationWorkspace(
   return jsonRequest(organizationWorkspacePath(workspaceId, "/invitations"), "POST", input);
 }
 
-/** Add a workspace to the current organization. The session stays where it is. */
-export async function createOrganizationWorkspace(name: string): Promise<TenantMembership> {
-  return jsonRequest<TenantMembership>("/organizations/current/workspaces", "POST", { name });
-}
-
 /** What an organization set for a service across its workspaces: on or off,
  * and whether workspace admins may change it. */
 export interface OrganizationServiceSetting {

@@ -182,7 +182,7 @@ describe("AppRoutes", () => {
   it("sends a signed-out visitor to sign in", async () => {
     mockFetch({ "/auth/session": [401, { detail: "Not authenticated" }], "/auth/config": [200, authConfig] });
     renderAt("/agents");
-    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch Rooms" })).toBeTruthy();
     expect(
       await screen.findByText(
         "New to Switch? Signing in creates your account, and you can create a workspace or join one.",
@@ -241,7 +241,7 @@ describe("AppRoutes", () => {
     });
     renderAt("/");
     fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
-    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch Rooms" })).toBeTruthy();
     expect(window.sessionStorage.getItem("switch.pendingInvite")).toBeNull();
   });
 
@@ -255,7 +255,7 @@ describe("AppRoutes", () => {
     renderAt("/");
     fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
     expect(await screen.findByText("Couldn't sign out: Bad Gateway")).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Sign in to Switch" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Sign in to Switch Rooms" })).toBeNull();
     // Still signed in, so still on the way to the invitation.
     expect(window.sessionStorage.getItem("switch.pendingInvite")).toBe("abc");
   });
@@ -266,7 +266,7 @@ describe("AppRoutes", () => {
     expect(
       await screen.findByText(/Could not load your session: database unavailable/),
     ).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Sign in to Switch" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Sign in to Switch Rooms" })).toBeNull();
   });
 
   it("says so when the deployment's flags cannot be read, rather than hiding pages", async () => {
@@ -1029,7 +1029,7 @@ describe("the layout", () => {
       expect(account.getAttribute("href")).toBe("/settings/account");
       expect(screen.queryByText("Switch to Beta Co")).toBeNull();
       expect(screen.queryByRole("menuitem", { name: "Change password" })).toBeNull();
-      expect(screen.getByRole("menuitem", { name: "Create organization" })).toBeTruthy();
+      expect(screen.queryByRole("menuitem", { name: "Create organization" })).toBeNull();
       expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeTruthy();
     });
   });
@@ -1570,7 +1570,7 @@ describe("a link naming a workspace", () => {
       "/auth/login": [200, { id: "u1", name: "Ada", email: "ada@example.com" }],
     });
     renderAt("/rooms/r1?tab=documents&workspace=t2");
-    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch Rooms" })).toBeTruthy();
     expect(switchedTo("t2")).toBe(false);
 
     fireEvent.change(await screen.findByLabelText(/^Email/), {

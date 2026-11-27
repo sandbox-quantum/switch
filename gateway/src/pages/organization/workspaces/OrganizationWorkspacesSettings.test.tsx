@@ -376,41 +376,16 @@ describe("OrganizationWorkspacesSettings", () => {
     expect(within(dialog).queryByText(/Nobody is in Second/)).toBeNull();
   });
 
-  it("refuses a duplicate workspace name before asking, and sends the trimmed name otherwise", async () => {
-    const calls = answerFetch({
-      "GET /organizations/current": [200, org({ name: "Acme Org" })],
-      "GET /organizations/current/workspaces": [
-        [200, [workspace({ id: "w1", name: "Acme" })]],
-        [200, [workspace({ id: "w1", name: "Acme" }), workspace({ id: "w4", name: "Quantum Chemistry" })]],
-      ],
-      "POST /organizations/current/workspaces": [200, { id: "w4", name: "Quantum Chemistry" }],
+  it("offers no way to add a workspace, even to an organization admin who could", async () => {
+    answerFetch({
+      "GET /organizations/current": [200, org()],
+      "GET /organizations/current/workspaces": [200, [workspace({ id: "w1", name: "Acme" })]],
     });
 
     render(<OrganizationWorkspacesSettings />);
-    await screen.findByText("Acme");
 
-    fireEvent.click(screen.getByRole("button", { name: "Create workspace" }));
-    const dialog = screen.getByRole("dialog");
-    const field = within(dialog).getByLabelText("Workspace name") as HTMLInputElement;
-
-    fireEvent.change(field, { target: { value: "acme" } });
-    expect(
-      within(dialog).getByText("Acme Org already has a workspace called “Acme”."),
-    ).toBeTruthy();
-    const createButton = within(dialog).getByRole("button", { name: "Create workspace" }) as HTMLButtonElement;
-    expect(createButton.disabled).toBe(true);
-    expect(calls.some((c) => c.method === "POST")).toBe(false);
-
-    fireEvent.change(field, { target: { value: "  Quantum Chemistry  " } });
-    expect(createButton.disabled).toBe(false);
-    fireEvent.click(createButton);
-
-    await waitFor(() => expect(calls.some((c) => c.method === "POST")).toBe(true));
-    const post = calls.find((c) => c.method === "POST");
-    expect(post?.body).toEqual({ name: "Quantum Chemistry" });
-    expect(await screen.findByText("Created Quantum Chemistry.")).toBeTruthy();
-    // The session too: the switcher lists it, and the allowance may be used up.
-    await waitFor(() => expect(auth.recheck).toHaveBeenCalled());
+    expect(await screen.findByText("Acme")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Create workspace" })).toBeNull();
   });
 
   it("refuses renaming to another workspace's name before asking, but not to its own", async () => {
@@ -451,7 +426,6 @@ describe("OrganizationWorkspacesSettings", () => {
 
     expect(await screen.findByText("Acme")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Actions for/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Create workspace" })).toBeNull();
   });
 
   it("shows a load failure rather than an empty table", async () => {
