@@ -674,7 +674,7 @@ it('validates attachmentCancel transferId and rejects path traversal', async () 
   expect(controlMessageSchema.safeParse({ attachmentCancel: '' }).success).toBe(false);
   expect(controlMessageSchema.safeParse({ attachmentCancel: 'bad/slash' }).success).toBe(false);
 
-  const { base, stop, serving, control } = await started();
+  const { stop, serving, control } = await started();
   const socket = connect(control.port, '127.0.0.1');
   const replies: unknown[] = [];
   let buffered = '';
