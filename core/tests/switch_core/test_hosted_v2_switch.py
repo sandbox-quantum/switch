@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from switch_core import hosted_v2
+from switch_core.gateway.hosted_network import router as hosted_network_router
 from switch_core.gateway.hosted_provisioner import router as hosted_provisioner_router
 from switch_core.hosted_v2 import (
     hosted_v2_on,
@@ -43,6 +44,7 @@ V2_ONLY_ROUTERS = (
     hosted_access_router,
     operator_action_router,
     hosted_provisioner_router,
+    hosted_network_router,
     operator_router,
 )
 

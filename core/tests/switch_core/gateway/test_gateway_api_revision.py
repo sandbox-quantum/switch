@@ -35,12 +35,14 @@ from switch_core.artifacts import contract_range
 RECORD = Path(__file__).with_name("gateway_api_strict_bodies.json")
 UPDATE_ENV = "UPDATE_GATEWAY_API_BODIES"
 
-# Served to the hosted controller, the box provisioner and agent controllers,
-# none of which is a first-party UI client or a party to `gateway-api`. The
-# agent controllers' routes are versioned by the controller protocol instead.
+# Served to the hosted controller, the box provisioner, the box cluster's
+# network reporter and agent controllers, none of which is a first-party UI
+# client or a party to `gateway-api`. The agent controllers' routes are
+# versioned by the controller protocol instead.
 NOT_GATEWAY_API = frozenset(
     {
         "switch_core.gateway.hosted_controller",
+        "switch_core.gateway.hosted_network",
         "switch_core.gateway.hosted_provisioner",
         "switch_core.management.controller_routes",
     }

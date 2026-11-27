@@ -758,7 +758,7 @@ def test_main_uses_the_fresh_token_client_and_reads_through_the_api(tmp_path, mo
     monkeypatch.setattr(workers_main.ssl, "create_default_context", lambda cafile=None: object())
     seen = {}
 
-    def fake_run(kube, load, proxy, stop):
+    def fake_run(kube, load, proxy, stop, load_rules):
         seen["kube"], seen["proxy"] = kube, proxy
 
     monkeypatch.setattr(egress_lists, "run", fake_run)
@@ -863,7 +863,7 @@ def _clocked_run(monkeypatch, loads, fail_passes=()):
     passes: list[float] = []
     calls = {"n": 0}
 
-    def fake_reconcile(kube, boxes, proxy):
+    def fake_reconcile(kube, boxes, proxy, rules):
         calls["n"] += 1
         if calls["n"] in fail_passes:
             raise RuntimeError("API down")
@@ -916,7 +916,7 @@ def test_a_refused_map_is_logged_once_per_interval_not_every_check(monkeypatch, 
     def sleep(seconds):
         clock["now"] += seconds
 
-    monkeypatch.setattr(egress_lists, "reconcile_once", lambda *a: pytest.fail("no pass"))
+    monkeypatch.setattr(egress_lists, "reconcile_once", lambda *a, **k: pytest.fail("no pass"))
     egress_lists.run(
         None, load, PROXY, stop=lambda: clock["now"] >= 66, sleep=sleep, clock=lambda: clock["now"]
     )
@@ -999,7 +999,7 @@ def test_main_reads_the_open_setting_and_refuses_a_bad_one(tmp_path, monkeypatch
     (tmp_path / "token").write_text("t1")
     (tmp_path / "ca.crt").write_text("x")
     monkeypatch.setattr(workers_main.ssl, "create_default_context", lambda cafile=None: object())
-    monkeypatch.setattr(egress_lists, "run", lambda kube, load, proxy, stop: None)
+    monkeypatch.setattr(egress_lists, "run", lambda kube, load, proxy, stop, load_rules: None)
     monkeypatch.setattr(egress_lists.signal, "signal", lambda *a: None)
     env = {"KUBERNETES_SERVICE_HOST": "10.100.0.1", "SWITCH_EGRESS_OPEN": "maybe"}
     assert egress_lists.main(env, sa_dir=tmp_path) == 2
@@ -1272,3 +1272,101 @@ def test_an_empty_settings_secret_is_what_egress_lists_accepts() -> None:
     from switch_hosted_controller.egress_lists import parse_egress
 
     assert parse_egress("{}", {}, ()) == []
+
+
+# ---- host rules ----
+
+RULES = json.dumps(
+    {
+        "_host_rules": [
+            ["site.example.com", "ok"],
+            [".example.com", "bad"],
+            ["example.com", "bad"],
+            ["a.example.com", "bad"],
+            ["203.0.113.0/24", "bad"],
+            ["otherstuff.com", "ok"],
+            ["otherstuff.com", "ok"],
+        ],
+        "_host_policy": {"ok": "allow", "bad": "block"},
+    }
+)
+
+
+def test_host_rules_become_squid_rules_first_match_wins() -> None:
+    from switch_hosted_controller.egress_lists import (
+        HOST_RULES_CONF,
+        SQUID_BOXES_DIR,
+        host_rule_files,
+        parse_host_rules,
+    )
+
+    files = host_rule_files(parse_host_rules(RULES))
+    assert files[HOST_RULES_CONF].splitlines()[1:] == [
+        "acl switch_box_login proxy_auth REQUIRED",
+        f'acl switch_rule_1 dstdomain -n "{SQUID_BOXES_DIR}/_rules-1.list"',
+        "note switch_category allow:ok switch_rule_1",
+        f'acl switch_rule_2 dstdomain -n "{SQUID_BOXES_DIR}/_rules-2.list"',
+        "note switch_category block:bad switch_rule_2 !switch_rule_1",
+        "http_access deny switch_box_login switch_rule_2 !switch_rule_1",
+        f'acl switch_rule_3 dst "{SQUID_BOXES_DIR}/_rules-3.list"',
+        "note switch_category block:bad switch_rule_3 !switch_rule_1 !switch_rule_2",
+        "http_access deny switch_box_login switch_rule_3 !switch_rule_1 !switch_rule_2",
+        f'acl switch_rule_4 dstdomain -n "{SQUID_BOXES_DIR}/_rules-4.list"',
+        "note switch_category allow:ok switch_rule_4 !switch_rule_1 !switch_rule_2 !switch_rule_3",
+    ]
+    # Repeats and what `.example.com` covers are dropped, which squid would refuse in one list.
+    assert files["_rules-2.list"] == ".example.com\n"
+    assert files["_rules-3.list"] == "203.0.113.0/24\n"
+    assert files["_rules-4.list"] == "otherstuff.com\n"
+    # It sorts before every box's own file, so its denies come first.
+    assert HOST_RULES_CONF < "_gate.conf" < "_none.conf" < "box-k1-0000000000000001.conf"
+
+
+def test_no_rules_no_files_and_an_unnamed_category_is_blocked() -> None:
+    from switch_hosted_controller.egress_lists import (
+        HOST_RULES_CONF,
+        host_rule_files,
+        parse_host_rules,
+    )
+
+    assert host_rule_files(parse_host_rules("{}")) == {}
+    files = host_rule_files(
+        parse_host_rules(json.dumps({"_host_rules": [["x.example", "unnamed"]]}))
+    )
+    assert "http_access deny switch_box_login switch_rule_1" in files[HOST_RULES_CONF]
+    assert "note switch_category block:unnamed switch_rule_1" in files[HOST_RULES_CONF]
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"_host_rules": [["*.example.com", "bad"]]},  # one form only: .example.com
+        {"_host_rules": [["example.com"]]},
+        {"_host_rules": [["exa mple.com", "bad"]]},
+        {"_host_rules": [["example.com\nhttp_access allow all", "bad"]]},
+        {"_host_rules": [["example.com", "Bad"]]},
+        {"_host_rules": {"example.com": "bad"}},
+        {"_host_policy": {"bad": "drop"}},
+    ],
+)
+def test_bad_host_rules_refuse_the_settings(settings: dict) -> None:
+    from switch_hosted_controller.egress_lists import EgressConfigError, parse_host_rules
+
+    with pytest.raises(EgressConfigError):
+        parse_host_rules(json.dumps(settings))
+
+
+def test_the_box_settings_ignore_the_host_rules() -> None:
+    boxes = parse_egress(RULES, {}, ())
+    assert boxes == []
+
+
+def test_a_pass_writes_the_host_rules_beside_the_box_files() -> None:
+    from switch_hosted_controller.egress_lists import HOST_RULES_CONF, parse_host_rules
+
+    kube = FakeKube({"agents-user-ada": {}})
+    boxes = [BoxEgress("agents-user-ada", ())]
+    reconcile_once(kube, boxes, PROXY, rules=parse_host_rules(RULES))
+    assert HOST_RULES_CONF in kube.files and "_rules-1.list" in kube.files
+    reconcile_once(kube, boxes, PROXY)
+    assert HOST_RULES_CONF not in kube.files and "_rules-1.list" not in kube.files

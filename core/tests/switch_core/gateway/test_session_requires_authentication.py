@@ -203,6 +203,9 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("POST", "/hosted-provisioner/removals/{machine_id}/gone"),
     ("GET", "/hosted-provisioner/removals/{machine_id}"),
     ("POST", "/hosted-provisioner/removals/listed"),
+    # The box cluster's egress reporter, on its own bearer (`network_session`):
+    # per-box connection counts, logged and never stored.
+    ("POST", "/hosted-network/report"),
 }
 
 

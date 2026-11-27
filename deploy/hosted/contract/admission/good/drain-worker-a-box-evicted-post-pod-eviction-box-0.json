@@ -182,32 +182,6 @@
             {
               "ports": [
                 {
-                  "port": 53,
-                  "protocol": "UDP"
-                },
-                {
-                  "port": 53,
-                  "protocol": "TCP"
-                }
-              ],
-              "to": [
-                {
-                  "namespaceSelector": {
-                    "matchLabels": {
-                      "kubernetes.io/metadata.name": "kube-system"
-                    }
-                  },
-                  "podSelector": {
-                    "matchLabels": {
-                      "k8s-app": "kube-dns"
-                    }
-                  }
-                }
-              ]
-            },
-            {
-              "ports": [
-                {
                   "port": 443,
                   "protocol": "TCP"
                 }
@@ -338,8 +312,8 @@
       "object": {
         "apiVersion": "v1",
         "data": {
-          "ctl_https_proxy": "aHR0cDovL2JveC1ib3gtazEtMDAwMDAwMDAwMDAwMDAyMS1jdGw6Y29udHJhY3QtcGFzc3dvcmRAc3F1aWQuZWdyZXNzLXByb3h5LnN2YzozMTI4",
-          "https_proxy": "aHR0cDovL2JveC1ib3gtazEtMDAwMDAwMDAwMDAwMDAyMTpjb250cmFjdC1wYXNzd29yZEBzcXVpZC5lZ3Jlc3MtcHJveHkuc3ZjOjMxMjg="
+          "ctl_https_proxy": "aHR0cDovL2JveC1ib3gtazEtMDAwMDAwMDAwMDAwMDAyMS1jdGw6Y29udHJhY3QtcGFzc3dvcmRAMjAzLjAuMTEzLjUzOjMxMjg=",
+          "https_proxy": "aHR0cDovL2JveC1ib3gtazEtMDAwMDAwMDAwMDAwMDAyMTpjb250cmFjdC1wYXNzd29yZEAyMDMuMC4xMTMuNTM6MzEyOA=="
         },
         "kind": "Secret",
         "metadata": {
@@ -567,19 +541,19 @@
                     },
                     {
                       "name": "HTTPS_PROXY",
-                      "value": "http://squid.egress-proxy.svc:3128"
+                      "value": "http://203.0.113.53:3128"
                     },
                     {
                       "name": "https_proxy",
-                      "value": "http://squid.egress-proxy.svc:3128"
+                      "value": "http://203.0.113.53:3128"
                     },
                     {
                       "name": "HTTP_PROXY",
-                      "value": "http://squid.egress-proxy.svc:3128"
+                      "value": "http://203.0.113.53:3128"
                     },
                     {
                       "name": "http_proxy",
-                      "value": "http://squid.egress-proxy.svc:3128"
+                      "value": "http://203.0.113.53:3128"
                     },
                     {
                       "name": "NO_PROXY",

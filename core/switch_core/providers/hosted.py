@@ -83,6 +83,10 @@ class HostedControllerSettings(BaseModel):
     # (`/hosted-provisioner/removals/{id}` and `…/removals/listed`). Unset,
     # those routes refuse every call.
     remover_token: SecretStr | None = Field(default=None, min_length=32)
+    # The network reporter beside the box cluster's squid (hosted agents v2):
+    # its own bearer, accepted only on `/hosted-network/report`. Unset, that
+    # route refuses every call.
+    network_report_token: SecretStr | None = Field(default=None, min_length=32)
     # The move-over from the controller bearer: until this time (UTC) the two
     # operator routes also take the controller's `token`. Only with
     # `operator_token` set.
@@ -127,6 +131,7 @@ class HostedControllerSettings(BaseModel):
                 ("operator_token_previous", self.operator_token_previous),
                 ("reaper_token", self.reaper_token),
                 ("remover_token", self.remover_token),
+                ("network_report_token", self.network_report_token),
             )
             if value is not None
         ]
@@ -320,6 +325,7 @@ def load_hosted_settings(
             "operator_token_previous",
             "reaper_token",
             "remover_token",
+            "network_report_token",
         )
         if getattr(settings, name) is not None
     ]

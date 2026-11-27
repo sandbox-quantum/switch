@@ -418,6 +418,10 @@ _RAW_SESSION_FACTORY_MODULES = {
     # with no tenant and no policy. Each workspace a box serves is read on a
     # session with that workspace bound (`tenant_scope`).
     "switch_core.gateway.hosted_controller",
+    # The box cluster's network reporter: its credential's session is opened
+    # under `no_tenant()` and only reads `cloud_machines` (box to machine and
+    # owner), a table with no tenant and no policy. Its events are log-only.
+    "switch_core.gateway.hosted_network",
     # Core's own hosted sweep loop: each pass opens one session under
     # `no_tenant()` and does nothing but call `sweep_hosted_machines`, the
     # sweep the operator controller's poll runs, which touches only

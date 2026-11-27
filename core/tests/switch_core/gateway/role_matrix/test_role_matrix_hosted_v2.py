@@ -89,6 +89,8 @@ PROVISIONER_TOKEN = "p" * 40
 OPERATOR_TOKEN = "o" * 40
 # The warm pool's reaper (`hosted_provisioner.reaper_session`).
 REAPER_TOKEN = "r" * 40
+# The box cluster's egress reporter (`hosted_egress.network_session`).
+NETWORK_REPORT_TOKEN = "e" * 40
 G = "/gateway"
 MACHINE_ROUTES: dict[str, tuple[str, str, object, dict[str, str], str]] = {
     "GET /gateway/hosted-controller/actions": (
@@ -154,6 +156,13 @@ MACHINE_ROUTES: dict[str, tuple[str, str, object, dict[str, str], str]] = {
         {},
         REAPER_TOKEN,
     ),
+    "POST /gateway/hosted-network/report": (
+        "POST",
+        f"{G}/hosted-network/report",
+        {"window_seconds": 60, "boxes": []},
+        {},
+        NETWORK_REPORT_TOKEN,
+    ),
     "GET /gateway/hosted-controller/pool": (
         "GET",
         f"{G}/hosted-controller/pool",
@@ -197,6 +206,7 @@ async def _v2_gateway(
         provisioner_token=PROVISIONER_TOKEN,
         operator_token=OPERATOR_TOKEN,
         reaper_token=REAPER_TOKEN,
+        network_report_token=NETWORK_REPORT_TOKEN,
         agent_api_endpoint="https://switch.example.com/api/agent",
     )
     people = await seed_people(session_factory)

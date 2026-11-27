@@ -725,7 +725,8 @@ def test_the_operator_builds_exactly_the_ticked_template():
     template v2.3 (93c93f78…) rendered with `kubectl create --dry-run=client -o json` and the fixed
     render values (fixture sha256 7293ce26…), with the same
     two placeholders as before swapped in: the AWS account id for 123456789012 and the server address for
-    10.0.0.10. Every one of the 14 objects must be equal, field for field."""
+    10.0.0.10, and the DNS rule taken out of agent-egress (boxes have no DNS). Every one of the 14 objects must be
+    equal, field for field."""
 
     rendered = json.loads(
         (Path(__file__).parent / "fixtures" / "box-template-split-v2.3-render.json").read_text()
