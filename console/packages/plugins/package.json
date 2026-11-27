@@ -18,6 +18,14 @@
     "./switch-skill": {
       "types": "./dist/switch-skill.d.mts",
       "default": "./dist/switch-skill.mjs"
+    },
+    "./provider-login": {
+      "types": "./dist/provider-login.d.mts",
+      "default": "./dist/provider-login.mjs"
+    },
+    "./browser-sign-in": {
+      "types": "./dist/browser-sign-in.d.mts",
+      "default": "./dist/browser-sign-in.mjs"
     }
   },
   "scripts": {
