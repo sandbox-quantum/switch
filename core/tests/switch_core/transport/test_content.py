@@ -54,3 +54,26 @@ def test_an_edited_body_is_escaped_too() -> None:
     edited = edited_content(content, "<b>now</b>", edited_at_ms=1)
 
     assert edited["formatted_body"] == "<p>&lt;b&gt;now&lt;/b&gt;</p>"
+
+
+def test_only_web_mail_and_matrix_links_keep_their_target() -> None:
+    formatted = _formatted(
+        "[a](javascript:alert(1)) [b](JavaScript :x) [c](data:text/html,x) "
+        "[d](https://example.org) [e](mailto:ops@example.org) [f](matrix:u/a:b)"
+    )
+
+    assert "javascript" not in formatted.lower()
+    assert "data:" not in formatted
+    assert "<span>a</span>" in formatted
+    assert '<a href="https://example.org">d</a>' in formatted
+    assert '<a href="mailto:ops@example.org">e</a>' in formatted
+    assert '<a href="matrix:u/a:b">f</a>' in formatted
+
+
+def test_an_image_becomes_its_description() -> None:
+    formatted = _formatted(
+        "![tracker](https://tracker.example/x.png) ![ours](mxc://example.org/abc)"
+    )
+
+    assert "<img" not in formatted
+    assert formatted == "<p><span>tracker</span> <span>ours</span></p>"

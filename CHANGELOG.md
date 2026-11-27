@@ -67,9 +67,11 @@ version of their own to them without also giving them a release of their own.
   already refuse it.
 
 #### Fixed
-- **Raw HTML in a markdown message is shown as text.** A message's rendered
-  HTML passed any HTML in the body through as markup; it is now escaped, and
-  a mentioned id is escaped inside its link.
+- **A markdown message's rendered HTML keeps only safe markup.** Raw HTML in
+  the body is shown as text, a link keeps its target only when it points at
+  the web, mail or Matrix (a `javascript:` link becomes its text), and an
+  image becomes its description rather than loading from wherever the writer
+  chose. A mentioned id is escaped inside its link.
 - **`switch.hosted.provider_login_problems` counts only providers an agent on
   the machine runs.** Cloud machines have every provider installed, so a login
   nobody had given for a provider no agent used kept the "AI provider logins
