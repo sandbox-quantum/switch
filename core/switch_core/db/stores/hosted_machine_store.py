@@ -66,8 +66,13 @@ MACHINE_MIGRATING = (
     "Your hosted agents are being moved to a new machine. They'll be back shortly."
 )
 MACHINE_WORKSPACES_FULL = (
-    f"Your cloud machine already serves {MAX_MACHINE_WORKSPACES} workspaces, the most "
-    "it can. Contact your server administrator."
+    "Your cloud machine already serves the most workspaces it can. Remove it "
+    "from one of them to add it here."
+)
+# The same limit, for a box: people know a box as their cloud box.
+BOX_WORKSPACES_FULL = (
+    "Your cloud box already serves the most workspaces it can. Remove it "
+    "from one of them to add it here."
 )
 
 
@@ -623,7 +628,11 @@ class CloudMachineStore:
             if joined:
                 serving = await tenants_of_cloud_machine(factory, machine.id)
                 if len(serving) >= MAX_MACHINE_WORKSPACES:
-                    raise CloudMachineConflict(MACHINE_WORKSPACES_FULL)
+                    raise CloudMachineConflict(
+                        BOX_WORKSPACES_FULL
+                        if machine.backend == "box"
+                        else MACHINE_WORKSPACES_FULL
+                    )
                 if machine.backend == "box":
                     await _refuse_if_workspace_full(session, per_workspace)
                 workspace = self._add_workspace(session, machine, now)

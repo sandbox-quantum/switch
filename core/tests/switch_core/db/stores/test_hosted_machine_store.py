@@ -10,11 +10,11 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.stores.hosted_machine_store import (
+    BOX_WORKSPACES_FULL,
     MACHINE_BEING_REMOVED,
     MACHINE_NEEDS_ADMIN,
     MACHINE_NEEDS_ATTENTION,
     MACHINE_STOPPED_BY_ADMIN,
-    MACHINE_WORKSPACES_FULL,
     MACHINES_FULL,
     MAX_MACHINE_WORKSPACES,
     CloudMachineConflict,
@@ -66,6 +66,10 @@ async def factory(session_factory):
     return session_factory
 
 
+async def _no_revoke(session, tenant_id, controller_id) -> None:
+    """No controller to revoke: these claims revive nothing that had one."""
+
+
 async def claim_both(factory, owner_id, capacity=2):
     """The owner's machine claimed with the bound workspace, and that workspace's row on it."""
     async with factory() as session:
@@ -76,6 +80,9 @@ async def claim_both(factory, owner_id, capacity=2):
             owner_id=owner_id,
             capacity=capacity,
             now=datetime.now(UTC),
+            revoke=_no_revoke,
+            per_workspace=0,
+            pool_pick=None,
         )
         await session.commit()
         return found.machine, found.workspace
@@ -97,6 +104,9 @@ async def claimed_change(factory, owner_id, tenant_id=TENANT_ZERO_ID):
                 owner_id=owner_id,
                 capacity=2,
                 now=datetime.now(UTC),
+                revoke=_no_revoke,
+                per_workspace=0,
+                pool_pick=None,
             )
             await session.commit()
             return found.change
@@ -735,7 +745,8 @@ async def test_a_machine_serves_at_most_eight_workspaces(factory):
     )
     with pytest.raises(CloudMachineConflict) as raised:
         await claim_in(factory, refused, "owner-a")
-    assert str(raised.value) == MACHINE_WORKSPACES_FULL
+    # A claim makes a box, so it reads as the person's cloud box.
+    assert str(raised.value) == BOX_WORKSPACES_FULL
     assert refused not in await tenants_of_cloud_machine(factory, machine.id)
     # A workspace it already serves still has it.
     again, _workspace = await claim_in(factory, joined[0], "owner-a")
