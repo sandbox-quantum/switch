@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
+from testcontainers.core.config import testcontainers_config
 from testcontainers.postgres import PostgresContainer
 
 # Importing the models module registers every table on Base.metadata so
@@ -111,21 +112,30 @@ async def _seed_tenant_zero(conn: AsyncConnection) -> None:
     )
 
 
-# Every table, emptied in one statement. `CASCADE` is what lets a single
-# TRUNCATE cover tables that reference each other, and `RESTART IDENTITY`
-# keeps sequence-backed columns (`messages.seq`) starting where a test that
-# hard-codes an expected value needs them to.
-_TRUNCATE_ALL = (
-    "TRUNCATE "
-    + ", ".join(f'"{table.name}"' for table in Base.metadata.sorted_tables)
-    + " RESTART IDENTITY CASCADE"
+# Every table emptied, and every sequence a column owns restarted, in one
+# round trip. `DELETE` rather than `TRUNCATE`: a `TRUNCATE` gives every table
+# and index a new file whether or not it held a row, about 70 ms over this
+# schema, where deleting from tables a test mostly left empty takes a tenth of
+# that, and the reset runs before every test. `session_replication_role =
+# replica` switches off the foreign keys' triggers and every other trigger,
+# so the tables can go in any order and nothing a trigger does on a delete
+# runs; it needs the superuser the test container gives. Restarting the owned
+# sequences is what `RESTART IDENTITY` did, so a sequence-backed column
+# (`messages.seq`) starts where a test that hard-codes an expected value
+# needs it to.
+_EMPTY_ALL = (
+    "DO $$ DECLARE sequence regclass; BEGIN "
+    "SET LOCAL session_replication_role = replica; "
+    + " ".join(f'DELETE FROM "{table.name}";' for table in Base.metadata.sorted_tables)
+    + " FOR sequence IN SELECT s.oid::regclass FROM pg_class s "
+    "JOIN pg_depend d ON d.objid = s.oid AND d.deptype IN ('a', 'i') "
+    "WHERE s.relkind = 'S' LOOP "
+    "EXECUTE format('ALTER SEQUENCE %s RESTART', sequence); END LOOP; END $$"
 )
 
 
-# How long the reset waits for its locks before ending what an earlier test
-# left holding them, and then how long it waits before giving up.
-_TRUNCATE_LOCK_TIMEOUT = "10s"
-_TRUNCATE_LOCK_TIMEOUT_AFTER_CLEARING = "60s"
+# How long the reset waits for a row lock before giving up.
+_EMPTY_LOCK_TIMEOUT = "60s"
 
 _LOCK_NOT_AVAILABLE = "55P03"
 
@@ -144,13 +154,15 @@ _END_LEFT_IN_TRANSACTION = text(
 )
 
 
-async def _truncate(engine: AsyncEngine, lock_timeout: str) -> bool:
-    """Empty the database, waiting at most `lock_timeout` for the locks.
-    Returns whether it got them."""
+async def _empty(engine: AsyncEngine) -> bool:
+    """Empty the database, waiting at most `_EMPTY_LOCK_TIMEOUT` for a row
+    lock. Returns whether it got them."""
     try:
         async with engine.begin() as conn:
-            await conn.execute(text(f"SET LOCAL lock_timeout = '{lock_timeout}'"))
-            await conn.execute(text(_TRUNCATE_ALL))
+            await conn.execute(
+                text(f"SET LOCAL lock_timeout = '{_EMPTY_LOCK_TIMEOUT}'")
+            )
+            await conn.execute(text(_EMPTY_ALL))
             await _seed_tenant_zero(conn)
     except DBAPIError as exc:
         if getattr(exc.orig, "sqlstate", None) != _LOCK_NOT_AVAILABLE:
@@ -167,18 +179,17 @@ async def empty_the_database(engine: AsyncEngine) -> None:
     instead is the same starting point for a fraction of the DDL, and it is
     what every per-test fixture here uses.
 
-    TRUNCATE takes every table's exclusive lock, so a connection left in a
-    transaction would make it wait forever. One is left when a test's client
+    A connection is sometimes left in a transaction: when a test's client
     loop (a `TestClient`'s thread, say) stops while a query of its stream is
-    in flight: the task is abandoned rather than cancelled, and its
-    transaction never ends. Each test worker has a database of its own and
-    runs one test at a time, so a session idle in a transaction while a test
-    is still being set up belongs to a test that has finished. The reset ends
-    those, with a warning naming them, and carries on; and fails, naming every
-    session still connected, if it then still cannot take its locks.
+    in flight, the task is abandoned rather than cancelled, and its
+    transaction never ends. Rows it wrote and never committed would hold
+    their keys against the next test's, and rows it locked would keep the
+    reset waiting. Each test worker has a database of its own and runs one
+    test at a time, so a session idle in a transaction while a test is being
+    set up belongs to a test that has finished. The reset ends those first,
+    with a warning naming them, and fails, naming every session still
+    connected, if it then cannot take its locks.
     """
-    if await _truncate(engine, _TRUNCATE_LOCK_TIMEOUT):
-        return
     async with engine.connect() as conn:
         ended = (await conn.execute(_END_LEFT_IN_TRANSACTION)).mappings().all()
     if ended:
@@ -187,7 +198,7 @@ async def empty_the_database(engine: AsyncEngine) -> None:
             "transaction:\n" + "\n".join(str(dict(session)) for session in ended),
             stacklevel=2,
         )
-    if await _truncate(engine, _TRUNCATE_LOCK_TIMEOUT_AFTER_CLEARING):
+    if await _empty(engine):
         return
     async with engine.connect() as conn:
         sessions = (await conn.execute(text(_OTHER_SESSIONS))).mappings().all()
@@ -230,19 +241,22 @@ def postgres_url() -> Iterator[str]:
 def _remove(container: PostgresContainer) -> None:
     """Delete the session's container, without failing a run over it.
 
-    Every test has run by now. After a whole shard the container's data is
-    large, and a busy CI runner's Docker has taken longer than its client's
-    60 s to delete it: the shard then failed though every test passed. The
-    reaper testcontainers starts with the session (Ryuk) removes the container
-    once the session ends anyway, so a removal that doesn't answer in time is
-    only a warning.
+    Every test has run by now. Where the reaper testcontainers starts with
+    the session (Ryuk) runs, it removes the container once the session ends,
+    so it is left to it: with every worker removing its own at once, Docker
+    has taken longer than its client's 60 s to answer, and each worker waited
+    that long after its last test. Without the reaper (Podman) the container
+    is removed here; after a whole shard its data is large, and a removal
+    that doesn't answer in time is only a warning, not a failed run.
     """
+    if not testcontainers_config.ryuk_disabled:
+        return
     try:
         container.stop()
     except (DockerException, requests.exceptions.RequestException) as exc:
         warnings.warn(
-            f"the test database's container was not removed ({exc!r}); "
-            "the testcontainers reaper removes it when the session ends",
+            f"the test database's container {container.get_wrapped_container().short_id} "
+            f"was not removed ({exc!r}); remove it with `docker rm -f`",
             stacklevel=2,
         )
 
