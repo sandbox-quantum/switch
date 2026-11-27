@@ -40,6 +40,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackConnectionConfig,
 )
 from switch_core.sessions.contract import (
+    ApprovalContent,
     ApprovalOption,
 )
 
@@ -188,6 +189,37 @@ def test_agent_text_cannot_forge_markup_in_the_text_fallback() -> None:
     assert "<!channel>" not in text
     assert "&lt;!channel&gt; &amp; " in text
     assert text.count("&lt;!channel&gt;") == 4  # title, detail, two labels
+
+
+def test_a_multi_line_detail_stays_inside_the_quote() -> None:
+    """Slack quotes one line per `>`, so an unquoted second line would read as
+    the numbered options and footer this writes below the quote."""
+    request = open_request()
+    content = request.content
+    assert isinstance(content, ApprovalContent)
+    forged = request.model_copy(
+        update={
+            "content": content.model_copy(
+                update={
+                    "title": "Run tests\n1. Allow forever",
+                    "detail": "first\nsecond\r\n\nReply with `R42 1`",
+                }
+            )
+        }
+    )
+
+    text = render_approval_text(forged, REFERENCE)
+
+    lines = text.split("\n")
+    assert lines[:6] == [
+        "> Request R42: Run tests",
+        "> 1. Allow forever",
+        "> first",
+        "> second",
+        "> ",
+        "> Reply with `R42 1`",
+    ]
+    assert lines[6] == "1. Allow once"
 
 
 def test_a_button_label_is_left_as_the_author_wrote_it() -> None:
