@@ -10,7 +10,10 @@ from fastapi.routing import APIRoute
 
 import switch_core.main  # noqa: F401  (import order, as in test_route_guards)
 from switch_core.gateway.dependencies import get_session_factory
-from switch_core.gateway.hosted_controller import controller_session
+from switch_core.gateway.hosted_controller import (
+    box_controller_session,
+    controller_session,
+)
 from switch_core.gateway.hosted_operator_bearer import require_operator_bearer
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.visibility.guards import require_operator
@@ -58,6 +61,7 @@ def test_the_operator_api_needs_the_operators_bearer() -> None:
         calls = set(_calls(_route(path, method).dependant))
         assert require_operator_bearer in calls
         assert controller_session not in calls
+        assert box_controller_session not in calls
 
 
 @pytest.fixture
