@@ -11,7 +11,7 @@ only that it was taken.
 Expand only: a release from before this revision reads neither column.
 
 Revision ID: a6d3f1c8e925
-Revises: df57881f482a
+Revises: 5c50c7ae76dd
 Create Date: 2026-11-26 12:00:00.000000
 
 """
@@ -23,7 +23,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "a6d3f1c8e925"
-down_revision: str | None = "df57881f482a"
+down_revision: str | None = "5c50c7ae76dd"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

@@ -79,10 +79,12 @@ _AFTER_THIRTEENTH = ("85dfde4a8300",)  # the box operator's live boxes and ceili
 _MAIN_FOURTEENTH = ("f2c8a4d17e93", "a9d3e6f1c2b7", "a25845a0e7be")
 _FOURTEENTH_MERGE = "4899866041ab"
 # Main's one revision after `a25845a0e7be` (the team survey and license
-# columns), and the fifteenth merge joining it with ours: the head.
+# columns), and the fifteenth merge joining it with ours.
 _MAIN_FIFTEENTH = "df57881f482a"
 _FIFTEENTH_MERGE = "5c50c7ae76dd"
-_HEAD = _FIFTEENTH_MERGE
+# Ours after the fifteenth merge, in order; the last is the head.
+_AFTER_FIFTEENTH = ("a6d3f1c8e925",)  # an operation's progress and input
+_HEAD = _AFTER_FIFTEENTH[-1]
 _EIGHTH_MAIN_MERGE = "97c1c62e3ca3"
 _MAIN_ARCHIVE_HEAD = "e2c7a94f1b38"
 _SEVENTH_MAIN_MERGE = "0c3b39b59766"
@@ -327,8 +329,11 @@ def _without_main_thirteenth(ran: list[str]) -> list[str]:
     """An upgrade from before the thirteenth merge ends with that merge, and
     runs main's `e223eae63078` once, somewhere after its parent `c18f5ebeef66`
     (when that runs too). Check that, and return the run without the two."""
-    # The fifteenth merge last, and main's one after `a25845a0e7be` once,
-    # somewhere after that parent.
+    # Ours after the fifteenth merge last, then that merge, and main's one
+    # after `a25845a0e7be` once, somewhere after that parent.
+    tail = len(_AFTER_FIFTEENTH)
+    assert ran[-tail:] == list(_AFTER_FIFTEENTH)
+    ran = ran[:-tail]
     assert ran[-1] == _FIFTEENTH_MERGE
     ran = ran[:-1]
     assert ran.count(_MAIN_FIFTEENTH) == 1
@@ -387,13 +392,14 @@ async def _missing(engine: AsyncEngine) -> list[str]:
 
 
 def test_there_is_exactly_one_head_and_it_is_the_merge() -> None:
-    """One head, the fifteenth merge, joining the fourteenth with main's next;
-    the fourteenth joins ours after the thirteenth merge with main's three
+    """One head, ours after the fifteenth merge, which joins the fourteenth
+    with main's next; the fourteenth joins ours after the thirteenth merge with main's three
     after its own; the thirteenth joins our hosted migrations (after the
     twelfth merge, which joins the eleventh with main's three) with main's
     next."""
     script = _script()
     assert script.get_heads() == [_HEAD]
+    assert script.get_revision(_AFTER_FIFTEENTH[0]).down_revision == _FIFTEENTH_MERGE  # type: ignore[union-attr]
     fifteenth = script.get_revision(_FIFTEENTH_MERGE)
     assert fifteenth is not None
     assert set(fifteenth._all_down_revisions) == {_FOURTEENTH_MERGE, _MAIN_FIFTEENTH}
