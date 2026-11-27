@@ -96,25 +96,50 @@ type SubagentFrontmatter = {
   tools: string[] | null;
 };
 
-function stripQuotes(value: string): string {
+/**
+ * A frontmatter value as written. A double-quoted one is read as JSON — what
+ * {@link yamlString} writes, and valid YAML — falling back to stripping the
+ * quotes for a hand-written value JSON does not read (a YAML-only escape).
+ */
+function readScalar(value: string): string {
   const trimmed = value.trim();
   if (trimmed.length >= 2) {
     const first = trimmed[0];
     const last = trimmed[trimmed.length - 1];
-    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+    if (first === '"' && last === '"') {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (typeof parsed === 'string') return parsed;
+      } catch {
+        // Not JSON: a YAML escape JSON lacks. Taken as written, as before.
+      }
       return trimmed.slice(1, -1);
     }
+    if (first === "'" && last === "'") return trimmed.slice(1, -1).replace(/''/g, "'");
   }
   return trimmed;
 }
 
 /**
- * One line of frontmatter. Every value is written unquoted on its own
- * `key: value` line, so a line break in it would start a new key — `hooks:`
- * or `mcpServers:` that Claude Code then runs.
+ * A frontmatter value as a YAML double-quoted scalar. A JSON string is one, so
+ * nothing in it — `: `, ` #`, `[`, `!`, `&`, `*` — is read as YAML syntax.
+ * JSON leaves DEL, the C1 controls and U+2028/U+2029 bare, which YAML does not
+ * allow or reads as a line break, so they are escaped too.
+ */
+function yamlString(value: string): string {
+  return JSON.stringify(value).replace(
+    /[\x7f-\x9f\u2028\u2029]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`
+  );
+}
+
+/**
+ * One line of frontmatter. Each value is written on its own `key: value` line
+ * and read back a line at a time, so line breaks (YAML's Unicode ones too) are
+ * folded to a space.
  */
 function oneLine(value: string): string {
-  return value.replace(/\s*[\r\n]+\s*/g, ' ').trim();
+  return value.replace(/\s*[\r\n\u0085\u2028\u2029]+\s*/g, ' ').trim();
 }
 
 function splitList(raw: string | undefined): string[] {
@@ -149,7 +174,7 @@ function parseFrontmatterFields(content: string): Record<string, string> {
     const sep = line.indexOf(':');
     if (sep <= 0) continue;
     const key = line.slice(0, sep).trim().toLowerCase();
-    const value = stripQuotes(line.slice(sep + 1));
+    const value = readScalar(line.slice(sep + 1));
     if (value.length > 0) fields[key] = value;
   }
   return fields;
@@ -251,20 +276,20 @@ function toList(value: RepoAgentAttributes[string] | undefined): string[] {
 function serializeDefinition(attributes: RepoAgentAttributes): string {
   const name = sanitizeScalar(attributes.name);
   const description = sanitizeScalar(attributes.description);
-  const lines = ['---', `name: ${name}`, `description: ${description}`];
+  const lines = ['---', `name: ${yamlString(name)}`, `description: ${yamlString(description)}`];
 
   for (const key of FRONTMATTER_FIELD_KEYS) {
     const raw = attributes[key];
     if (key === 'tools') {
       const list = toList(raw);
       if (list.length > 0) {
-        lines.push(`tools: ${dedupe([...list, ...SWITCH_TOOL_RULES]).join(', ')}`);
+        lines.push(`tools: ${yamlString(dedupe([...list, ...SWITCH_TOOL_RULES]).join(', '))}`);
       }
       continue;
     }
     if (key === 'disallowedTools') {
       const list = toList(raw).filter((t) => !SWITCH_RULES.includes(t));
-      if (list.length > 0) lines.push(`disallowedTools: ${list.join(', ')}`);
+      if (list.length > 0) lines.push(`disallowedTools: ${yamlString(list.join(', '))}`);
       continue;
     }
     if (BOOLEAN_KEYS.has(key)) {
@@ -277,7 +302,7 @@ function serializeDefinition(attributes: RepoAgentAttributes): string {
       continue;
     }
     const scalar = sanitizeScalar(raw);
-    if (scalar.length > 0) lines.push(`${key}: ${scalar}`);
+    if (scalar.length > 0) lines.push(`${key}: ${yamlString(scalar)}`);
   }
 
   lines.push('---');
@@ -316,14 +341,39 @@ function parseSettingsObject(raw: string | null): Record<string, unknown> {
   }
 }
 
+const UNSAFE_NAME_CHARACTERS = /[/\\\x00-\x1f\x7f-\x9f\u2028\u2029]/;
+
+/**
+ * Whether `name` can name an agent's files: one path segment, so it cannot
+ * leave the directory it is joined onto (`../../.git/hooks/x`), with no
+ * control characters or line breaks and no surrounding whitespace.
+ */
+function isAgentFileName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    name !== '.' &&
+    name !== '..' &&
+    name === name.trim() &&
+    !UNSAFE_NAME_CHARACTERS.test(name)
+  );
+}
+
+/** `name`, checked as {@link isAgentFileName}; every path built from a name goes through it. */
+function agentFileName(name: string): string {
+  if (!isAgentFileName(name)) {
+    throw new Error(`Not a usable subagent name: ${JSON.stringify(name)}`);
+  }
+  return name;
+}
+
 /** Legacy per-subagent credentials file under `.claude/switch-subagents/`. */
 function settingsRelPath(name: string): string {
-  return `${CLAUDE_SUBAGENTS.dirRelative}/${name}${CLAUDE_SUBAGENTS.settingsSuffix}`;
+  return `${CLAUDE_SUBAGENTS.dirRelative}/${agentFileName(name)}${CLAUDE_SUBAGENTS.settingsSuffix}`;
 }
 
 /** Provider-neutral per-agent credentials file (the current location). */
 function neutralSettingsRelPath(name: string): string {
-  return `${SWITCH_AGENT_SETTINGS_DIR}/${name}.json`;
+  return `${SWITCH_AGENT_SETTINGS_DIR}/${agentFileName(name)}.json`;
 }
 
 /**
@@ -341,7 +391,7 @@ async function readCredsObject(
 }
 
 function definitionRelPath(name: string): string {
-  return `${CLAUDE_SUBAGENTS.definitionsDirRelative}/${name}${MD_SUFFIX}`;
+  return `${CLAUDE_SUBAGENTS.definitionsDirRelative}/${agentFileName(name)}${MD_SUFFIX}`;
 }
 
 /** Description/model from a subagent's definition, project scope then user scope. */
@@ -374,7 +424,7 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
     const neutralCandidates = (await workdirFs.list(SWITCH_AGENT_SETTINGS_DIR))
       .filter((entry) => entry.endsWith('.json'))
       .map((entry) => entry.slice(0, -'.json'.length))
-      .filter((name) => name.length > 0);
+      .filter(isAgentFileName);
     const neutralNames: string[] = [];
     for (const name of neutralCandidates) {
       if (
@@ -388,7 +438,7 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
       .filter((entry) => entry.endsWith(CLAUDE_SUBAGENTS.settingsSuffix))
       .map((entry) => entry.slice(0, -CLAUDE_SUBAGENTS.settingsSuffix.length));
     const names = [...new Set([...neutralNames, ...legacyNames])]
-      .filter((name) => name.length > 0)
+      .filter(isAgentFileName)
       .sort((a, b) => a.localeCompare(b));
 
     return Promise.all(
@@ -472,8 +522,10 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
   },
 
   async writeDefinition(workdirFs, attributes: RepoAgentAttributes): Promise<void> {
-    const name = sanitizeScalar(attributes.name);
-    await workdirFs.write(definitionRelPath(name), serializeDefinition(attributes));
+    await workdirFs.write(
+      definitionRelPath(String(attributes.name ?? '')),
+      serializeDefinition(attributes)
+    );
   },
 
   async readDefinition(workdirFs, name): Promise<RepoAgentAttributes | null> {
