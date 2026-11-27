@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 /**
  * Box-only code lives in `src/box/` and the agent host's `box` subpath, and
- * desktop and v1 must never load it. Nothing outside `src/box/` may import it
+ * desktop and self-installed machines must never load it. Nothing outside `src/box/` may import it
  * statically, except `import type`, which is erased from the build: the one
  * way in is a dynamic `import()` inside a box-mode branch, so the code is only
  * ever loaded once the controller is in box mode.

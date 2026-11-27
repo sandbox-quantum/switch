@@ -1,7 +1,7 @@
 /**
  * `@switch-console/agent-providers/box`: what a hosted agents box's
  * controller takes from the agent host's box-only modules. A subpath of its
- * own, never the package's main index, so nothing Console or a v1 machine
+ * own, never the package's main index, so nothing Console or a self-installed machine
  * imports loads box code. Import it only from code that runs in box mode.
  */
 export {

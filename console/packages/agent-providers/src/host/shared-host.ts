@@ -1356,7 +1356,7 @@ export async function hostSessionProcess(input: {
   servicesChange: string | null;
   /** This host's bundle, which the session's service helpers run from. */
   entrypoint: string;
-  /** Box mode (`box-mode.ts`), passed down from `shared-daemon`; absent is desktop and v1. */
+  /** Box mode (`box-mode.ts`), passed down from `shared-daemon`; absent is desktop and self-installed machines. */
   box?: boolean;
   signal: AbortSignal;
 }): Promise<void> {

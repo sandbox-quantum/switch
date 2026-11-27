@@ -585,7 +585,7 @@ describe('ProviderStatuses with logins given to the machine', () => {
     });
   }
 
-  /** As on a desktop or v1 machine: box mode off. */
+  /** As on a desktop or self-installed machine: box mode off. */
   const build = (...args: Parameters<typeof buildBox>) => statusesFor(false, ...args);
   /** As in a box: box mode on. */
   function buildBox(

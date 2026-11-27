@@ -43,7 +43,7 @@ import { LaunchGate, SplitRuntime } from './split-runtime';
  * Box mode's half of `main.ts`: the flags only a box takes, the parts a box
  * controller is built with, and the commands only a box runs. Loaded only
  * through `await import('./box/run-box')` inside a box-mode branch, so a
- * desktop or v1 controller never loads it. Defines things only: nothing runs
+ * desktop or self-installed controller never loads it. Defines things only: nothing runs
  * at import.
  */
 

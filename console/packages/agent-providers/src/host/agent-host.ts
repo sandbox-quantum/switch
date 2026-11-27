@@ -1002,7 +1002,8 @@ export async function runAgentHost(
   supervision: Supervision,
   control: WatcherControl,
   openStream: OpenAgentStream,
-  // Box mode (`box-mode.ts`), passed down from `shared-daemon`; desktop and v1 run with `box: false`.
+  // Box mode (`box-mode.ts`), passed down from `shared-daemon`; desktop and self-installed machines run
+  // with `box: false`.
   options: HostModeOptions = { box: false }
 ): Promise<void> {
   // Box mode's own modules load here and only here, so Console's hosts never load them.

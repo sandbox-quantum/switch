@@ -12,8 +12,8 @@ import { lstatSync } from 'node:fs';
  * - The agent host takes box mode from the marker alone (`hostBoxMode`). The controller's config for it can only add
  *   a refusal: a config that says box with no marker refuses to start, so a host never drops quietly to desktop.
  *
- * Desktop and v1 have no marker and pass no `--box`: nothing here changes them. Box mode is passed down as a value
- * (`{ box: boolean }`), never read from a global or the environment.
+ * Desktop and self-installed machines have no marker and pass no `--box`: nothing here changes them. Box mode is
+ * passed down as a value (`{ box: boolean }`), never read from a global or the environment.
  */
 export const BOX_MARKER_PATH = '/etc/switch/box';
 

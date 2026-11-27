@@ -78,7 +78,7 @@ const sharedHost = await build({
   tsconfig: join(root, '..', 'agent-providers', 'tsconfig.json'),
   metafile: true,
 });
-// The same package runs v1 machines and boxes: box code only behind box mode's dynamic imports.
+// The same package runs self-installed machines and boxes: box code only behind box mode's dynamic imports.
 for (const [name, result] of [
   ['cli.mjs', cli],
   ['shared-host.mjs', sharedHost],

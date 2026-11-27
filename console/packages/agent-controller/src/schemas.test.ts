@@ -233,7 +233,7 @@ describe('status report', () => {
     expect(statusReportSchema.safeParse(report).success).toBe(true);
   });
 
-  it('leaves a desktop or v1 report exactly as it was: the box-only fields are all optional and absent', () => {
+  it('leaves a desktop or self-installed report exactly as it was: the box-only fields are all optional and absent', () => {
     const parsed = statusReportSchema.parse(report);
     expect(parsed.machine).toEqual(report.machine);
     expect(parsed.agents).toEqual(report.agents);

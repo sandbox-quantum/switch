@@ -52,6 +52,15 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Removed
+- **Hosted agents run only on boxes,** and only where the hosted controller
+  config names the box operator (`provisioner_token`) and the keyed-id key is
+  set. The v1 cloud-machine path (EC2 VMs started by the hosted controller) and
+  the switch between it and boxes are gone. A server configured only with v1's
+  settings starts with hosted agents off. Core never lists, prepares, starts or
+  wakes a VM-backed machine, and refuses the hosted controller's calls for one
+  (409); its owner is told the machine has been retired.
+
 #### Fixed
 - **`switch.hosted.provider_login_problems` counts only providers an agent on
   the machine runs.** Cloud machines have every provider installed, so a login

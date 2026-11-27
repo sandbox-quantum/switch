@@ -32,7 +32,7 @@ export const PROVIDERS: readonly string[] = registeredProviders(
 
 /**
  * The providers a box offers: those its image carries the CLIs for, or may.
- * Every other provider stays registered, for desktop and v1 machines; a box
+ * Every other provider stays registered, for desktop and self-installed machines; a box
  * neither reports it nor runs an agent that names it.
  */
 export const BOX_PROVIDERS: readonly string[] = [

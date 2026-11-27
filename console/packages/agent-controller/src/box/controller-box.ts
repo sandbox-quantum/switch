@@ -59,7 +59,7 @@ import type { LaunchGate, ProbeEnv } from './split-runtime';
 /**
  * What only a hosted agents box's controller does, on top of the controller
  * every machine runs (`runController`). Loaded only in box mode, through a
- * dynamic import, so desktop and v1 never load it: the box valve, resting
+ * dynamic import, so desktop and self-installed machines never load it: the box valve, resting
  * agents, the provider gateway, the split box's launcher link
  * and the live status. `runController` calls it at fixed points; each call is
  * where the box copy of the controller did the same inline.
