@@ -56,6 +56,39 @@ def test_an_edited_body_is_escaped_too() -> None:
     assert edited["formatted_body"] == "<p>&lt;b&gt;now&lt;/b&gt;</p>"
 
 
+def test_two_ids_with_the_same_localpart_cannot_break_a_link() -> None:
+    formatted = _formatted("hi @alice", ["@alice:a.example", "@alice:b.example"])
+
+    assert (
+        formatted
+        == '<p>hi <a href="https://matrix.to/#/@alice:a.example">alice</a></p>'
+    )
+
+
+def test_a_localpart_that_prefixes_another_cannot_break_a_link() -> None:
+    formatted = _formatted("@al and @alice", ["@al:example.org", "@alice:example.org"])
+
+    assert formatted == (
+        '<p><a href="https://matrix.to/#/@al:example.org">al</a> and '
+        '<a href="https://matrix.to/#/@alice:example.org">alice</a></p>'
+    )
+
+
+def test_a_mention_is_linked_wherever_the_text_is() -> None:
+    formatted = _formatted("**@alice** said @alice", ["@alice:example.org"])
+
+    link = '<a href="https://matrix.to/#/@alice:example.org">alice</a>'
+    assert formatted == f"<p><strong>{link}</strong> said {link}</p>"
+
+
+def test_a_mention_inside_a_link_is_left_alone() -> None:
+    formatted = _formatted(
+        "[@alice](https://example.org/@alice)", ["@alice:example.org"]
+    )
+
+    assert formatted == '<p><a href="https://example.org/@alice">@alice</a></p>'
+
+
 def test_only_web_mail_and_matrix_links_keep_their_target() -> None:
     formatted = _formatted(
         "[a](javascript:alert(1)) [b](JavaScript :x) [c](data:text/html,x) "
