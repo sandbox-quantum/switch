@@ -393,6 +393,22 @@ class AgentDeletionResult:
     bridge_failures: list[str]
 
 
+async def inherited_room_kind(
+    session: AsyncSession, from_room_id: str | None
+) -> str | None:
+    """The client app's kind a room with no channel made from `from_room_id`
+    takes when the agent names none: asked in an app's room for a new one, an
+    agent need not know the app's kind for the room to appear there. A room
+    with a channel is the channel's, so the caller asks only for one without."""
+    if from_room_id is None:
+        return None
+    source = await session.get(Room, from_room_id)
+    if source is None:
+        return None
+    kind = (source.metadata_ or {}).get(ROOM_KIND_KEY)
+    return kind if isinstance(kind, str) else None
+
+
 def _describe_room(room: Room) -> RoomDescriptor:
     return RoomDescriptor(
         id=room.id,
@@ -3334,6 +3350,10 @@ class AgentCore:
         into that room's run (see `agent_runs`), and is refused if the run is
         paused or stopped or the agent is already creating a room.
 
+        `room_kind` stamps the room as a client app's (`chats.ROOM_KIND_KEY`).
+        A room with no channel made from a room of a kind inherits that kind,
+        with follow-ups off, when no kind is given.
+
         `group_name`, when given, files the room under an existing room group.
         It may be a path, a bare name or an id, and is resolved to a group id
         here (see `_resolve_group_name`)."""
@@ -3353,6 +3373,10 @@ class AgentCore:
                 require_group_filing(owner_is_admin)
             group_id = await self._resolve_group_name(session, group_name)
             owner = await session.get(User, agent.owner_id) if agent.owner_id else None
+            if room_kind is None and internal_only and bridge_id is None:
+                inherited = await inherited_room_kind(session, from_room_id)
+                if inherited is not None:
+                    room_kind, follow_ups_off = inherited, True
             # The invite rule, as for any agent put into a room: judged as the
             # owner, who owns the new room (`room_invites`).
             await require_agent_may_add_to_new_room(

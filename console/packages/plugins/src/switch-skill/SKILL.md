@@ -842,9 +842,10 @@ stay out of Console's chat lists.
 
 When you are asked, in a room that has a `room_kind`, for a new room in that
 app, pass the same `room_kind` to `create_room`, with `internal_only=True` and
-`include_owner=True` so the person sees it. Such a room starts with follow-ups
-off: only a message that tags an agent reaches it. It appears in the app at
-once for the people in it.
+`include_owner=True` so the person sees it. An internal-only room you make
+from such a room takes its kind even when you leave `room_kind` out. Such a
+room starts with follow-ups off: only a message that tags an agent reaches it.
+It appears in the app at once for the people in it.
 
 **Do not guess a `bridge_id`.** When the user asks you to create a room:
 

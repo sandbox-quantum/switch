@@ -1089,7 +1089,9 @@ async def create_room(
             `room_kind` of the room you were asked in (`connect_to_room`,
             `get_room_detail`). Such a room starts with follow-ups off, so
             only a message that tags an agent reaches it, as rooms the app
-            makes itself do. Omit for an ordinary room.
+            makes itself do. An internal-only room made while you are in a
+            room of a kind takes that kind when you omit this. Omit for an
+            ordinary room.
 
     Returns:
         `{"id", "name", "matrix_room_id", "caller_is_member",

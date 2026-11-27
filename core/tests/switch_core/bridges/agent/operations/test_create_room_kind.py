@@ -13,9 +13,13 @@ from switch_core.bridges.agent.operations.callctx import (
     set_call_context,
 )
 from switch_core.bridges.agent.operations.definitions import create_room
-from switch_core.bridges.agent.protocol.agent_core import _describe_room
+from switch_core.bridges.agent.protocol.agent_core import (
+    _describe_room,
+    inherited_room_kind,
+)
 from switch_core.chats import ROOM_KIND_KEY
 from switch_core.db.models import Room
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 
 
@@ -91,4 +95,32 @@ def test_an_agent_sees_the_kind_of_a_room_for_a_client_app() -> None:
         _describe_room(_room({"created_by_kind": "agent"})).room_kind,
         _describe_room(_room(None)).room_kind,
     ]
+    assert kinds == ["reaqt", None, None]
+
+
+@pytest.mark.asyncio
+async def test_a_room_made_from_a_client_apps_room_takes_its_kind(
+    session_factory,
+) -> None:
+    rooms = RoomStore()
+    async with session_factory() as session:
+        app_room = await rooms.create(
+            session,
+            Room(
+                transport_room_id="!app:test",
+                name="app",
+                description="",
+                metadata_={ROOM_KIND_KEY: "reaqt"},
+            ),
+        )
+        plain = await rooms.create(
+            session,
+            Room(transport_room_id="!plain:test", name="plain", description=""),
+        )
+        await session.commit()
+        kinds = [
+            await inherited_room_kind(session, app_room.id),
+            await inherited_room_kind(session, plain.id),
+            await inherited_room_kind(session, None),
+        ]
     assert kinds == ["reaqt", None, None]
