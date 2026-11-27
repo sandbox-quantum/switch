@@ -18,14 +18,23 @@ from functools import cache
 from importlib.resources import files
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.config import SwitchConfig
 from switch_core.db.models import User
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_session, get_user_store
+from switch_core.gateway.dependencies import (
+    get_config,
+    get_session,
+    get_session_factory,
+    get_user_store,
+)
+from switch_core.gateway.hosted_machines import hosted_settings, warm_after_sign_in
+from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.tenant_context import current_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -94,12 +103,20 @@ async def my_license_acceptance(
 @router.put("/auth/me/license")
 async def accept_license(
     req: AcceptLicenseRequest,
+    background: BackgroundTasks,
     session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    hosted: Annotated[HostedControllerSettings | None, Depends(hosted_settings)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> LicenseAcceptanceView:
     """Record that the signed-in person accepted the license they were shown,
-    named by its version, which must be the current one."""
+    named by its version, which must be the current one. Accepting is the last
+    onboarding step, so it also starts their Switch Cloud machine in the bound
+    workspace, which then warms while they get started."""
     version = current_license().version
     if req.version != version:
         raise HTTPException(
@@ -108,4 +125,12 @@ async def accept_license(
         )
     await user_store.record_license_acceptance(session, user, version)
     await session.commit()
+    background.add_task(
+        warm_after_sign_in,
+        session_factory,
+        user.id,
+        current_tenant_id(),
+        config,
+        hosted,
+    )
     return _acceptance(user)

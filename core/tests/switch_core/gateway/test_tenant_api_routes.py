@@ -28,7 +28,7 @@ import httpx
 import jwt
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -444,11 +444,16 @@ class TestCreateTenant:
         user_id = await _make_member(
             session_factory, name="second-founder", tenant_id=TENANT_A, role="member"
         )
+        other_id = await _make_member(
+            session_factory, name="third-founder", tenant_id=TENANT_A, role="member"
+        )
         token = _token(user_id, "second-founder@example.invalid", TENANT_A)
+        other = _token(other_id, "third-founder@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
             first = await client.post("/tenants", json={"name": "Widgets Inc"})
             assert first.status_code == 201, first.text
+        async with _client(_app(session_factory), other) as client:
             second = await client.post("/tenants", json={"name": "Widgets Inc"})
 
         assert second.status_code == 201, second.text
@@ -619,15 +624,15 @@ class TestWorkspaceCreationLimit:
             session_factory, name="serial-founder", tenant_id=TENANT_A, role="member"
         )
         token = _token(user_id, "serial-founder@example.invalid", TENANT_A)
+        # Workspaces made in organizations they no longer administer.
+        async with session_factory() as session:
+            await session.execute(
+                update(User).where(User.id == user_id).values(workspaces_created=2)
+            )
+            await session.commit()
 
         app = _app(session_factory, max_workspaces_per_user=2)
         async with _client(app, token) as client:
-            assert (
-                await client.post("/tenants", json={"name": "First"})
-            ).status_code == 201
-            assert (
-                await client.post("/tenants", json={"name": "Second"})
-            ).status_code == 201
             third = await client.post("/tenants", json={"name": "Third"})
 
         assert third.status_code == 403

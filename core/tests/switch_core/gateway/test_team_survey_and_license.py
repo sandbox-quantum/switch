@@ -55,8 +55,11 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     app.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     app.dependency_overrides[gw_deps.get_user_store] = lambda: _USER_STORE
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
-        keyring=_KEYRING, gateway_tenant_choice_enabled=False
+        keyring=_KEYRING,
+        gateway_tenant_choice_enabled=False,
+        gateway_onboarding_enabled=False,
     )
+    app.state.hosted_controller_settings = None
     return app
 
 
@@ -203,6 +206,27 @@ class TestLicense:
             after = (await client.get("/auth/me/license")).json()
         assert after["accepted_version"] == version
         assert after["accepted_at"] is not None
+
+    async def test_accepting_starts_the_persons_cloud_machine(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        warmed: list[tuple[str, str | None]] = []
+
+        async def _warm(factory, user_id, tenant_id, config, settings) -> None:
+            warmed.append((user_id, tenant_id))
+
+        monkeypatch.setattr(license_acceptance, "warm_after_sign_in", _warm)
+        user_id = await _seed_user(session_factory)
+        async with _client(_app(session_factory), user_id) as client:
+            version = (await client.get("/license")).json()["version"]
+            refused = await client.put("/auth/me/license", json={"version": "older"})
+            assert refused.status_code == 409
+            assert warmed == []
+            accepted = await client.put("/auth/me/license", json={"version": version})
+        assert accepted.status_code == 200, accepted.text
+        assert [each[0] for each in warmed] == [user_id]
 
     async def test_refuses_a_version_that_is_not_the_current_one(
         self, session_factory: async_sessionmaker[AsyncSession]

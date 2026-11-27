@@ -258,7 +258,12 @@ ROUTES: dict[str, Case] = {
     "GET /gateway/tenants": get(f"{G}/tenants", SELF),
     "GET /gateway/tenants/counts": get(f"{G}/tenants/counts", SELF),
     "GET /gateway/tenants/current": get(f"{G}/tenants/current", SELF),
-    "POST /gateway/tenants": post(f"{G}/tenants", SELF, json={"name": "{tag}-ws"}),
+    "POST /gateway/tenants": post(
+        f"{G}/tenants",
+        {**SELF, Persona.ORG_ADMIN: 403},
+        json={"name": "{tag}-ws"},
+        why="Creates an organization; the organization's admin has theirs.",
+    ),
     "POST /gateway/tenants/{tenant_id}/switch": post(f"{W}/switch", SELF),
     "DELETE /gateway/tenants/{tenant_id}": Case(
         Ask("DELETE", W, json={"name": "{tenant}"}),
@@ -446,7 +451,10 @@ ROUTES: dict[str, Case] = {
         why="Your own membership; nobody here is in this organization.",
     ),
     "POST /gateway/organizations": post(
-        f"{G}/organizations", SELF, json={"name": "{tag}-org"}
+        f"{G}/organizations",
+        {**SELF, Persona.ORG_ADMIN: 403},
+        json={"name": "{tag}-org"},
+        why="Each person creates one organization; the organization's admin has theirs.",
     ),
     "GET /gateway/organizations/current": get(f"{G}/organizations/current", anyone()),
     "GET /gateway/organizations/current/workspaces": get(

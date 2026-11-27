@@ -52,7 +52,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway import organizations, workspace_creation
-from switch_core.gateway.auth import create_jwt, decode_jwt
+from switch_core.gateway.auth import ONE_ORGANIZATION_EACH, create_jwt, decode_jwt
 from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.organization_workspaces import (
     router as organization_workspaces_router,
@@ -869,6 +869,31 @@ class TestCreatingAnOrganization:
         assert response.status_code == 403
         assert await _workspaces_created(session_factory, ada) == 0
 
+    async def test_someone_who_already_has_an_organization_is_refused_another(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = await _user(session_factory, "user")
+
+        async with _client(_app(session_factory), ada, None) as client:
+            first = await client.post("/organizations", json={"name": _name("Acme")})
+            second = await client.post("/organizations", json={"name": _name("Globex")})
+
+        assert first.status_code == 201, first.text
+        assert second.status_code == 403
+        assert second.json()["detail"] == ONE_ORGANIZATION_EACH
+        assert await _workspaces_created(session_factory, ada) == 1
+
+    async def test_a_member_invited_into_another_organization_may_create_their_own(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        await _workspace(session_factory, {ada: ("member", "member")})
+
+        async with _client(_app(session_factory), ada, None) as client:
+            response = await client.post("/organizations", json={"name": _name("Own")})
+
+        assert response.status_code == 201, response.text
+
 
 class TestCreatingAWorkspace:
     async def test_an_org_admin_adds_one_to_the_organization(
@@ -1091,24 +1116,23 @@ class TestListingOrganizationsAndWorkspaces:
     async def test_the_caller_sees_each_of_their_organizations_once(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        ada = await _user(session_factory, "user")
+        ada = _name("ada")
+        await _workspace(session_factory, {ada: ("member", "member")})
         app = _app(session_factory)
         async with _client(app, ada, None) as client:
-            acme = await client.post("/organizations", json={"name": "Acme"})
-            assert acme.status_code == 201, acme.text
-        acme_workspace = acme.json()["workspace"]["id"]
-        async with _client(app, ada, acme_workspace) as client:
+            globex = await client.post("/organizations", json={"name": "Globex"})
+            assert globex.status_code == 201, globex.text
+        globex_workspace = globex.json()["workspace"]["id"]
+        async with _client(app, ada, globex_workspace) as client:
             second = await client.post(
                 "/organizations/current/workspaces", json={"name": "Second"}
             )
             assert second.status_code == 201, second.text
-            globex = await client.post("/organizations", json={"name": "Globex"})
-            assert globex.status_code == 201, globex.text
             listed = await client.get("/organizations")
 
         assert listed.status_code == 200, listed.text
         assert [(row["name"], row["role"]) for row in listed.json()] == [
-            ("Acme", "org_admin"),
+            ("Acme", "member"),
             ("Globex", "org_admin"),
         ]
 
