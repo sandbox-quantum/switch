@@ -6,7 +6,7 @@ import { events, rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import { viewStateCache } from '@renderer/lib/stores/view-state-cache';
 import { type Location } from '@shared/core/locations/locations';
-import { hostReachabilityEventChannel } from '@shared/core/remote-hosts/reachability';
+import { hostReachabilityEventChannel } from '@shared/core/remote-hosts/remoteHostEvents';
 import type { LocationViewSnapshot } from '@shared/view-state';
 import type {
   AgentOnboardingCompletion,

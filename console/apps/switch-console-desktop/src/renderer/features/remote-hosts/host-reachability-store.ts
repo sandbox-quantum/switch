@@ -2,10 +2,10 @@ import { makeAutoObservable, runInAction } from 'mobx';
 import { events, rpc } from '@renderer/lib/ipc';
 import {
   type HostReachability,
-  hostReachabilityEventChannel,
   isHostBlocked,
   unknownHostReachability,
 } from '@shared/core/remote-hosts/reachability';
+import { hostReachabilityEventChannel } from '@shared/core/remote-hosts/remoteHostEvents';
 
 /**
  * Renderer mirror of the main process's host reachability model (CHOO-1682).

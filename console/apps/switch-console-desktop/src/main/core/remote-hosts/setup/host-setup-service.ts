@@ -21,9 +21,11 @@ import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import {
-  agentIdForStep,
   hostSetupActivityEventChannel,
   hostSetupPlanEventChannel,
+} from '@shared/core/remote-hosts/remoteHostEvents';
+import {
+  agentIdForStep,
   type HostSetupPlan,
   type HostSetupStep,
 } from '@shared/core/remote-hosts/setup';

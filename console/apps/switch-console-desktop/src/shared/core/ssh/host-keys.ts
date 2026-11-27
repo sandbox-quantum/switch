@@ -9,8 +9,6 @@
  * names.
  */
 
-import { defineEvent } from '@shared/lib/ipc/events';
-
 /**
  * - `unknown`: no key is on record for the host.
  * - `changed`: keys are on record for the host, and the presented one is not
@@ -48,9 +46,6 @@ export type HostKeyProblem = {
    */
   trustRefusal: string | null;
 };
-
-/** The host keys waiting for a decision, pushed whole on every change. */
-export const hostKeyProblemsChannel = defineEvent<HostKeyProblem[]>('ssh:host-key-problems');
 
 /** OpenSSH's short label for a key type: `ED25519`, `ECDSA`, `RSA`. */
 export function keyTypeLabel(keyType: string): string {

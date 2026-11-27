@@ -3,7 +3,7 @@ import { useEffect } from 'react';
 import { SettledStepTracker } from '@renderer/features/remote-hosts/setup/settled-steps';
 import { invalidateHostProviderReadiness } from '@renderer/lib/components/provider-connection-status';
 import { events } from '@renderer/lib/ipc';
-import { hostSetupPlanEventChannel } from '@shared/core/remote-hosts/setup';
+import { hostSetupPlanEventChannel } from '@shared/core/remote-hosts/remoteHostEvents';
 
 /**
  * Ask a host's providers' sign-in again when its setup finds something new.
