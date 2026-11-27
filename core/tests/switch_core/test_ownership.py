@@ -446,6 +446,40 @@ class TestHandingOver:
         assert a.runs() != set(), "nothing has stopped it yet"
         assert not a.kind.surely_holds(key)
 
+    async def test_a_lease_renewed_after_it_lapsed_leaves_the_work_unsure(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        two: tuple[_Process, _Process],
+    ) -> None:
+        """A process paused past its lease runs again, and its overdue renewal
+        commits before its overdue balance. The lease is sure again, but
+        another process took the work over meanwhile: the work stays unsure
+        until a balance has stopped it, and comes back once b lets it go."""
+        a, b = two
+        await a.ownership.balance()
+        await b.ownership.balance()
+        a_had = a.runs()
+        key = sorted(a_had)[0]
+
+        a.lease._renewed_at = time.monotonic() - LEASE_TTL.total_seconds()
+        await _lapse(session_factory, a)
+        await b.ownership.balance()
+        assert key in b.runs()
+
+        await a.lease.renew()
+        assert a.lease.surely_held()
+        assert not a.kind.surely_holds(key)
+
+        await a.ownership.balance()
+        assert set(a.stopped) == a_had
+        assert a.runs() == set(), "b holds the rows until it sees a live again"
+
+        await b.ownership.balance()
+        await a.ownership.balance()
+        assert a.runs() == a_had
+        assert a.kind.surely_holds(key)
+        assert not b.kind.surely_holds(key)
+
     async def test_a_process_back_from_suspending_lets_go_of_what_moved(
         self,
         session_factory: async_sessionmaker[AsyncSession],
@@ -567,6 +601,19 @@ class TestThisProcessLease:
 
         lease._renewed_at = time.monotonic() - LEASE_TTL.total_seconds() / 2
         assert not lease.surely_held()
+
+    async def test_a_renewal_counts_a_lapse_only_once_the_lease_was_unsure(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        lease = process_lease_on(session_factory)
+        await lease.renew()
+        await lease.renew()
+        assert lease.lapses == 0
+
+        lease._renewed_at = time.monotonic() - LEASE_TTL.total_seconds() / 2
+        await lease.renew()
+        assert lease.lapses == 1
+        assert lease.surely_held()
 
     async def test_a_stopped_lease_is_not_held(
         self, session_factory: async_sessionmaker[AsyncSession]

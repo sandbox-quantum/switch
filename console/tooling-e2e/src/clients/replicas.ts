@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { connect } from 'node:net';
 import path from 'node:path';
@@ -85,11 +85,18 @@ export class Replicas {
     return Number(readFileSync(path.join(this.env.pidDir, `${replica}.pid`), 'utf8').trim());
   }
 
+  /**
+   * Whether the replica's process runs: its pid is alive and is a replica,
+   * since after a `SIGKILL` the system may give the pid to another process.
+   */
   running(replica: ReplicaId): boolean {
     try {
-      process.kill(this.pid(replica), 0);
-      return true;
+      const command = execFileSync('ps', ['-p', String(this.pid(replica)), '-o', 'command='], {
+        encoding: 'utf8',
+      });
+      return command.includes('switch_core.main');
     } catch {
+      // `ps` exits non-zero when no process has the pid.
       return false;
     }
   }

@@ -33,7 +33,13 @@ port=$((8000 + n))
 log="$SWITCH_E2E_REPLICA_LOGS/switch-core-$n.log"
 pidfile="$SWITCH_E2E_REPLICAS_DIR/$n.pid"
 
-if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+# Whether pid $1 is a replica, not just a live process: after a SIGKILL the
+# system may give the dead replica's pid to something else.
+is_replica() {
+  ps -p "$1" -o command= 2>/dev/null | grep -q 'switch_core\.main'
+}
+
+if [ -f "$pidfile" ] && is_replica "$(cat "$pidfile")"; then
   echo "replica.sh: replica $n is already running (pid $(cat "$pidfile"))" >&2
   exit 1
 fi
@@ -48,7 +54,7 @@ echo $! >"$pidfile"
 
 for _ in $(seq 120); do
   curl -sf "localhost:$port/health" >/dev/null && exit 0
-  kill -0 "$(cat "$pidfile")" 2>/dev/null \
+  is_replica "$(cat "$pidfile")" \
     || { echo "replica.sh: replica $n exited while starting; see $log" >&2; exit 1; }
   sleep 1
 done

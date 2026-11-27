@@ -476,3 +476,60 @@ def test_a_message_relayed_before_the_bot_is_set_up_here_posts_as_the_bot(
     assert posted_with[0] is not admin
     assert adapter._agent_bots["helper"]["user_id"] == "bot-elsewhere"
     assert "No Mattermost driver" not in caplog.text
+
+
+def _posting_with(adapter: MattermostAdapter) -> list[Any]:
+    posted_with: list[Any] = []
+
+    async def create_posts(
+        driver: Any, channel_id: str, content: str, thread_root_id: str | None
+    ) -> str:
+        posted_with.append(driver)
+        return f"post-{len(posted_with)}"
+
+    adapter._create_posts = create_posts  # type: ignore[method-assign]
+    return posted_with
+
+
+def test_a_failed_bot_lookup_on_a_send_posts_as_the_admin_account(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Mattermost fails the bot listing right after a hand-over: the message
+    is still posted, as the admin account, and both failures are said."""
+    adapter, admin = _adapter([], listening=True)
+    admin.lookups_fail = requests.HTTPError("Mattermost is down")
+    posted_with = _posting_with(adapter)
+
+    async def _go() -> str | None:
+        adapter._main_loop = asyncio.get_running_loop()
+        return await adapter.send_message("channel-1", "helper", "hello")
+
+    with caplog.at_level(logging.WARNING):
+        assert _run(_go()) == "post-1"
+
+    assert posted_with == [admin]
+    assert "Could not set up the Mattermost bot of agent 'helper'" in caplog.text
+    assert "No Mattermost driver found for sender 'helper'" in caplog.text
+
+
+def test_an_agent_with_no_bot_is_not_looked_up_on_every_send() -> None:
+    adapter, admin = _adapter([], listening=True)
+    posted_with = _posting_with(adapter)
+
+    def lookups() -> int:
+        return sum(
+            1
+            for method, endpoint, _ in admin.requests
+            if method == "get" and endpoint.startswith("/bots?")
+        )
+
+    async def _go() -> None:
+        adapter._main_loop = asyncio.get_running_loop()
+        await adapter.send_message("channel-1", "helper", "one")
+        looked = lookups()
+        assert looked > 0
+        await adapter.send_message("channel-1", "helper", "two")
+        assert lookups() == looked
+
+    _run(_go())
+    assert posted_with == [admin, admin]

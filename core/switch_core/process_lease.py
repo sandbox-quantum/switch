@@ -139,6 +139,16 @@ class ProcessLease:
         # answered: the database stamped the lease at some moment after this,
         # so a deadline counted from here can only be early.
         self._renewed_at: float | None = None
+        # How many times the lease stopped being sure before a renewal came
+        # back: a renewal sent too late, or one that answered too late. A
+        # renewal makes the lease sure again but cannot say no other process
+        # read it as lapsed meanwhile, so `Ownership` treats its work as
+        # unsure until it has stopped it once for each.
+        self._lapses = 0
+
+    @property
+    def lapses(self) -> int:
+        return self._lapses
 
     def surely_held(self) -> bool:
         """Whether no other process can yet read this lease as lapsed.
@@ -170,6 +180,9 @@ class ProcessLease:
             await self._processes.renew(session, self.process_id, self._key_ids)
             pruned = await self._processes.prune(session, PRUNE_AFTER)
             await session.commit()
+        held_until = self.held_until()
+        if held_until is not None and self.monotonic() >= held_until:
+            self._lapses += 1
         self._renewed_at = sent_at
         if pruned:
             logger.info("Pruned %d switch-core process lease(s) long stale", pruned)

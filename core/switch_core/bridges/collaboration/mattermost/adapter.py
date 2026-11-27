@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+import time
 import uuid
 import weakref
 from collections import OrderedDict
@@ -146,6 +147,10 @@ _MM_SOCKET_CLOSE_TIMEOUT_SECONDS = 2.0
 # directory dialog, the setup scripts), and connecting is a log-in and two
 # reads, so it is normally under a second.
 _CONNECT_WAIT_SECONDS = 15.0
+
+# How long a send for an agent found to have no bot posts without looking for
+# one again: the lookup pages through every bot on the server.
+_NO_BOT_RECHECK_SECONDS = 30.0
 
 # How often, and how far apart, a bot another process just created is looked
 # for after Mattermost refused to create it again: about two seconds in all.
@@ -664,6 +669,9 @@ class MattermostAdapter(PlatformAdapter):
 
         self._agent_bots: dict[str, dict[str, str]] = {}
         self._bot_drivers: dict[str, Driver] = {}
+        # Agents a send found to have no bot, by when to look again
+        # (`time.monotonic`).
+        self._no_bot_until: dict[str, float] = {}
         # Set to close an agent bot's socket for good: when the adapter stops,
         # or the agent's identity is removed. Each socket runs in a thread of
         # its own that reconnects whenever the connection drops, so without
@@ -3161,12 +3169,27 @@ class MattermostAdapter(PlatformAdapter):
 
         A process that takes the bridge over sets up its agents' bots in the
         background while its workspace consumer already relays, so the first
-        message it relays for an agent can come before that agent's bot."""
+        message it relays for an agent can come before that agent's bot.
+
+        None when there is no bot, or looking for it failed; each caller then
+        posts as the admin account or refuses as it would without one."""
         driver = self._bot_drivers.get(agent_name)
-        if driver is None and self._listening:
-            await self._adopt_agent_identity(agent_name)
-            driver = self._bot_drivers.get(agent_name)
-        return driver
+        if driver is not None or not self._listening:
+            return driver
+        if time.monotonic() < self._no_bot_until.get(agent_name, 0.0):
+            return None
+        try:
+            bot = await self._adopt_agent_identity(agent_name)
+        except Exception:
+            logger.warning(
+                "Could not set up the Mattermost bot of agent %r to send as it",
+                agent_name,
+                exc_info=True,
+            )
+            return None
+        if bot is None:
+            self._no_bot_until[agent_name] = time.monotonic() + _NO_BOT_RECHECK_SECONDS
+        return self._bot_drivers.get(agent_name)
 
     async def _agent_label(self, agent_name: str) -> str:
         # The username is the routing handle — the mention, the member-list key

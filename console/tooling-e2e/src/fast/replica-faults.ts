@@ -8,7 +8,7 @@ import {
   type Replicas,
   type Timers,
 } from '../clients/replicas.ts';
-import { eventText, type RegisteredAgent, type SwitchClient } from '../clients/switch-client.ts';
+import { type AgentEvent, eventText, type RegisteredAgent, type SwitchClient } from '../clients/switch-client.ts';
 import type { BridgedRoom } from '../fixtures/fixtures.ts';
 import type { FastContext, FastScenario } from './scenario.ts';
 
@@ -101,6 +101,34 @@ async function waitForHolder(
   );
 }
 
+/** Every notification the agent is handed within `windowMs`. */
+async function notificationsWithin(
+  switchClient: SwitchClient,
+  agent: RegisteredAgent,
+  windowMs: number
+): Promise<AgentEvent[]> {
+  const until = Date.now() + windowMs;
+  const events: AgentEvent[] = [];
+  while (Date.now() < until) {
+    const remaining = Math.max(1, Math.min(10, Math.ceil((until - Date.now()) / 1000)));
+    events.push(...(await switchClient.pollNotifications(agent, remaining)));
+  }
+  return events;
+}
+
+/** The copies of an agent post in the channel since `sinceMs`. */
+async function postCopies(
+  mattermost: MattermostClient,
+  bridged: BridgedRoom,
+  agent: RegisteredAgent,
+  text: string,
+  sinceMs: number
+): Promise<number> {
+  const bot = bridged.bots.get(agent.id)!;
+  const posts = await mattermost.postsFrom(bridged.channel.id, bot.id, sinceMs);
+  return posts.filter((post) => post.message.includes(text)).length;
+}
+
 /** An agent post appears in the channel exactly once, within `deadlineMs`. */
 async function expectPostedOnce(
   mattermost: MattermostClient,
@@ -124,10 +152,8 @@ async function expectPostedOnce(
       seen.transcript.map((post) => `${post.user_id}: ${post.message}`).join(' | ')
   ).not.toBeNull();
   await new Promise((resolve) => setTimeout(resolve, ONCE_WINDOW_MS));
-  const copies = (await mattermost.postsFrom(bridged.channel.id, bot.id, sinceMs)).filter((post) =>
-    post.message.includes(text)
-  );
-  expect(copies.length, `'${text}' was posted ${copies.length} times`).toBe(1);
+  const copies = await postCopies(mattermost, bridged, agent, text, sinceMs);
+  expect(copies, `'${text}' was posted ${copies} times`).toBe(1);
 }
 
 /** A human's `@agent` post reaches the agent exactly once, within `deadlineMs`. */
@@ -155,12 +181,9 @@ async function expectDeliveredOnce(
         `the agent saw ${JSON.stringify(first.seen).slice(0, 800)}`
     );
   }
-  const again = await switchClient.waitForNotification(
-    agent,
-    (event) => eventText(event).includes(marker),
-    ONCE_WINDOW_MS
-  );
-  expect(again.match, `'${marker}' reached the agent twice`).toBeNull();
+  const after = await notificationsWithin(switchClient, agent, ONCE_WINDOW_MS);
+  const copies = [...first.seen, ...after].filter((event) => eventText(event).includes(marker)).length;
+  expect(copies, `'${marker}' reached the agent ${copies} times`).toBe(1);
 }
 
 /**
@@ -179,6 +202,7 @@ async function expectDeliveredAfterHandOver(
 ): Promise<string[]> {
   const until = Date.now() + deadlineMs;
   const probes: string[] = [];
+  const handed: AgentEvent[] = [];
   let arrived: string | null = null;
   while (arrived === null && Date.now() < until) {
     const probe = names.marker(`${label}${probes.length}`);
@@ -189,6 +213,7 @@ async function expectDeliveredAfterHandOver(
       (event) => probes.some((p) => eventText(event).includes(p)),
       5_000
     );
+    handed.push(...seen.seen);
     if (seen.match !== null) arrived = probes.find((p) => eventText(seen.match!).includes(p))!;
   }
   if (arrived === null) {
@@ -196,15 +221,12 @@ async function expectDeliveredAfterHandOver(
   }
   const lost = probes.slice(0, probes.indexOf(arrived));
   log(`${label}: ${lost.length} post(s) lost before the new holder's sockets were open`);
-  const again = await switchClient.waitForNotification(
-    agent,
-    (event) => probes.some((p) => eventText(event).includes(p)),
-    ONCE_WINDOW_MS
-  );
+  handed.push(...(await notificationsWithin(switchClient, agent, ONCE_WINDOW_MS)));
+  const probesHanded = handed.map(eventText).filter((text) => probes.some((p) => text.includes(p)));
   expect(
-    again.match,
-    `after '${arrived}' arrived, another probe reached the agent: ${again.match === null ? '' : eventText(again.match)}`
-  ).toBeNull();
+    probesHanded,
+    `after '${arrived}' arrived, the agent was handed these probes: ${probesHanded.join(' | ')}`
+  ).toHaveLength(1);
   return lost;
 }
 
@@ -371,6 +393,10 @@ export const bridgeHolderPaused: FastScenario = {
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     log(`replica ${holder} stopped its work once it ran again`);
+    // Counted again now its copy of the bridge has stopped: a relay of its
+    // own before then may have come after the first count.
+    const crossingCopies = await postCopies(context.mattermost!, bridged, agent, crossing, crossingSince);
+    expect(crossingCopies, `'${crossing}' was posted ${crossingCopies} times`).toBe(1);
 
     // A post lost while the holder was paused may sit in its socket's
     // buffer; relayed now, it would reach the agent long after the bridge

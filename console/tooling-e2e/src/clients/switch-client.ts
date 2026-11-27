@@ -1669,8 +1669,10 @@ export class SwitchClient {
 
   /**
    * Wait for a notification satisfying `predicate`, collecting everything seen
-   * along the way. Returns `{ match: null, seen }` on timeout rather than
-   * throwing, so a caller can report the stream it did see.
+   * along the way, the rest of the batch the match came in included: the
+   * server has handed those over, and no later poll returns them. Returns
+   * `{ match: null, seen }` on timeout rather than throwing, so a caller can
+   * report the stream it did see.
    */
   async waitForNotification(
     agent: RegisteredAgent,
@@ -1685,10 +1687,9 @@ export class SwitchClient {
         Math.min(10, Math.ceil((until - Date.now()) / 1000)),
       );
       const events = await this.pollNotifications(agent, remaining);
-      for (const event of events) {
-        seen.push(event);
-        if (predicate(event)) return { match: event, seen };
-      }
+      seen.push(...events);
+      const match = events.find(predicate);
+      if (match !== undefined) return { match, seen };
     }
     return { match: null, seen };
   }

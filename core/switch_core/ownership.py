@@ -292,6 +292,9 @@ class Ownership:
         self._lock = asyncio.Lock()
         self._nudged = asyncio.Event()
         self._suspended = False
+        # The lease's lapses this process has stopped its work for
+        # (`ProcessLease.lapses`).
+        self._lapses_handled = 0
         self._stopped = False
         # Whether `stop` saw every piece of work here stop, rather than being
         # cancelled first.
@@ -310,8 +313,10 @@ class Ownership:
 
     def surely_held(self) -> bool:
         """Whether no other process can yet have taken this one's work over
-        (`ProcessLease.surely_held`)."""
-        return self._lease.surely_held()
+        (`ProcessLease.surely_held`). Once the lease has lapsed this stays
+        false, renewed or not, until a balance has stopped the work: another
+        process may have taken it over while the lease was unsure."""
+        return self._lease.surely_held() and self._lease.lapses == self._lapses_handled
 
     def kind(self, name: str, *, start: StartWork, stop: StopWork) -> OwnedKind:
         """Register a kind of work. `start(key, fence)` runs the work here and
@@ -415,9 +420,12 @@ class Ownership:
         async with self._lock:
             if self._stopped:
                 return
-            if not self._lease.surely_held():
+            if not self.surely_held():
+                lapses = self._lease.lapses
                 await self._suspend()
-                return
+                self._lapses_handled = lapses
+                if not self.surely_held():
+                    return
             async with self._session_factory() as session:
                 leases = await read_leases(session, self._processes)
             await self._prune_now_and_then()
