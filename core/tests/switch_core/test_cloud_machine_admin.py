@@ -191,3 +191,33 @@ async def test_an_operators_hold_is_counted_as_a_stop(rls_harness: RLSHarness) -
     finally:
         uninstall()
     assert events == [{"event": "stopped", "reason": "admin", "backend": "vm"}]
+
+
+async def test_an_operators_hold_on_a_box_is_counted_as_a_box(
+    rls_harness: RLSHarness,
+) -> None:
+    """A hosted agents v2 box held stopped counts under `backend:box`, not as
+    a v1 machine."""
+    from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+
+    _owner_id, machine_id = await _owner_with_machine(
+        rls_harness, state="ready", desired_state="running", stop_reason=None
+    )
+    async with rls_harness.owner() as session:
+        machine = await session.get(CloudMachine, machine_id)
+        assert machine is not None
+        machine.backend = "box"
+        await session.commit()
+    registry = MetricsRegistry()
+    install(registry)
+    try:
+        await stop_machine(rls_harness.restricted, machine_id, "suspected abuse")
+        events = [
+            dict(point.attributes)
+            for payload in registry.collect()
+            if payload.name == "switch.hosted.machine_events"
+            for point in payload.numbers
+        ]
+    finally:
+        uninstall()
+    assert events == [{"event": "stopped", "reason": "admin", "backend": "box"}]

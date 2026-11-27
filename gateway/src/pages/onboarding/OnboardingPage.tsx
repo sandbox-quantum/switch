@@ -1,17 +1,34 @@
-import { Alert, Button, Divider, Stack, TextField, Typography } from "@mui/material";
+import "@switch-console/chat-ui/theme.css";
+import { Alert } from "@switch-console/chat-ui/primitives/alert";
+import { Button } from "@switch-console/chat-ui/primitives/button";
+import { Field } from "@switch-console/chat-ui/primitives/field";
+import { Input } from "@switch-console/chat-ui/primitives/input";
+import { Label } from "@switch-console/chat-ui/primitives/label";
+import { SHARED_UI_CLASS } from "@switch-console/chat-ui/model/scope";
+import { pickSubtitle } from "@switch-console/chat-ui/model/workspace-offers";
 import { useState } from "react";
 import { useAuth } from "../../data/AuthContext";
 import OrganizationsWithoutWorkspace from "../account/OrganizationsWithoutWorkspace";
 import { inviteTokenFrom, storePendingInvite } from "../../data/sessionState";
+import { OrDivider } from "../auth/AuthLayout";
 import CenteredCard from "./CenteredCard";
+import { AGENT_MANAGEMENT, GATEWAY_ONBOARDING } from "../../data/featureFlags";
+import { GET_STARTED } from "../get-started/paths";
 import CreateWorkspaceForm from "./CreateWorkspaceForm";
+import { WorkspaceOfferRows, useWorkspaceOffers } from "./WorkspaceOffers";
 
-/** Signed in, and in no workspace yet. */
 export default function OnboardingPage() {
-  const { session, refresh } = useAuth();
+  const { session, refresh, capabilities } = useAuth();
+  const landing =
+    capabilities.features[GATEWAY_ONBOARDING] === true &&
+    capabilities.features[AGENT_MANAGEMENT] === true
+      ? GET_STARTED
+      : "/";
   const [invite, setInvite] = useState("");
   const [inviteError, setInviteError] = useState<string | null>(null);
   const canCreate = session?.can_create_workspace ?? false;
+  const offers = useWorkspaceOffers();
+  const [joining, setJoining] = useState(false);
 
   const joinWithInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,41 +38,46 @@ export default function OnboardingPage() {
       return;
     }
     storePendingInvite(token);
-    // The pending invite now outranks this screen; re-reading the session
-    // re-renders the app into the accept step.
     await refresh();
   };
 
   return (
-    <CenteredCard
-      title="Welcome to Switch"
-      subtitle={
-        canCreate
-          ? "Create an organization for your team, or join a workspace you've been invited to."
-          : "You're not in a workspace yet. Ask a workspace admin for an invite link."
-      }
-    >
-      <Stack spacing={3}>
-        <OrganizationsWithoutWorkspace />
-        {canCreate && <CreateWorkspaceForm />}
-        {canCreate && <Divider>or</Divider>}
-        <Stack component="form" onSubmit={joinWithInvite} spacing={2}>
-          <Typography variant="subtitle2">Have an invite link?</Typography>
-          {inviteError && <Alert severity="error">{inviteError}</Alert>}
-          <TextField
-            label="Invite link"
-            value={invite}
-            onChange={(e) => {
-              setInvite(e.target.value);
-              setInviteError(null);
-            }}
-            size="small"
-          />
-          <Button type="submit" variant="outlined" disabled={invite.trim() === ""}>
-            Join with invite
-          </Button>
-        </Stack>
-      </Stack>
-    </CenteredCard>
+    <div className={SHARED_UI_CLASS}>
+      <CenteredCard
+        title="Welcome to Switch"
+        subtitle={
+          offers.count > 0
+            ? `${pickSubtitle(0, offers.count)}${canCreate ? " Or create an organization for your team." : ""}`
+            : canCreate
+              ? "Create an organization for your team, or join a workspace you've been invited to."
+              : "You're not in a workspace yet. Ask a workspace admin for an invite link."
+        }
+      >
+        <div className="space-y-6">
+          <OrganizationsWithoutWorkspace />
+          <WorkspaceOfferRows offers={offers} landing={landing} disabled={false} onBusy={setJoining} />
+          {canCreate && !joining && <CreateWorkspaceForm landing={landing} />}
+          {canCreate && <OrDivider />}
+          <form onSubmit={joinWithInvite} className="space-y-4">
+            <h3 className="text-sm font-medium">Have an invite link?</h3>
+            {inviteError && <Alert variant="destructive">{inviteError}</Alert>}
+            <Field>
+              <Label htmlFor="invite-link">Invite link</Label>
+              <Input
+                id="invite-link"
+                value={invite}
+                onChange={(e) => {
+                  setInvite(e.target.value);
+                  setInviteError(null);
+                }}
+              />
+            </Field>
+            <Button type="submit" variant="outline" disabled={invite.trim() === ""} className="w-full">
+              Join with invite
+            </Button>
+          </form>
+        </div>
+      </CenteredCard>
+    </div>
   );
 }

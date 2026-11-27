@@ -1,6 +1,16 @@
+import {
+  NewAgentFooter,
+  NewAgentHeader,
+  RunLocationField,
+  type RunLocationEntry,
+  type RunLocationIconKind,
+  RunLocationLine,
+} from '@switch-console/chat-ui/components/new-agent-form';
+import { DialogContentArea } from '@switch-console/chat-ui/primitives/dialog';
+import { Field, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Cloud, Monitor, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isMachineAsleep } from '@renderer/features/cloud-agents/cloud-machine-state';
@@ -30,25 +40,8 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useModalContext, useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
-import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
-import {
-  DialogContentArea,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Field, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
 import { ModalLayout } from '@renderer/lib/ui/modal-layout';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/lib/ui/select';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
@@ -222,6 +215,17 @@ export const NewAgentForm = observer(function NewAgentForm({
       : isRemoteRun
         ? (onboardedHosts.find((h) => h.sshHost === runHost)?.name ?? runHost)
         : 'This computer';
+  const runLocationIcon: RunLocationIconKind = isCloudRun
+    ? 'cloud'
+    : isMachineRun
+      ? serverMachine?.local?.kind === 'this-computer'
+        ? 'monitor'
+        : serverMachine?.cloud
+          ? 'cloud'
+          : 'server'
+      : isRemoteRun
+        ? 'server'
+        : 'monitor';
 
   // An agent always binds to the active (scoped) server — the user does not pick
   // one here. Ensure the server list + active id are loaded when the modal opens
@@ -274,6 +278,52 @@ export const NewAgentForm = observer(function NewAgentForm({
       ),
     [onboardedHosts, targetKind, targetHost]
   );
+  // Icons and the right-hand kind, because the list mixes sorts of thing: the
+  // server's machines, this machine, Switch Cloud, and hosts reached over SSH.
+  // The names alone do not say which is which.
+  const runLocationEntries: RunLocationEntry[] = [
+    ...(serverMachines
+      ? machineRunLocations(serverMachines).map((option) => ({ ...option, truncate: true }))
+      : []),
+    ...(serverMachines && thisComputerIsMachine(serverMachines)
+      ? []
+      : [
+          {
+            value: LOCAL_RUN_LOCATION,
+            label: 'This computer',
+            tag: 'local',
+            icon: 'monitor' as const,
+            truncate: false,
+          },
+        ]),
+    ...(cloudOffered && !cloudMachineListed
+      ? [
+          {
+            value: 'cloud',
+            label: 'Switch Cloud',
+            tag: cloudAvailable
+              ? cloudAsleep
+                ? 'asleep, wakes when chosen'
+                : 'preview'
+              : cloudNotSetUp
+                ? 'not set up on this server'
+                : 'checking…',
+            icon: 'cloud' as const,
+            disabled: !cloudAvailable,
+            truncate: false,
+          },
+        ]
+      : []),
+    ...allowedHosts
+      .filter((host) => !(serverMachines && sshHostIsMachine(serverMachines, host.sshHost)))
+      .map((host) => ({
+        value: host.sshHost,
+        label: host.name,
+        tag: 'ssh',
+        icon: 'server' as const,
+        truncate: true,
+      })),
+  ];
   const runLocationConstrained = targetServer?.managed ?? false;
   // If the current choice falls outside what the target server allows (e.g. the
   // server changed), snap back to local.
@@ -696,65 +746,35 @@ export const NewAgentForm = observer(function NewAgentForm({
   return (
     <ModalLayout
       header={
-        <DialogHeader showCloseButton={submitState === 'idle'}>
-          <DialogTitle>New agent</DialogTitle>
-          {targetServerId && (
-            <button
-              type="button"
-              disabled={submitState !== 'idle'}
-              onClick={() => {
-                onClose();
-                navigate('templates', { serverId: targetServerId, kind: 'agent' });
-              }}
-              className="w-fit cursor-pointer text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground disabled:cursor-default disabled:opacity-50"
-            >
-              Or start from a template
-            </button>
-          )}
-        </DialogHeader>
+        <NewAgentHeader
+          closable={submitState === 'idle'}
+          otherWays={
+            targetServerId
+              ? [
+                  {
+                    label: 'Or start from a template',
+                    onClick: () => {
+                      onClose();
+                      navigate('templates', { serverId: targetServerId, kind: 'agent' });
+                    },
+                  },
+                ]
+              : []
+          }
+        />
       }
       footer={
-        <DialogFooter>
-          {isRemoteRun && hostReadiness.checking && (
-            <span className="mr-auto self-center text-xs text-foreground-muted">
-              Waiting for {runLocationLabel}…
-            </span>
-          )}
-          {onBack && (
-            <Button variant="outline" onClick={onBack} disabled={submitState !== 'idle'}>
-              Back
-            </Button>
-          )}
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onClose}
-            disabled={submitState !== 'idle'}
-          >
-            Cancel
-          </Button>
-          <TooltipProvider delay={150}>
-            <Tooltip>
-              {/* Span, not button, carries the tooltip: a disabled button emits no pointer events. */}
-              <TooltipTrigger
-                render={
-                  <span className="inline-flex">
-                    <ConfirmButton
-                      type="button"
-                      onClick={() => void handleCreate()}
-                      disabled={!canSubmit}
-                    >
-                      {submitState === 'creating' ? 'Adding…' : 'Add agent'}
-                    </ConfirmButton>
-                  </span>
-                }
-              />
-              {disabledReason !== null && (
-                <TooltipContent side="top">{disabledReason}</TooltipContent>
-              )}
-            </Tooltip>
-          </TooltipProvider>
-        </DialogFooter>
+        <NewAgentFooter
+          waitingFor={isRemoteRun && hostReadiness.checking ? runLocationLabel : null}
+          onBack={onBack}
+          onCancel={onClose}
+          idle={submitState === 'idle'}
+          creating={submitState === 'creating'}
+          canSubmit={canSubmit}
+          disabledReason={disabledReason}
+          onCreate={() => void handleCreate()}
+          ConfirmButton={ConfirmButton}
+        />
       }
     >
       <DialogContentArea
@@ -764,87 +784,16 @@ export const NewAgentForm = observer(function NewAgentForm({
       >
         <AgentIdentityFields form={form} serverId={pickState.serverId} nameTaken={nameTaken} />
 
-        <Field>
-          <FieldLabel>Run location</FieldLabel>
-          {/* Icons and the right-hand kind, because the list mixes two sorts of
-              thing: this machine, and hosts reached over SSH. The names alone
-              do not say which is which. */}
-          <Select value={runHost} onValueChange={(v) => setRunHost(v ?? LOCAL_RUN_LOCATION)}>
-            <SelectTrigger className="w-full">
-              <SelectValue>
-                {isCloudRun ? (
-                  <Cloud className="size-4 text-foreground-muted" />
-                ) : isMachineRun ? (
-                  serverMachine?.local?.kind === 'this-computer' ? (
-                    <Monitor className="size-4 text-foreground-muted" />
-                  ) : serverMachine?.cloud ? (
-                    <Cloud className="size-4 text-foreground-muted" />
-                  ) : (
-                    <Server className="size-4 text-foreground-muted" />
-                  )
-                ) : isRemoteRun ? (
-                  <Server className="size-4 text-foreground-muted" />
-                ) : (
-                  <Monitor className="size-4 text-foreground-muted" />
-                )}
-                <span className="truncate">{runLocationLabel}</span>
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {serverMachines &&
-                machineRunLocations(serverMachines).map((option) => (
-                  <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
-                    {option.icon === 'monitor' ? (
-                      <Monitor className="size-4 text-foreground-muted" />
-                    ) : option.icon === 'cloud' ? (
-                      <Cloud className="size-4 text-foreground-muted" />
-                    ) : (
-                      <Server className="size-4 text-foreground-muted" />
-                    )}
-                    <span className="flex-1 truncate">{option.label}</span>
-                    <span className="text-xs text-foreground-muted">{option.tag}</span>
-                  </SelectItem>
-                ))}
-              {!(serverMachines && thisComputerIsMachine(serverMachines)) && (
-                <SelectItem value={LOCAL_RUN_LOCATION}>
-                  <Monitor className="size-4 text-foreground-muted" />
-                  <span className="flex-1">This computer</span>
-                  <span className="text-xs text-foreground-muted">local</span>
-                </SelectItem>
-              )}
-              {cloudOffered && !cloudMachineListed && (
-                <SelectItem value="cloud" disabled={!cloudAvailable}>
-                  <Cloud className="size-4 text-foreground-muted" />
-                  <span className="flex-1">Switch Cloud</span>
-                  <span className="text-xs text-foreground-muted">
-                    {cloudAvailable
-                      ? cloudAsleep
-                        ? 'asleep, wakes when chosen'
-                        : 'preview'
-                      : cloudNotSetUp
-                        ? 'not set up on this server'
-                        : 'checking…'}
-                  </span>
-                </SelectItem>
-              )}
-              {allowedHosts
-                .filter(
-                  (host) => !(serverMachines && sshHostIsMachine(serverMachines, host.sshHost))
-                )
-                .map((host) => (
-                  <SelectItem key={host.sshHost} value={host.sshHost}>
-                    <Server className="size-4 text-foreground-muted" />
-                    <span className="flex-1 truncate">{host.name}</span>
-                    <span className="text-xs text-foreground-muted">ssh</span>
-                  </SelectItem>
-                ))}
-            </SelectContent>
-          </Select>
+        <RunLocationField
+          value={runHost}
+          onValueChange={(v) => setRunHost(v ?? LOCAL_RUN_LOCATION)}
+          selected={{ icon: runLocationIcon, label: runLocationLabel }}
+          entries={runLocationEntries}
+        >
           {cloudFallback && !isCloudRun && (
-            <p className="flex items-start gap-1.5 text-xs text-foreground-muted" role="status">
-              <Cloud className="mt-0.5 size-3.5 shrink-0" />
-              <span>{cloudFallback}</span>
-            </p>
+            <RunLocationLine icon="cloud" status>
+              {cloudFallback}
+            </RunLocationLine>
           )}
           {!isCloudRun && !management && runLocationConstrained && (
             <p className="text-xs text-foreground-muted">
@@ -867,18 +816,11 @@ export const NewAgentForm = observer(function NewAgentForm({
             />
           )}
           {isMachineRun && serverMachine && (
-            <p className="flex items-start gap-1.5 text-xs text-foreground-muted">
-              {serverMachine.cloud ? (
-                <Cloud className="mt-0.5 size-3.5 shrink-0" />
-              ) : (
-                <Server className="mt-0.5 size-3.5 shrink-0" />
-              )}
-              <span>
-                {serverMachine.state === 'online'
-                  ? `Runs as a managed agent on ${serverMachine.name}.`
-                  : machineReason}
-              </span>
-            </p>
+            <RunLocationLine icon={serverMachine.cloud ? 'cloud' : 'server'} status={false}>
+              {serverMachine.state === 'online'
+                ? `Runs as a managed agent on ${serverMachine.name}.`
+                : machineReason}
+            </RunLocationLine>
           )}
           {!isCloudRun && (machineQuery.error || (askForMachines && machinesQuery.error)) && (
             <p className="text-xs text-destructive">{machineReason}</p>
@@ -895,7 +837,7 @@ export const NewAgentForm = observer(function NewAgentForm({
               onNavigateAway={onClose}
             />
           )}
-        </Field>
+        </RunLocationField>
 
         {/* The host still gates what comes below it: with it unreachable, or
             missing its own prerequisites, we cannot know which providers it
@@ -955,10 +897,9 @@ export const NewAgentForm = observer(function NewAgentForm({
         )}
 
         {isCloudRun && machineReason && (
-          <p className="flex items-start gap-1.5 text-xs text-foreground-muted" role="status">
-            <Cloud className="mt-0.5 size-3.5 shrink-0" />
-            <span>{machineReason}</span>
-          </p>
+          <RunLocationLine icon="cloud" status>
+            {machineReason}
+          </RunLocationLine>
         )}
 
         {canConfigureAgent && !!pickState.providerId && managedRun && pickState.serverId && (

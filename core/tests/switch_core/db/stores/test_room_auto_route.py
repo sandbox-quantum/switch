@@ -13,6 +13,7 @@ from switch_core.db.stores.room_store import (
     AUTO_ROUTE_ON_KEY,
     DECISION_NOTICE_AT_KEY,
     RoomStore,
+    auto_route_choice_in,
     auto_route_fallback_in,
     auto_route_on_in,
 )
@@ -31,42 +32,49 @@ async def _room(session_factory: async_sessionmaker[AsyncSession]) -> str:
         return room.id
 
 
-def test_off_unless_the_metadata_turns_it_on() -> None:
-    assert not auto_route_on_in(None)
-    assert not auto_route_on_in({})
-    assert not auto_route_on_in({AUTO_ROUTE_ON_KEY: "yes"})
-    assert auto_route_on_in({AUTO_ROUTE_ON_KEY: True})
+def test_the_server_default_holds_until_the_room_chooses() -> None:
+    for default_on in (True, False):
+        assert auto_route_on_in(None, default_on) is default_on
+        assert auto_route_on_in({}, default_on) is default_on
+        assert auto_route_on_in({AUTO_ROUTE_ON_KEY: "yes"}, default_on) is default_on
+        assert auto_route_on_in({AUTO_ROUTE_ON_KEY: True}, default_on)
+        assert not auto_route_on_in({AUTO_ROUTE_ON_KEY: False}, default_on)
 
 
-async def test_on_then_off_leaves_the_rest_of_the_metadata(
+async def _choice(
+    session_factory: async_sessionmaker[AsyncSession], room_id: str
+) -> bool | None:
+    async with session_factory() as session:
+        room = await session.get(Room, room_id)
+        assert room is not None
+        return auto_route_choice_in(room.metadata_)
+
+
+async def test_on_then_off_is_kept_beside_the_rest_of_the_metadata(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     room_id = await _room(session_factory)
     store = RoomStore()
+    assert await _choice(session_factory, room_id) is None
 
     async with session_factory() as session:
-        assert not await store.auto_route_on(session, room_id)
         await store.set_auto_route_on(session, room_id, True)
         await session.commit()
+    assert await _choice(session_factory, room_id) is True
+
     async with session_factory() as session:
-        assert await store.auto_route_on(session, room_id)
-        room = await store.get(session, room_id)
-        assert room is not None
-        assert room.metadata_ == {"created_by_kind": "user", AUTO_ROUTE_ON_KEY: True}
         await store.set_auto_route_on(session, room_id, False)
         await session.commit()
-    async with session_factory() as session:
-        assert not await store.auto_route_on(session, room_id)
         room = await store.get(session, room_id)
         assert room is not None
-        assert room.metadata_ == {"created_by_kind": "user"}
+        assert room.metadata_ == {"created_by_kind": "user", AUTO_ROUTE_ON_KEY: False}
+    assert await _choice(session_factory, room_id) is False
 
 
 async def test_a_missing_room_is_refused(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     async with session_factory() as session:
-        assert not await RoomStore().auto_route_on(session, str(uuid.uuid4()))
         with pytest.raises(ValueError, match="does not exist"):
             await RoomStore().set_auto_route_on(session, str(uuid.uuid4()), True)
 

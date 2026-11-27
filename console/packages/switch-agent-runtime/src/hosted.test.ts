@@ -1,13 +1,24 @@
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type CallerContext,
   callOperation,
+  callOperationOutcome,
   serveMcpOverHttp,
   SwitchToolCatalog,
   type ToolDefinition,
@@ -37,6 +48,64 @@ function context(overrides: Partial<CallerContext> = {}): CallerContext {
     ...overrides,
   };
 }
+
+describe('an operation call while Switch may be away', () => {
+  it('sends the host key as a header, and only when there is one', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ result: { event_id: 'e' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await callOperationOutcome(context({ clientTxnId: 'reply:k' }), 'post_message', { body: 'x' });
+    await callOperationOutcome(context(), 'post_message', { body: 'x' });
+    const headers = fetchMock.mock.calls.map(
+      (call) => (call as unknown as [string, RequestInit])[1].headers as Record<string, string>
+    );
+    expect(headers[0]!['X-Switch-Client-Txn-Id']).toBe('reply:k');
+    expect(headers[1]).not.toHaveProperty('X-Switch-Client-Txn-Id');
+  });
+
+  it.each([
+    ['no Switch to connect to', () => Promise.reject(new TypeError('fetch failed')), true],
+    [
+      'a gateway with no Switch behind it (502)',
+      async () => new Response('bad gateway', { status: 502 }),
+      true,
+    ],
+    ['503', async () => new Response('unavailable', { status: 503 }), true],
+    ['504', async () => new Response('timeout', { status: 504 }), true],
+    [
+      'a connection Switch forgot when it restarted',
+      async () => new Response('connection connection is not open', { status: 409 }),
+      true,
+    ],
+    [
+      'a Switch just started, its agent client not yet running (older Switch: 400)',
+      async () => new Response('{"detail":"Agent client not running"}', { status: 400 }),
+      true,
+    ],
+    ['a refusal (403)', async () => new Response('not a member', { status: 403 }), false],
+    ['a bad request (400)', async () => new Response('bad', { status: 400 }), false],
+    ['Switch failing (500)', async () => new Response('boom', { status: 500 }), false],
+  ])('says whether %s is Switch being away', async (_name, answer, unavailable) => {
+    vi.stubGlobal('fetch', vi.fn(answer));
+    const outcome = await callOperationOutcome(context(), 'post_message', { body: 'x' });
+    expect(outcome.result.isError).toBe(true);
+    expect(outcome.unavailable).toBe(unavailable);
+  });
+
+  it('counts a success as available', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ result: { event_id: 'e' } }))
+    );
+    const outcome = await callOperationOutcome(context(), 'post_message', { body: 'x' });
+    expect(outcome).toEqual({
+      result: {
+        content: [{ type: 'text', text: JSON.stringify({ event_id: 'e' }, null, 2) }],
+        structuredContent: { event_id: 'e' },
+      },
+      unavailable: false,
+    });
+  });
+});
 
 describe('an operation call', () => {
   it('is made as the caller: its connection and the session selector', async () => {
@@ -111,6 +180,202 @@ describe('the tool catalog', () => {
     });
     expect(result.content[0]!.text).toContain(`Switch Trust: ${JSON.stringify(trust)}`);
   });
+
+  describe('send_attachment', () => {
+    /** A file outside the session's directories, and the session whose cwd is `work`. */
+    function outsideFile(): { ctx: CallerContext; secret: string } {
+      const elsewhere = mkdtempSync(join(tmpdir(), 'hosted-elsewhere-'));
+      dirs.push(elsewhere);
+      const secret = join(elsewhere, 'id_ed25519');
+      writeFileSync(secret, 'PRIVATE KEY');
+      const ctx = context();
+      mkdirSync(join(ctx.cwd, 'work'));
+      return { ctx: { ...ctx, cwd: join(ctx.cwd, 'work') }, secret };
+    }
+
+    async function send(ctx: CallerContext, args: Record<string, unknown>) {
+      const fetchMock = vi.fn(async (_url: string) => Response.json({ event_id: 'event' }));
+      vi.stubGlobal('fetch', fetchMock);
+      const result = await catalog.call(ctx, 'send_attachment', args);
+      return { result, uploads: fetchMock.mock.calls.length };
+    }
+
+    it('refuses a file outside the working directory, and uploads nothing', async () => {
+      const { ctx, secret } = outsideFile();
+      const { result, uploads } = await send(ctx, { path: secret });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain(`Refused to send ${secret}`);
+      expect(result.content[0]!.text).toContain('Copy the file into the working directory');
+      expect(uploads).toBe(0);
+    });
+
+    it('refuses a path that climbs out of the working directory', async () => {
+      const { ctx } = outsideFile();
+      writeFileSync(join(ctx.cwd, '..', 'beside.txt'), 'not in the workspace');
+      const { result, uploads } = await send(ctx, { path: '../beside.txt' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain('Refused to send ../beside.txt');
+      expect(uploads).toBe(0);
+    });
+
+    it('refuses a symbolic link inside the working directory to a file outside it', async () => {
+      const { ctx, secret } = outsideFile();
+      symlinkSync(secret, join(ctx.cwd, 'innocent.txt'));
+      const { result, uploads } = await send(ctx, { path: 'innocent.txt' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain('Refused to send innocent.txt');
+      expect(uploads).toBe(0);
+    });
+
+    it('refuses a hard link inside the working directory to a file outside it', async () => {
+      const { ctx, secret } = outsideFile();
+      linkSync(secret, join(ctx.cwd, 'innocuous.txt'));
+      expect(readFileSync(join(ctx.cwd, 'innocuous.txt'), 'utf8')).toBe('PRIVATE KEY');
+      const { result, uploads } = await send(ctx, { path: 'innocuous.txt' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain(
+        'Refused to send innocuous.txt: it has 2 hard links'
+      );
+      expect(result.content[0]!.text).toContain('Copy it into the working directory');
+      expect(uploads).toBe(0);
+    });
+
+    it('refuses a file in the working directory once it has a hard link anywhere else', async () => {
+      const { ctx, secret } = outsideFile();
+      writeFileSync(join(ctx.cwd, 'notes.md'), 'hello');
+      linkSync(join(ctx.cwd, 'notes.md'), `${secret}.copy`);
+      const { result, uploads } = await send(ctx, { path: 'notes.md' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain('hard links');
+      expect(uploads).toBe(0);
+    });
+
+    it('sends an attachment it downloaded, under any of its hard links', async () => {
+      const { ctx } = outsideFile();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('downloaded'))
+      );
+      const download = await catalog.call(ctx, 'download_attachment', {
+        mxc: 'mxc://server/media-id',
+        filename: 'a.txt',
+      });
+      const downloaded = download.content[0]!.text;
+      linkSync(downloaded, join(ctx.cwd, 'a.txt'));
+      const { result, uploads } = await send(ctx, { paths: [downloaded, 'a.txt'] });
+      expect(result.isError).toBeUndefined();
+      expect(uploads).toBe(1);
+    });
+
+    it('refuses a file another took the name of a downloaded attachment for', async () => {
+      const { ctx, secret } = outsideFile();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('downloaded'))
+      );
+      const download = await catalog.call(ctx, 'download_attachment', {
+        mxc: 'mxc://server/media-id',
+        filename: 'a.txt',
+      });
+      const downloaded = download.content[0]!.text;
+      rmSync(downloaded);
+      linkSync(secret, downloaded);
+      const { result, uploads } = await send(ctx, { path: downloaded });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain('hard links');
+      expect(uploads).toBe(0);
+    });
+
+    it.runIf(process.platform === 'darwin' || process.platform === 'win32')(
+      'sends a file in the working directory named in another case, as the file system reads it',
+      async ({ skip }) => {
+        const { ctx } = outsideFile();
+        writeFileSync(join(ctx.cwd, 'Notes.md'), 'hello');
+        const named = join(dirname(ctx.cwd), 'WORK', 'NOTES.MD');
+        if (!existsSync(named)) skip('this volume tells case apart');
+        const { result, uploads } = await send(ctx, { path: named });
+        expect(result.isError).toBeUndefined();
+        expect(uploads).toBe(1);
+      }
+    );
+
+    it('sends nothing when one of several files is refused', async () => {
+      const { ctx, secret } = outsideFile();
+      writeFileSync(join(ctx.cwd, 'notes.md'), 'hello');
+      const { result, uploads } = await send(ctx, { paths: ['notes.md', secret] });
+      expect(result.isError).toBe(true);
+      expect(uploads).toBe(0);
+    });
+
+    it('sends a file inside the working directory, and one it downloaded', async () => {
+      const { ctx } = outsideFile();
+      mkdirSync(join(ctx.cwd, 'src'));
+      writeFileSync(join(ctx.cwd, 'src', 'a.ts'), 'export {};');
+      mkdirSync(ctx.mediaDir);
+      writeFileSync(join(ctx.mediaDir, 'media-id-a.png'), 'png');
+      const { result, uploads } = await send(ctx, {
+        paths: [join(ctx.cwd, 'src', 'a.ts'), join(ctx.mediaDir, 'media-id-a.png')],
+      });
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0]!.text).toContain('Sent 2 files (a.ts, media-id-a.png)');
+      expect(uploads).toBe(1);
+    });
+  });
+
+  it('writes a download into the media directory, replacing a link planted at its name', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('downloaded'))
+    );
+    const ctx = context();
+    const target = join(ctx.cwd, 'outside.txt');
+    writeFileSync(target, 'left alone');
+    mkdirSync(ctx.mediaDir);
+    symlinkSync(target, join(ctx.mediaDir, 'media-id-a.txt'));
+    const result = await catalog.call(ctx, 'download_attachment', {
+      mxc: 'mxc://server/media-id',
+      filename: 'a.txt',
+    });
+    expect(result.content[0]!.text).toBe(join(ctx.mediaDir, 'media-id-a.txt'));
+    expect(readFileSync(target, 'utf8')).toBe('left alone');
+    expect(readFileSync(join(ctx.mediaDir, 'media-id-a.txt'), 'utf8')).toBe('downloaded');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps downloads to this user: the directory 0700 and each file 0600',
+    async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('bytes'))
+      );
+      const ctx = context();
+      const umask = process.umask(0o022);
+      try {
+        const result = await catalog.call(ctx, 'download_attachment', {
+          mxc: 'mxc://server/media-id',
+          filename: 'a.txt',
+        });
+        expect(statSync(ctx.mediaDir).mode & 0o777).toBe(0o700);
+        expect(statSync(result.content[0]!.text).mode & 0o777).toBe(0o600);
+      } finally {
+        process.umask(umask);
+      }
+    }
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'tightens a media directory an earlier build left open',
+    async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('bytes'))
+      );
+      const ctx = context();
+      mkdirSync(ctx.mediaDir, { mode: 0o755 });
+      await catalog.call(ctx, 'download_attachment', { mxc: 'mxc://server/media-id' });
+      expect(statSync(ctx.mediaDir).mode & 0o777).toBe(0o700);
+    }
+  );
 
   it('downloads into the caller’s media directory', async () => {
     vi.stubGlobal(

@@ -54,11 +54,11 @@ vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {}, emit: () => {} },
 }));
 
+import { Dialog } from '@switch-console/chat-ui/primitives/dialog';
 import { format } from 'date-fns';
 import type { AccountLinkTarget } from '@renderer/features/switch-servers/account-link-confirmation';
 import { ClaimIdentityModal } from '@renderer/features/switch-servers/ClaimIdentityModal';
 import { myIdentitiesQueryKey } from '@renderer/features/switch-servers/use-my-identities';
-import { Dialog } from '@renderer/lib/ui/dialog';
 import type {
   ClaimIdentityResult,
   LinkCode,

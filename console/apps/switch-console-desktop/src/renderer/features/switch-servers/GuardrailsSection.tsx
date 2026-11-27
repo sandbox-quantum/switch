@@ -1,13 +1,13 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Checkbox } from '@switch-console/chat-ui/primitives/checkbox';
+import { DisclosureRow } from '@switch-console/chat-ui/primitives/disclosure-row';
+import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { Button } from '@renderer/lib/ui/button';
-import { Checkbox } from '@renderer/lib/ui/checkbox';
-import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
-import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
 import { cn } from '@renderer/utils/utils';
 import {
   type ClearTrustSettingsResult,
@@ -202,9 +202,10 @@ export const GuardrailsSection = observer(function GuardrailsSection({
           <div className={cn('flex flex-col gap-3 pt-3', !open && 'hidden')}>
             <p className="text-xs text-foreground-muted">
               Every message this server sends is checked before it goes out once an endpoint and an
-              API key are set, including the text inside attached files, of which only the first
-              20,000 characters are checked. Files with no text to read, such as images and
-              archives, are sent without being checked.
+              API key are set, and so is the text inside attached files. Only the first 20,000
+              characters of each are checked, and a note says so. Images, audio, video, archives,
+              and Office files other than Word documents can&apos;t be read, so they are sent
+              unchecked.
             </p>
             <FieldGroup>
               <Field>

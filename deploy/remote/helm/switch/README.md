@@ -130,6 +130,47 @@ public; a 404 means the path is missing or aimed at port 8000.
 Full walkthrough, including the Azure side:
 [`docs/old/bridges/TEAMS_SETUP.md`](../../../../docs/old/bridges/TEAMS_SETUP.md).
 
+### Network policies
+
+With `networkPolicy.enabled` (the default), the in-cluster Postgres admits only
+this release's switch-core and migration Jobs, on 5432. Nothing
+else in the namespace or the cluster can open a connection to it.
+
+switch-core and the gateway are reached from outside the cluster,
+through an ingress controller or load balancer the chart cannot name. They get
+a policy once you name it in `networkPolicy.ingressFrom` (NetworkPolicyPeer
+entries: your ingress controller's pods, a load balancer's address ranges, and
+wherever agents connect from). Each then admits those peers on the ports it
+serves, plus the release's own pods that call it, and nothing else. Without
+`ingressFrom` they get no policy. A policy admitting everyone would only widen a
+stricter policy of your own in the namespace.
+
+Policies need a CNI that enforces them. Without one they are accepted and
+ignored. The decision service has its own (`decision.networkPolicy`).
+
+---
+
+## Pods run unprivileged
+
+Every pod runs as a non-root user: the one its image runs as. switch-core runs
+as 10001, the gateway's nginx as 101 and Postgres as 70 (the Alpine image's
+`postgres`). Every pod also has privilege escalation off, every capability
+dropped, the runtime's default seccomp profile and a read-only root
+filesystem, with emptyDirs where the process writes. No pod mounts a
+ServiceAccount token: nothing in the chart calls the Kubernetes API. Workload
+identity and the Teams app's federated credential mount tokens of their own.
+
+The optional decision service's model server is the exception. It has
+privilege escalation off and every capability dropped, but its root
+filesystem stays writable, and llama.cpp's upstream image runs as root.
+
+Postgres needs no step on upgrade. A volume an earlier release started as
+root already belongs to the `postgres` user. If you point
+`postgresql.image` at the Debian image, set `postgresql.podSecurityContext`'s
+user, group and fsGroup to 999. Each component's `podSecurityContext` and
+`securityContext` can be overridden. On a platform that assigns its own user
+ids (OpenShift), remove `runAsUser`, `runAsGroup` and `fsGroup`.
+
 ---
 
 ## Ingress modes
@@ -213,6 +254,21 @@ cannot see your bridges, so it cannot infer that you need port 3978 published.
 **A bridge that fails to start is dropped, not retried.** It is restarted when
 switch-core restarts. If a bridge is missing after a configuration change,
 restart the deployment.
+
+## Upgrading a server with a long message history
+
+An upgrade's migrations run before the new pods serve: in the pre-upgrade Job
+(`switchCore.migrations.preUpgradeJob`), or in switch-core at boot. With more
+than one replica the old pods keep serving while they run, so a migration that
+locks a table pauses everything that writes to it.
+
+One migration an upgrade can still run locks `messages` that way, so every
+send waits until it finishes:
+
+- **From before Switch 0.31.0:** revision `d8b4f2a6c1e9` adds a column to
+  `messages` and a unique index on it, so the index can't be built ahead. The
+  column starts empty, so the pause is one read of the whole table, not a full
+  index build. Plan the upgrade for a quiet time.
 
 ---
 
@@ -520,3 +576,60 @@ controllers too. Set all three or none (the chart refuses to render otherwise);
 with none, controllers are told nothing and keep their version. To roll
 controllers back, point the three values at the previous release's package and
 upgrade.
+
+## Hosted agents v2
+
+Hosted agents v2 gives each person a box on a shared cluster instead of a
+cloud machine of their own. It's off by default: with
+`switchCore.hostedBoxProvisioning: false` the chart renders exactly as before,
+and switch-core runs v1. switch-core reads the setting once at start-up, so
+moving between v1 and v2 is a values change and a rollout, with no code change.
+
+```yaml
+switchCore:
+  hostedBoxProvisioning: true        # HOSTED_BOX_PROVISIONING
+  hostedControllerSecret: switch-hosted-controller
+  hostedLaunchCapacity: 20
+  hostedProvisionsPerMinute: 5       # optional; switch-core's default is 5
+  hostedBoxCeiling: 50               # optional; switch-core's default is 50
+  hostedPoolSize: 10                 # optional; the warm pool, default 10 (0 for none, at most 50)
+  hostedLaunchCapacityPerWorkspace: 0  # optional; 0 (the default) is no limit
+  visibilityKeyedIdKeySecret: switch-visibility-key          # key: keyed-id.key
+  visibilityOperatorsSecret: switch-visibility-operators     # key: operators.json
+  featureFlags:
+    enabled: ["agent_management", "hosted_agents"]
+```
+
+- **Required with it on:** `hostedControllerSecret`, `hostedLaunchCapacity`
+  above 0, `visibilityKeyedIdKeySecret`, and the `hosted_agents` and
+  `agent_management` feature flags (with `secrets.controllerTokenSecret`, as
+  above). The chart refuses to render without them: without the others no
+  box would ever be made, and without the keyed-id key the Hosted area and
+  the box operator's restart and drain actions can't work.
+- **The warm pool** (`hostedPoolSize`, 10 by default) keeps that many boxes
+  made ahead, so a new person's first start takes one rather than waiting for
+  a box to be made. It's rendered only with v2 on, so a v1 install is
+  unchanged. Spare boxes count towards `hostedLaunchCapacity` and
+  `hostedBoxCeiling` (50 when empty), and the chart refuses to render unless
+  each is at least the pool plus 2, which switch-core also checks at start-up.
+  Each spare is a running box, so the pool is a standing cost: set it to how
+  many new people you expect at once (0 for none, at most 50). Spares count
+  against no workspace's `hostedLaunchCapacityPerWorkspace` until one is bound
+  to a person, which is checked before the bind.
+- **The Hosted area** (for Switch operators) needs the keyed-id key and the
+  operator list. Each Secret is mounted as a single file with mode 0400
+  (`subPath`), because switch-core refuses either one if it's a link or anyone
+  else can read it. A `subPath` mount doesn't follow changes to the Secret, so
+  restart switch-core after changing either. Without the key, the Hosted area's
+  pages say they're unavailable; without the operator list, nobody is an
+  operator.
+- **The box side** runs in the cluster, outside this chart: gVisor nodes, the
+  box provisioner and controller, and their permissions and network rules
+  (in the deployment repository). It needs cluster-admin to set up once, and boxes must
+  reach switch-core over HTTPS.
+- **`hosted_awake_budgets`** is an optional feature flag for awake-time budgets.
+  Leave it off until every box runs the split layout.
+
+**Rolling back** to a release from before hosted agents v2: an older
+switch-core won't start on the upgraded database, so restore the database
+backup taken before the upgrade, then roll the release back.

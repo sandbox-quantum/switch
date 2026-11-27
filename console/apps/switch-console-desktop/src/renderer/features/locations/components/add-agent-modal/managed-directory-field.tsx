@@ -1,10 +1,8 @@
+import { ManagedDirectoryField as SharedManagedDirectoryField } from '@switch-console/chat-ui/components/new-agent-form';
 import { useQuery } from '@tanstack/react-query';
 import { machineWorkspaceFor } from '@renderer/features/managed-agents/managed-agent-state';
-import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import { Field } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import { LocalDirectorySelector } from './local-directory-selector';
 
@@ -36,8 +34,6 @@ export function useSuggestedManagedDirectory(
   return { path: fallback.data ?? null, error: fallback.error };
 }
 
-const PLACEHOLDER = 'Where the agent runs';
-
 /**
  * Where a managed agent runs on its machine, as a settings row. On this
  * computer the folder is picked with the system dialog; on another machine it
@@ -58,42 +54,30 @@ export function ManagedDirectoryField({
   onChange: (value: string) => void;
 }) {
   return (
-    <Field>
-      <div className="-mx-2 flex flex-col gap-2 px-2 py-1.5">
-        <span className="flex flex-col gap-0.5">
-          <span className="flex items-center gap-1.5 text-sm">
-            Directory
-            <InfoTooltip
-              label="More info about the directory"
-              content={`The agent's working directory, a full path on ${machineLabel}. It starts as a folder named after the agent in the machine's workspaces; choose another to run it in an existing project.`}
-            />
-          </span>
-          <span className="text-xs text-foreground-muted">
-            Where the agent runs on {machineLabel}.
-          </span>
-        </span>
-        {machine.local?.kind === 'this-computer' ? (
-          <LocalDirectorySelector
-            title="Choose the agent's working directory"
-            message="The agent runs its sessions here."
-            path={value}
-            onPathChange={onChange}
-            placeholder={suggested.path ?? PLACEHOLDER}
-          />
-        ) : (
-          <Input
-            aria-label="Directory"
-            value={value}
-            placeholder={suggested.path ?? PLACEHOLDER}
-            onChange={(e) => onChange(e.target.value)}
-          />
-        )}
-        {suggested.error !== null && (
-          <span className="text-xs text-destructive">
-            {failureText(suggested.error, 'The default folder could not be worked out.')}
-          </span>
-        )}
-      </div>
-    </Field>
+    <SharedManagedDirectoryField
+      machineWord="machine"
+      machineLabel={machineLabel}
+      value={value}
+      suggestedPath={suggested.path}
+      error={
+        suggested.error !== null
+          ? failureText(suggested.error, 'The default folder could not be worked out.')
+          : null
+      }
+      picker={
+        machine.local?.kind === 'this-computer'
+          ? (placeholder) => (
+              <LocalDirectorySelector
+                title="Choose the agent's working directory"
+                message="The agent runs its sessions here."
+                path={value}
+                onPathChange={onChange}
+                placeholder={placeholder}
+              />
+            )
+          : null
+      }
+      onChange={onChange}
+    />
   );
 }

@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from switch_core.addressing import AddressingRule, owner_only_policy
 from switch_core.agent_refusals import AgentRefused
 from switch_core.authz import Principal, can
+from switch_core.bridges.agent.agent_change_requests import bypass_fields
 from switch_core.bridges.agent.protocol.agent_core import VALID_AGENT_NAME_RE
 from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_for
 from switch_core.bridges.agent.protocol.agent_management import (
@@ -35,10 +36,16 @@ from switch_core.bridges.agent.protocol.agent_management import (
     NewManagedAgent,
 )
 from switch_core.connections.broker import CheckedGrant, ServiceBroker, ServiceError
-from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.audit import (
+    AuditAction,
+    escalation_details,
+    record_audit_event,
+    request_actor,
+)
 from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
 from switch_core.room_service import FIXED_MEMBERSHIP
+from switch_core.working_directory import check_directory
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -104,6 +111,9 @@ class NewAgentPlan:
     connections: list[ConnectionPlan] = field(default_factory=list)
     # Rooms that already exist, by name, the agent is added to once created.
     joins: list[str] = field(default_factory=list)
+    # Bypass came from the provider's default (Cursor, which has no automatic
+    # review), not from the template asking for it.
+    bypass_by_default: bool = False
 
 
 @dataclass(frozen=True)
@@ -179,6 +189,47 @@ def _directory(
         )
     root = placement.workspaces_dir.rstrip("/\\")
     return plan.directory.replace(AGENTS_DIR, root), None
+
+
+def asking_instead_of_default_bypass(
+    plans: Sequence[NewAgentPlan],
+) -> list[NewAgentPlan]:
+    """The agents of a run an agent asks for, with bypass that came only from
+    the provider's default (`bypass_by_default`) turned into asking for every
+    action. An agent may not give another agent bypass without its owner
+    (`owner_confirmation_problems`), and a provider's default is not the
+    template asking for it, so such an agent asks rather than the run being
+    refused. Its owner can turn bypass on themselves."""
+    return [
+        replace(plan, auto_mode=False, auto_approve=False, bypass_by_default=False)
+        if plan.bypass_by_default
+        else plan
+        for plan in plans
+    ]
+
+
+def owner_confirmation_problems(plans: Sequence[NewAgentPlan]) -> list[Problem]:
+    """The agents of a run that would have bypass mode on, or the provider's
+    own permission mode set to bypass (`bypass_fields`), which its owner
+    confirms when an agent asks for them with `create_agent`. A run an agent
+    asks for is refused for them rather than held, since its rooms are made
+    with its agents; a person runs such a template themselves.
+
+    A folder other than the machine's own workspace, which `create_agent`
+    also holds, is not refused here: the machine runs an agent in one only
+    once the person using it allows that, so a folder the person chose (the
+    one switch-buddy passes when it runs switch-expert, say) still works."""
+    return [
+        Problem(
+            plan.slot,
+            "needs_owner_confirmation",
+            "it would be created with bypass mode on, which your owner has to "
+            "confirm. Create it with create_agent, which asks them, or ask "
+            "them to run the template themselves.",
+        )
+        for plan in plans
+        if bypass_fields(plan.auto_approve, plan.advanced_config)
+    ]
 
 
 def pending_addressing(
@@ -258,14 +309,17 @@ class TemplateAgents:
         if not plans:
             return []
         if self._management is None:
+            # Imported here, not at the top: `operations/__init__` loads
+            # `agent_template_ops`, which needs this module's `agent_templates`
+            # caller to have finished loading (an import cycle otherwise).
+            from switch_core.bridges.agent.operations.agent_management import (
+                management_off_reason,
+            )
+
+            off_reason = management_off_reason()
             raise AgentsNotCreated(
                 [
-                    Problem(
-                        plan.slot,
-                        "agent_management_off",
-                        "agent management is not turned on here, "
-                        "so it cannot create agents on a device.",
-                    )
+                    Problem(plan.slot, "agent_management_off", off_reason)
                     for plan in plans
                 ]
             )
@@ -322,9 +376,16 @@ class TemplateAgents:
                     )
                 )
                 continue
+            # A directory under the machine's workspaces is only a path once
+            # the check says where they are, so it is checked after that.
+            written = (
+                None
+                if plan.directory is None or AGENTS_DIR in plan.directory
+                else plan.directory
+            )
             try:
                 placement = await self._management.check_new_agent(
-                    tenant_id, owner_id, self._spec(plan, plan.machine, plan.directory)
+                    tenant_id, owner_id, self._spec(plan, plan.machine, written)
                 )
             except AgentManagementRefused as refused:
                 problems.append(
@@ -332,6 +393,11 @@ class TemplateAgents:
                 )
                 continue
             directory, problem = _directory(plan, placement)
+            if problem is None and directory is not None:
+                try:
+                    check_directory(directory)
+                except ValueError as invalid:
+                    problem = Problem(plan.slot, "invalid_directory", str(invalid))
             if problem is not None:
                 problems.append(problem)
                 continue
@@ -572,6 +638,7 @@ class TemplateAgents:
                 can_manage_agents=agent.plan.can_manage_agents,
             )
             if agent.plan.can_manage_agents:
+                actor_user_id, acting_agent_id = request_actor()
                 await record_audit_event(
                     session,
                     tenant_id=tenant_id,
@@ -579,7 +646,15 @@ class TemplateAgents:
                     action=AuditAction.AGENT_MANAGEMENT_GRANTED,
                     target_type="agent",
                     target_id=agent_id,
-                    details={"agent_name": agent.plan.name, "via": "template"},
+                    details={
+                        "agent_name": agent.plan.name,
+                        "via": "template",
+                        **escalation_details(
+                            owner_id=owner_id,
+                            actor_user_id=actor_user_id,
+                            acting_agent_id=acting_agent_id,
+                        ),
+                    },
                 )
             await session.commit()
         if not agent.grants:

@@ -1,4 +1,5 @@
 import type { Button as ButtonPrimitive } from '@base-ui/react/button';
+import { Button, type buttonVariants } from '@switch-console/chat-ui/primitives/button';
 import { useHotkey } from '@tanstack/react-hotkeys';
 import type { VariantProps } from 'class-variance-authority';
 import { useRef } from 'react';
@@ -6,7 +7,6 @@ import {
   getEffectiveHotkey,
   getHotkeyRegistration,
 } from '@renderer/lib/hooks/useKeyboardShortcuts';
-import { Button, type buttonVariants } from './button';
 import { BoundShortcut } from './shortcut';
 
 type ConfirmButtonProps = ButtonPrimitive.Props & VariantProps<typeof buttonVariants>;

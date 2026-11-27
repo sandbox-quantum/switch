@@ -75,7 +75,11 @@ from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.bridges.agent.protocol.event_buffer import OwnEventToStore
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.actor import AgentActor, ClientConfig, SystemActor
-from switch_core.clients.admin_messages import ADMIN_MARKER, PLATFORM_MARKER
+from switch_core.clients.admin_messages import (
+    ADMIN_MARKER,
+    AUTO_REPLY_FLAG,
+    PLATFORM_MARKER,
+)
 from switch_core.clients.mention_warnings import MentionWarnings, unmatched_mentions
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.agent_event_notify_ddl import (
@@ -100,8 +104,8 @@ from switch_core.db.raw import RawStatement
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.pending_decision_store import Pending, PendingDecisionStore
 from switch_core.db.stores.room_store import (
+    auto_route_choice_in,
     auto_route_fallback_in,
-    auto_route_on_in,
     follow_ups_enabled_in,
     main_agent_in,
 )
@@ -131,6 +135,7 @@ from switch_core.delivery.recipient import (
     file_index,
     post_anchor,
 )
+from switch_core.delivery.send_limits import SendLimits
 from switch_core.logging_context import STRUCTURED_FIELDS, StructuredValue, log_context
 from switch_core.observability.catalogue import (
     DECISION_NOTICES,
@@ -486,7 +491,7 @@ class RoomReads:
                 agent_count=agent_count,
                 follow_ups_enabled=follow_ups_enabled_in(room.metadata_),
                 main_agent_id=main_agent_in(room.metadata_),
-                auto_route_on=auto_route_on_in(room.metadata_),
+                auto_route_choice=auto_route_choice_in(room.metadata_),
                 auto_route_fallback_agent_id=auto_route_fallback_in(room.metadata_),
                 agent_greeting=(room.metadata_ or {}).get("agent_greeting"),
                 console_chat="chat_operation_id" in (room.metadata_ or {}),
@@ -1021,12 +1026,16 @@ class MessageRouter:
         conversation: ConversationRules,
         decisions: DynamicDecisionClient | None,
         decision_max_age_seconds: float,
+        send_limits: SendLimits,
     ) -> None:
         """`decisions` is the decision client, None when this server does
         not route by decision (the `decision_routing` flag is off). A message
         still waiting for a decision after `decision_max_age_seconds` is
-        dropped."""
+        dropped. `send_limits` are what every sender is held to: each row
+        stored is held to its length here, and the paths a person or an agent
+        sends by admit their messages through it first."""
         self.services = services
+        self.send_limits = send_limits
         self._messages = message_store
         self._conversation = conversation
         self._decisions = decisions
@@ -1120,7 +1129,11 @@ class MessageRouter:
         stored is neither written nor routed again, and None comes back: the
         id was derived from what caused the write (`transport/derived_ids.py`),
         and an earlier run of the same cause wrote it and owed what it owed.
+
+        Raises `MessageTooLong`, before anything is read or written, for a
+        body longer than any row may be (`SendLimits.require_row_length`).
         """
+        self.send_limits.require_row_length(message.body)
         reads = await RoomReads.load(
             session,
             services=self.services,
@@ -1520,14 +1533,25 @@ class MessageRouter:
 
     async def _auto_routes(self, session: AsyncSession, reads: RoomReads) -> bool:
         """Whether messages in the room go to the decision service: the room
-        turned it on, the server routes by decision, and the room's workspace
-        has a decision backend (`decision/settings.py`). A workspace with none
-        keeps today's behaviour, follow-ups in threads included."""
+        has it on (its own choice, or the server's default), the server routes
+        by decision, and the room's workspace has a decision backend
+        (`decision/settings.py`). A workspace with none keeps today's
+        behaviour, follow-ups in threads included."""
         return (
-            reads.meta.auto_route_on
-            and self._decisions is not None
+            self._decisions is not None
+            and self._room_auto_route_on(reads.meta)
             and await self._decisions.available(session, reads.tenant_id)
         )
+
+    def _room_auto_route_on(self, meta: RoomMeta) -> bool:
+        """Whether the room has auto-route on, by its own choice or the
+        server's default; never on a server that does not route by decision."""
+        if self._decisions is None:
+            return False
+        choice = meta.auto_route_choice
+        if choice is None:
+            return self._decisions.availability.rooms_on_by_default
+        return choice
 
     @staticmethod
     async def _asks_for_a_decision(
@@ -1691,7 +1715,7 @@ class MessageRouter:
                             decision_id,
                         )
                         return
-                    if not reads.meta.auto_route_on:
+                    if not self._room_auto_route_on(reads.meta):
                         await self._settle(
                             tenant_id, pending, "auto-route was turned off", decision_id
                         )
@@ -2197,6 +2221,62 @@ class MessageRouter:
             clients=reads,
             notices=reads,
             cloud_waking_notices=self._cloud_waking.setdefault(member.agent.id, set()),
+        )
+
+    async def post_as_agent(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        room_id: str,
+        body: str,
+        *,
+        thread_root_id: str | None,
+        client_txn_id: str,
+    ) -> str | None:
+        """Post `body` into `room_id` as the agent, from anywhere in Core: a
+        notice Switch posts in the agent's name (not something it chose to
+        say), so it is flagged as an auto-reply and not metered. Keyed by
+        `client_txn_id` for the agent, so asking again posts nothing new.
+
+        None when the agent is not a member of the room, so nothing is said
+        there as itself."""
+        async with tenant_session(self.services.session_factory, tenant_id) as session:
+            found = (
+                await session.execute(
+                    select(Agent, Client, Room.transport_room_id)
+                    .join(Client, Client.id == Agent.client_id)
+                    .join(
+                        room_agents,
+                        and_(
+                            room_agents.c.agent_id == Agent.id,
+                            room_agents.c.room_id == room_id,
+                        ),
+                    )
+                    .join(Room, Room.id == room_agents.c.room_id)
+                    .where(Agent.id == agent_id)
+                )
+            ).first()
+        if found is None:
+            return None
+        agent, client, transport_room_id = found
+        member = RoomMember(
+            agent=agent,
+            client_id=client.id,
+            transport_user_id=client.transport_user_id,
+            display_name=client.display_name or agent.name,
+            alias=None,
+            listening=False,
+            joined_at=datetime.now(UTC),
+        )
+        actor = self._poster(tenant_id, member)
+        await actor.connect()
+        return await actor.send_message(
+            transport_room_id,
+            body,
+            metered=False,
+            thread_root_id=thread_root_id,
+            extra_content={AUTO_REPLY_FLAG: True},
+            client_txn_id=client_txn_id,
         )
 
     def _poster(self, tenant_id: str, member: RoomMember) -> AgentActor:

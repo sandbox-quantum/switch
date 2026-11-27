@@ -1,7 +1,7 @@
+import { ProviderActionPanel } from '@switch-console/chat-ui/components/provider-choice';
+import { TermInfo } from '@switch-console/chat-ui/primitives/term-info';
 import { CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { motion, useReducedMotion } from 'motion/react';
-import { TermInfo } from '@renderer/lib/components/term-info';
 import { ComputerNote, ProviderCard, SelectedPanel } from './provider-cards';
 import { useProviderSetup } from './use-provider-setup';
 import type { ThisComputer } from './use-this-computer';
@@ -26,10 +26,10 @@ export const ProviderSetup = observer(function ProviderSetup({
     state: ThisComputer;
     recheck: () => Promise<string | null>;
     retry: () => void;
+    turnOn: () => Promise<void>;
   };
 }) {
   const computer = thisComputer.state;
-  const reduced = useReducedMotion() ?? false;
   const setup = useProviderSetup({
     serverId,
     workspaceId,
@@ -40,7 +40,12 @@ export const ProviderSetup = observer(function ProviderSetup({
 
   return (
     <div className="flex flex-col gap-4">
-      <ComputerNote computer={computer} onRetry={thisComputer.retry} />
+      <ComputerNote
+        serverId={serverId}
+        computer={computer}
+        onRetry={thisComputer.retry}
+        onTurnOn={() => void thisComputer.turnOn()}
+      />
       <p className="flex items-center gap-1.5 text-sm text-foreground">
         Pick an AI provider to power switch-buddy:
         <TermInfo term="provider" />
@@ -57,19 +62,8 @@ export const ProviderSetup = observer(function ProviderSetup({
         ))}
       </ul>
 
-      {/* What the selected provider needs next stays in view, pinned to the
-          bottom of the page just above Back and Skip: below a long grid it
-          would be off-screen, and a click on a card would seem to do nothing.
-          It slides in as a provider is picked, so the eye follows it. */}
       {setup.selected && computer.kind === 'ready' && (
-        <motion.div
-          key={setup.selected.id}
-          data-slot="provider-action"
-          initial={reduced ? false : { opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ type: 'spring', stiffness: 320, damping: 30 }}
-          className="sticky bottom-0 z-10 flex flex-col gap-3 rounded-xl border border-border bg-background p-4 shadow-lg"
-        >
+        <ProviderActionPanel providerId={setup.selected.id}>
           <SelectedPanel
             provider={setup.selected}
             login={setup.login?.providerId === setup.selected.id ? setup.login : null}
@@ -84,7 +78,7 @@ export const ProviderSetup = observer(function ProviderSetup({
             onCheckAgain={() => void setup.checkAgain()}
           />
           {setup.error && <SetupError message={setup.error} />}
-        </motion.div>
+        </ProviderActionPanel>
       )}
 
       {setup.error && !(setup.selected && computer.kind === 'ready') && (

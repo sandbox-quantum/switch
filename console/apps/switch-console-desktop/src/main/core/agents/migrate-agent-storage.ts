@@ -18,7 +18,7 @@ import {
   markAgentStorageMigrationComplete,
 } from './agent-storage-migration-marker';
 import { markAgentUnmigrated } from './agent-storage-migration-ready';
-import { resolveWorkdirFsFor } from './agent-workdir-fs';
+import { resolveWorkdirFsFor, type WorkdirFs } from './agent-workdir-fs';
 import { getAgents } from './getAgents';
 import { importAgentConfig } from './import-agent-config';
 import {
@@ -26,8 +26,14 @@ import {
   SWITCH_AGENTS_DIR_RELATIVE,
   SWITCH_SETTINGS_RELATIVE_PATH,
   SWITCH_SUBAGENTS_DIR_RELATIVE,
+  subagentSettingsRelativePath,
 } from './switch-settings-paths';
-import { holdsSwitchToken, writeNeutralAgentSettingsFs } from './write-switch-settings';
+import {
+  holdsSwitchToken,
+  stripSwitchToken,
+  writeCredentialsGitignore,
+  writeNeutralAgentSettingsFs,
+} from './write-switch-settings';
 
 /**
  * Migrate existing Switch Console-managed agents to the current storage layout
@@ -95,6 +101,7 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
   // that has it, step 1 is what generation 1 already ran.
   const credentialsDone = completedGeneration >= 2 || (completedGeneration >= 1 && !!behavior);
   const credentialsPrivate = completedGeneration >= 4;
+  const tokenInOnePlace = completedGeneration >= 5;
 
   const location = await getLocationById(agent.locationId);
   if (!location) return false;
@@ -107,7 +114,7 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
     const name = agent.name;
 
     let changed = false;
-    if (!credentialsDone && (await migrateCredentials(agent, workdir.fs, behavior))) {
+    if (!credentialsDone && (await migrateCredentials(agent, workdir, behavior))) {
       changed = true;
     }
 
@@ -129,6 +136,11 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
       changed = true;
     }
 
+    // 4. The token in the per-agent file alone, and that file kept out of git.
+    if (!tokenInOnePlace && (await keepTokenInOnePlace(agent, workdir))) {
+      changed = true;
+    }
+
     return changed;
   } finally {
     workdir.close();
@@ -137,9 +149,10 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
 
 async function migrateCredentials(
   agent: Agent,
-  fs: PluginFs,
+  workdir: WorkdirFs,
   behavior: IRepoAgentsBehavior | undefined
 ): Promise<boolean> {
+  const { fs } = workdir;
   const name = agent.name;
   let changed = false;
 
@@ -177,7 +190,7 @@ async function migrateCredentials(
         foundSwitchAgentId: recovered.agentId,
       });
     } else if (recovered) {
-      await writeNeutralAgentSettingsFs(fs, {
+      await writeNeutralAgentSettingsFs(workdir, {
         slug: name,
         apiEndpoint: recovered.apiEndpoint,
         apiToken: recovered.token,
@@ -259,6 +272,50 @@ async function protectCredentials(fs: PluginFs, name: string): Promise<boolean> 
     } catch (error) {
       refused(path, error);
     }
+  }
+  return changed;
+}
+
+/**
+ * Once the agent's per-agent file holds its token, take the token out of the
+ * copies an earlier version left under `.claude/`: its legacy subagent file,
+ * and the shared settings file when that names it. Only the token goes —
+ * Claude Code and subagent discovery read the endpoint and agent id there —
+ * and a file naming another agent, or none, is left as it is.
+ *
+ * Then `.switch/agents/.gitignore` is made Console's where a repository
+ * replaced it, and a credentials file git would still commit (one the
+ * repository tracks) is warned about: nothing here can untrack it.
+ */
+async function keepTokenInOnePlace(agent: Agent, workdir: WorkdirFs): Promise<boolean> {
+  const relPath = agentSettingsRelativePath(agent.name);
+  const own = parseSwitchAgentCredentials(await workdir.fs.read(relPath), log);
+  if (!own || !belongsToAgent(agent, own)) return false;
+
+  let changed = false;
+  for (const path of [subagentSettingsRelativePath(agent.name), SWITCH_SETTINGS_RELATIVE_PATH]) {
+    try {
+      const stripped = stripSwitchToken(await workdir.fs.read(path), own.agentId);
+      if (stripped.kind === 'write') {
+        await workdir.fs.write(path, stripped.content);
+        changed = true;
+      }
+    } catch (error) {
+      if (!isPermissionDenied(error)) throw error;
+      log.warn('migrateAgentStorage: cannot take a token out of a legacy settings file', {
+        path,
+        error: String(error),
+      });
+    }
+  }
+
+  if (await writeCredentialsGitignore(workdir.fs)) changed = true;
+  if ((await workdir.ignored(relPath)) === 'not-ignored') {
+    log.warn('migrateAgentStorage: the git repository tracks an agent’s credentials file', {
+      event: 'agent_credentials_tracked',
+      agentId: agent.id,
+      path: relPath,
+    });
   }
   return changed;
 }

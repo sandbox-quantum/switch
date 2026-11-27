@@ -6,6 +6,11 @@ from switch_core.bridges.collaboration.collaboration_core import CollaborationCo
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
 
 
+async def _not_handed_in(_msg: object) -> bool:
+    """No post is in its room yet: these tests are not about second copies."""
+    return False
+
+
 async def _no_text_answer(_msg: object) -> None:
     """These tests exercise the relay, not the session half of a message."""
     return None
@@ -97,6 +102,7 @@ async def test_inbound_lobby_message_short_circuits_routing() -> None:
 
     bridge = SimpleNamespace(
         _is_registered_agent=_is_registered_agent,
+        _already_handed_in=_not_handed_in,
         _handle_lobby_message=_handle_lobby_message,
         _remember_lobby_sender=_remember_lobby_sender,
         _ensure_human_in_room=_ensure_human_in_room,
@@ -128,6 +134,7 @@ async def test_inbound_non_lobby_message_is_not_short_circuited() -> None:
 
     bridge = SimpleNamespace(
         _is_registered_agent=_is_registered_agent,
+        _already_handed_in=_not_handed_in,
         _handle_lobby_message=_handle_lobby_message,
         _create_room_for_channel=_create_room_for_channel,
         _handle_text_answer=_no_text_answer,

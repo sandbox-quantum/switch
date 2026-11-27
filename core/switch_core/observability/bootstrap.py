@@ -306,7 +306,9 @@ def start_observability(
         if db_server_engine is not None and config.hosted_agents_enabled:
             # Its own connection too: it holds the lock that makes this the
             # one process reporting the cloud machines' gauges.
-            hosted = HostedSampler(db_server_engine)
+            hosted = HostedSampler(
+                db_server_engine, pool_size=getattr(config, "hosted_pool_size", 0)
+            )
             registry.register_observer(hosted.readings)
             tasks.append(
                 asyncio.create_task(hosted.run_forever(), name="hosted-sampler")

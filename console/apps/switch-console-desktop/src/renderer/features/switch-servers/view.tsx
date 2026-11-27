@@ -1,3 +1,6 @@
+import { Alert, AlertDescription, AlertTitle } from '@switch-console/chat-ui/primitives/alert';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
 import { PlugZap, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
@@ -8,9 +11,6 @@ import { HostUnreachablePanel } from '@renderer/features/remote-hosts/host-unrea
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
-import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
-import { Button } from '@renderer/lib/ui/button';
-import { Spinner } from '@renderer/lib/ui/spinner';
 import { type SwitchServer, urlHost } from '@shared/core/switch-servers/switch-servers';
 import { homeRedirect } from './home-target';
 import { HomeFooter } from './home/home-footer';

@@ -104,6 +104,7 @@ async def _wire_admin_client(harness: Harness, session_env: SessionEnv) -> None:
                 endpoint_url=None, api_key=None, bedrock_enabled=False
             ),
             store=DecisionSettingsStore(),
+            rooms_on_by_default=False,
         ),
     )
     await harness.client_lifecycle.ensure_system_client("admin")

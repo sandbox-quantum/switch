@@ -38,3 +38,10 @@ export function RedirectTo({ to }: { to: string }) {
     />
   );
 }
+
+/** A redirect to `to` where `when` allows it for the signed-in person, and
+ * `children` where it does not. */
+export function RedirectWhere({ to, when, children }: { to: string; when: Rule; children: ReactNode }) {
+  const { capabilities } = useAuth();
+  return when(capabilities).allowed ? <RedirectTo to={to} /> : <>{children}</>;
+}

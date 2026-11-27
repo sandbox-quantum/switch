@@ -1,3 +1,5 @@
+import { Badge } from '@switch-console/chat-ui/primitives/badge';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { useQueryClient } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { AgentIdentityActions } from '@renderer/features/agent-identity/agent-identity-actions';
@@ -18,8 +20,6 @@ import {
   workspaceAgentsQueryKey,
   useWorkspaceAgents,
 } from '@renderer/lib/stores/use-workspace-agents';
-import { Badge } from '@renderer/lib/ui/badge';
-import { Button } from '@renderer/lib/ui/button';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 
 /**
@@ -141,7 +141,13 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
         ) : (
           // Not registered on a server yet, so there is nothing to change the
           // icon on — shown, but not offered as editable.
-          <AgentAvatar name={title} iconUrl={null} serverId={agent?.serverId ?? null} size={88} />
+          <AgentAvatar
+            agentId={null}
+            name={title}
+            iconUrl={null}
+            serverId={agent?.serverId ?? null}
+            size={88}
+          />
         )
       }
       title={title}

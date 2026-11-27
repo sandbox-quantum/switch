@@ -1,4 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import {
+  agentAvatarUrlForNewAgent,
+  isThirdPartyAvatarUrl,
+} from '@switch-console/chat-ui/model/agent-avatar';
 import type { PluginFs, RepoAgentAttributes } from '@switch-console/core/agents/plugins';
 import { eq } from 'drizzle-orm';
 import { locationManager } from '@main/core/locations/location-manager';
@@ -17,7 +21,6 @@ import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-stor
 import { db } from '@main/db/client';
 import { agents as agentsTable } from '@main/db/schema';
 import { log } from '@main/lib/logger';
-import { agentAvatarUrlForNewAgent, isThirdPartyAvatarUrl } from '@shared/core/agents/agent-avatar';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { Agent } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
@@ -33,7 +36,11 @@ import type { Workspace } from '@shared/core/workspaces/workspaces';
 import { basenameFromAnyPath } from '@shared/path-name';
 import { writeAgentConfigFile } from './agent-config-file';
 import type { AgentTemplateOrigin } from './agent-config-file';
-import { foreignCredentialsOwner, sameEndpointAgentId } from './agent-credentials-slot';
+import {
+  credentialsFileRefusal,
+  foreignCredentialsOwner,
+  sameEndpointAgentId,
+} from './agent-credentials-slot';
 import { agentEvents } from './agent-events';
 import { agentNameTaken } from './agent-name-taken';
 import { resolveWorkdirFsFor } from './agent-workdir-fs';
@@ -263,10 +270,9 @@ export async function checkNewAgent(params: AddAgentParams): Promise<NewAgentChe
     }
   }
 
-  // The last check before minting, and the only one costing a round trip to the
-  // host — hence last, so a name conflict is answered without an SSH probe. A
-  // missing directory under an existing parent passes: the first write creates
-  // it (CHOO-1416).
+  // The last read-only check before minting, and an SSH probe of the host —
+  // hence late, so a name conflict is answered without one. A missing directory
+  // under an existing parent passes: the first write creates it (CHOO-1416).
   if (params.sshHost !== null) {
     const inspection = await inspectRemoteDir(params.sshHost, params.dir);
     if (!isUsableRemoteDir(inspection)) {
@@ -277,6 +283,12 @@ export async function checkNewAgent(params: AddAgentParams): Promise<NewAgentChe
       };
     }
   }
+
+  // After the probe, because this writes: Console's gitignore goes in ahead of
+  // the token, and a credentials file git would still commit refuses the agent
+  // here rather than after its key is minted and lost.
+  const unignored = await credentialsFileRefusal(params.sshHost, params.dir, params.name);
+  if (unignored !== null) return { kind: 'error', message: unignored };
 
   return { kind: 'ok', server, workspace: targetWorkspace, slotAgentId };
 }
@@ -371,7 +383,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     // every provider, keyed by the agent's `name` — the single key-space every
     // reader (launch path, auto-session watcher, notification poller) uses
     // (CHOO-1440).
-    await writeNeutralAgentSettingsFs(workdir.fs, {
+    await writeNeutralAgentSettingsFs(workdir, {
       slug: params.name,
       apiEndpoint: server.url,
       apiToken: registered.apiKey,

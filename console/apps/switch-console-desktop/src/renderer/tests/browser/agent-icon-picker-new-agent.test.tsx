@@ -1,3 +1,7 @@
+import {
+  agentAvatarUrlForName,
+  agentAvatarUrlForNewAgent,
+} from '@switch-console/chat-ui/model/agent-avatar';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -11,7 +15,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
  */
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { avatarSettingsQueryKey } from '@renderer/lib/stores/use-avatar-settings';
-import { agentAvatarUrlForName, agentAvatarUrlForNewAgent } from '@shared/core/agents/agent-avatar';
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: vi.fn() },

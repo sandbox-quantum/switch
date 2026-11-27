@@ -655,7 +655,7 @@ export function getAppById(id: string): OpenInAppConfig | undefined {
 }
 
 export function isValidOpenInAppId(value: unknown): value is OpenInAppId {
-  return typeof value === 'string' && value in OPEN_IN_APPS;
+  return typeof value === 'string' && Object.hasOwn(OPEN_IN_APPS, value);
 }
 
 export function getResolvedLabel(app: OpenInAppConfigShape, platform: PlatformKey): string {

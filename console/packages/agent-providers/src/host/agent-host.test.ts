@@ -2,7 +2,7 @@ import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type * as fsPromises from 'node:fs/promises';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
@@ -411,6 +411,32 @@ it('stays down while a takeover marker says another client holds the connection'
     )
   ).rejects.toThrow('credentials.json');
 });
+
+it.skipIf(process.platform === 'win32')(
+  'keeps the session roots it creates, and their folder, to this user',
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-watch-modes-'));
+    roots.push(root);
+    const sessions = join(root, 'sdk-sessions');
+    paths.root = sessions;
+    const config = template(root);
+    const assignments = await AgentHostAssignments.open(root);
+    const umask = process.umask(0o022);
+    try {
+      const assigned = await assignments.assign(config, {
+        sequence: 1,
+        roomId: 'room',
+        messageId: 'one',
+      });
+      const warmed = await assignments.warm(config, 'other');
+      expect((await stat(sessions)).mode & 0o777).toBe(0o700);
+      for (const session of [assigned, warmed])
+        expect((await stat(join(sessions, session.session.sessionId))).mode & 0o777).toBe(0o700);
+    } finally {
+      process.umask(umask);
+    }
+  }
+);
 
 it('asks again for an event it assigned but died before routing', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-unrouted-'));
@@ -1753,6 +1779,152 @@ it('brings live sessions in step with a rewritten definition, each once its turn
     await run;
   }
   expect(restarted).toHaveLength(2);
+});
+
+it('gives a room a new session where its agent works now, once the agent’s directory moved', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-moved-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const before = structuredClone(config);
+  before.start.input.cwd = join(root, 'where-it-was');
+  const stale = await existing(root, before);
+  await assignTo(root, before, 1, 'room', stale.sessionId);
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const hosts = sessionHosts();
+  const stoppedRoots: string[] = [];
+  hosts.supervision.stop = async (sessionRoot) => void stoppedRoots.push(sessionRoot);
+  const launched: { sessionId: string; cwd: string }[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(
+    async ({ root: sessionRoot, config: started }) => {
+      launched.push({ sessionId: started.session.sessionId, cwd: started.start.input.cwd });
+      return hosts.start(sessionRoot);
+    }
+  );
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(stoppedRoots).toContain(stale.sessionRoot);
+  expect(launched).toHaveLength(1);
+  expect(launched[0]!.sessionId).not.toBe(stale.sessionId);
+  expect(launched[0]!.cwd).toBe(config.start.input.cwd);
+  expect(hosts.to(stale.sessionRoot)).toEqual([]);
+  expect(published.at(-1)).toEqual({ [launched[0]!.sessionId]: 'room' });
+});
+
+it('stops its live sessions once the agent’s directory moves, each once its turn has ended', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-live-moved-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const working = await existing(root, config);
+  const idle = await existing(root, config);
+  await assignTo(root, config, 1, 'room', working.sessionId);
+  await assignTo(root, config, 2, 'elsewhere', idle.sessionId);
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const hosts = sessionHosts();
+  await hosts.start(working.sessionRoot);
+  await hosts.start(idle.sessionRoot);
+  hosts.busy(working.sessionRoot, true);
+  hosts.busy(idle.sessionRoot, false);
+  const stoppedRoots: string[] = [];
+  hosts.supervision.stop = async (sessionRoot) => {
+    stoppedRoots.push(sessionRoot);
+    hosts.exit(sessionRoot);
+  };
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    const moved = structuredClone(config);
+    moved.start.input.cwd = join(root, 'where-it-works-now');
+    await writeFile(join(root, 'config.json.next'), JSON.stringify(moved));
+    await rename(join(root, 'config.json.next'), join(root, 'config.json'));
+    await eventually(() => stoppedRoots.length === 1);
+    expect(stoppedRoots).toEqual([idle.sessionRoot]);
+    await eventually(
+      () => JSON.stringify(published.at(-1)) === JSON.stringify({ [working.sessionId]: 'room' })
+    );
+    hosts.busy(working.sessionRoot, false);
+    await eventually(() => stoppedRoots.length === 2);
+    expect(stoppedRoots[1]).toBe(working.sessionRoot);
+    await eventually(() => JSON.stringify(published.at(-1)) === '{}');
+  } finally {
+    abort.abort();
+    await run;
+  }
+  // Neither was restarted in the directory the agent left.
+  expect(vi.mocked(ensureSharedProcess)).not.toHaveBeenCalled();
+});
+
+it('resets a room whose session works where its agent no longer does into a new session where it does', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-reset-moved-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const before = structuredClone(config);
+  before.start.input.cwd = join(root, 'where-it-was');
+  const stale = await existing(root, before);
+  await assignTo(root, before, 1, 'room', stale.sessionId);
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const hosts = sessionHosts();
+  const launched: { sessionId: string; cwd: string }[] = [];
+  vi.mocked(ensureSharedProcess).mockImplementation(
+    async ({ root: sessionRoot, config: started }) => {
+      launched.push({ sessionId: started.session.sessionId, cwd: started.start.input.cwd });
+      return hosts.start(sessionRoot);
+    }
+  );
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onSessionCommand!({
+      sessionId: null,
+      roomId: 'room',
+      commandId: 'reset-room',
+      body: { type: 'session.reset' },
+    });
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(launched).toHaveLength(1);
+  expect(launched[0]!.sessionId).not.toBe(stale.sessionId);
+  expect(launched[0]!.cwd).toBe(config.start.input.cwd);
+  expect(hosts.to(stale.sessionRoot)).toEqual([]);
+  expect(published.at(-1)).toEqual({ [launched[0]!.sessionId]: 'room' });
 });
 
 it('reports which of its sessions are mid-turn, as their hosts start, go busy, go idle and exit', async () => {

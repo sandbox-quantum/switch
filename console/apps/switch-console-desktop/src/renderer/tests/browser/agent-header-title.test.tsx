@@ -1,14 +1,14 @@
+import { InlineEditableText } from '@switch-console/chat-ui/components/inline-editable-text';
 /**
  * The agent page title stays on one line. A short name used to break mid-word
  * ("yod" / "a", "mt-" / "test") to leave room for the badges beside it.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it } from 'vitest';
 // Line breaks are the subject, so the real utility classes must be present.
 import '@renderer/index.css';
+import { afterEach, describe, expect, it } from 'vitest';
 import { AgentHeaderLayout } from '@renderer/features/locations/components/main-panel/agent-page-header';
-import { InlineEditableText } from '@renderer/features/managed-agents/inline-editable-text';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;

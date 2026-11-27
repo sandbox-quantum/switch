@@ -26,7 +26,7 @@ from sqlalchemy.pool import NullPool
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.clients.actor import AgentActor, SystemActor
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
-from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
+from switch_core.clients.agent_admin import AgentAdministration, AgentRequests
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.command_consumer import CommandConsumer
@@ -136,7 +136,7 @@ async def _process(
         room_service=MagicMock(),
         user_store=UserStore(),
         agent_admin=AgentAdministration(),
-        deletion_requests=AgentDeletionRequests(),
+        agent_requests=AgentRequests(),
         connections=AgentConnectionRegistry(),
         frontend_base_url=None,
         follow_the_conversation_enabled=False,
@@ -147,6 +147,7 @@ async def _process(
                 endpoint_url=None, api_key=None, bedrock_enabled=False
             ),
             store=DecisionSettingsStore(),
+            rooms_on_by_default=False,
         ),
     )
     lease = process_lease_on(session_factory)

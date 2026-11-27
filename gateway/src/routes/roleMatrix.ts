@@ -13,9 +13,12 @@
  * test fails until the two agree.
  *
  * Plain data with no imports, because the harness reads it too. Every page
- * assumes the server has `agent_management`, `service_connections` and
- * `organization_connector_apps` on, as the harness's stack does, and more
- * than one organization: the server's default one and the harness's own. */
+ * assumes the server has `agent_management`, `service_connections`,
+ * `organization_connector_apps`, `gateway_chats` and `gateway_onboarding` on,
+ * as the harness's stack does, and more than one organization: the server's
+ * default one and the harness's own. A page that needs a flag beyond those
+ * names it (`MatrixPage.flag`, `MENU_FLAGS`), and is held to the dashboard
+ * with the flag on and off. */
 
 /** The roles, each a real account in the harness:
  *
@@ -37,11 +40,19 @@ const ORGANIZATION_ADMIN_OR_OPERATOR: readonly Persona[] = ["orgAdmin", "operato
 const ORGANIZATION_ADMIN: readonly Persona[] = ["orgAdmin"];
 const OPERATOR: readonly Persona[] = ["operator"];
 
+/** Pages that fill the window, with no rail or top bar, as Console's first
+ * run does. The shell draws them bare, and the harness, which follows the
+ * rail from page to page, comes back to one with a rail after each. */
+export const FULL_WINDOW: readonly string[] = ["/get-started"];
+
 export interface MatrixPage {
   /** The route's own path, `:name` parameters included. */
   path: string;
   /** Who may open it. Everyone else is shown the no-access page. */
   open: readonly Persona[];
+  /** A flag the page needs beyond the ones every page assumes. Where it is
+   * off, whoever `open` admits is told the page is not turned on. */
+  flag?: string;
 }
 
 /** A settings area's own URL, which opens a page of the area. */
@@ -58,18 +69,19 @@ export interface MatrixRedirect {
   to: string;
 }
 
-function page(path: string, open: readonly Persona[]): MatrixPage {
-  return { path, open };
+function page(path: string, open: readonly Persona[], flag?: string): MatrixPage {
+  return flag === undefined ? { path, open } : { path, open, flag };
 }
 
 export const PAGES: readonly MatrixPage[] = [
   page("/overview", EVERYONE),
   page("/ecosystem", EVERYONE),
-  page("/rooms", EVERYONE),
-  page("/rooms/new", EVERYONE),
-  page("/rooms/groups", EVERYONE),
-  page("/rooms/graph", EVERYONE),
-  page("/rooms/:roomId", EVERYONE),
+  page("/get-started", EVERYONE),
+  page("/chats", EVERYONE),
+  page("/chats/agents/:agentId", EVERYONE),
+  page("/chats/rooms/:roomId", EVERYONE),
+  page("/chats/:roomId", EVERYONE),
+  page("/rooms/:roomId/manage", EVERYONE),
   page("/rooms/:roomId/documents/:documentId", EVERYONE),
   page("/resources", EVERYONE),
   page("/resources/references/:id", EVERYONE),
@@ -78,17 +90,21 @@ export const PAGES: readonly MatrixPage[] = [
   page("/templates", EVERYONE),
   page("/templates/:id", EVERYONE),
   page("/agents", EVERYONE),
-  page("/agents/:agentId", EVERYONE),
+  page("/agents/:agentId/manage", EVERYONE),
   page("/connectors", EVERYONE),
   page("/connectors/:connectorId", EVERYONE),
 
   page("/settings/general", EVERYONE),
   page("/settings/general/private-channel-rooms", ADMINS),
   page("/settings/users", EVERYONE),
+  page("/settings/room-groups", EVERYONE),
+  page("/settings/room-graph", EVERYONE),
   page("/settings/messaging-apps", EVERYONE),
   page("/settings/connectors", EVERYONE),
   page("/settings/api-keys", EVERYONE),
   page("/settings/guardrails", EVERYONE),
+  page("/settings/message-routing", ADMINS, "decision_routing"),
+  page("/settings/ai-providers", EVERYONE),
   page("/settings/devices", EVERYONE),
   page("/settings/account", EVERYONE),
 
@@ -121,6 +137,12 @@ export const REDIRECTS: readonly MatrixRedirect[] = [
   { from: "/workspace", to: "/settings/users" },
   { from: "/workspace/private-channel-rooms", to: "/settings/general/private-channel-rooms" },
   { from: "/organization", to: "/settings/org" },
+  { from: "/rooms", to: "/chats?tab=rooms" },
+  { from: "/rooms/new", to: "/chats?tab=rooms&new=room" },
+  { from: "/rooms/:roomId", to: "/chats/rooms/:roomId" },
+  { from: "/agents/:agentId", to: "/chats/agents/:agentId" },
+  { from: "/rooms/groups", to: "/settings/room-groups" },
+  { from: "/rooms/graph", to: "/settings/room-graph" },
   { from: "/usage", to: "/settings" },
   { from: "/users", to: "/settings/org/users" },
   { from: "/operator/workspaces", to: "/settings/org/workspaces" },
@@ -130,11 +152,13 @@ export const REDIRECTS: readonly MatrixRedirect[] = [
   { from: "/platform/connectors", to: "/settings/org/connector-apps" },
 ];
 
-// The ecosystem graph has no rail item of its own: Home links to it.
+// The ecosystem graph has no rail item of its own: Home links to it. Nor do
+// rooms where there are Chats: they are opened from there. Nor does Get
+// started: a first visit opens it, and Home leads back while setup is unfinished.
 const RAIL_EVERYONE = [
   "Home",
+  "Chats",
   "Agents",
-  "Rooms",
   "Templates",
   "Connectors",
   "Resources",
@@ -154,16 +178,31 @@ export type MatrixSettingsArea = "workspace" | "organization";
 const WORKSPACE_MENU_EVERYONE = [
   "General",
   "Users",
+  "Room groups",
+  "Rooms graph",
   "Messaging apps",
   "Connectors",
   "API keys",
   "Guardrails",
 ];
-const WORKSPACE_MENU_MEMBER = [...WORKSPACE_MENU_EVERYONE, "Devices", "Your account"];
-const WORKSPACE_MENU_ADMIN = WORKSPACE_MENU_MEMBER;
+const WORKSPACE_MENU_MEMBER = [...WORKSPACE_MENU_EVERYONE, "AI providers", "Devices", "Your account"];
+const WORKSPACE_MENU_ADMIN = [
+  ...WORKSPACE_MENU_EVERYONE,
+  "Message routing",
+  "AI providers",
+  "Devices",
+  "Your account",
+];
 
-/** Each settings area's menu, in order: the pages it lists, not the link
- * across to the other area. Null where the role may not
+/** The menu rows that need a flag beyond the ones every page assumes, by
+ * label, and the flag: where it is off, the menu leaves the row out. */
+export const MENU_FLAGS: Record<MatrixSettingsArea, Readonly<Record<string, string>>> = {
+  workspace: { "Message routing": "decision_routing" },
+  organization: {},
+};
+
+/** Each settings area's menu, in order, with every flag on: the pages it
+ * lists, not the link across to the other area. Null where the role may not
  * enter the area. */
 export const SETTINGS_MENUS: Record<MatrixSettingsArea, Record<Persona, readonly string[] | null>> =
   {
@@ -189,3 +228,32 @@ export const SETTINGS_MENUS: Record<MatrixSettingsArea, Record<Persona, readonly
       operator: ["General", "Workspaces", "Users", "Connector apps"],
     },
   };
+
+/** What a role is shown at a page or area: the page, the no-access page, or
+ * the page saying a flag it needs is off, which only someone it would admit
+ * is told. */
+export type MatrixState = "page" | "refused" | "not-enabled";
+
+export function stateAt(
+  row: MatrixPage | MatrixArea,
+  persona: Persona,
+  flags: ReadonlySet<string>,
+): MatrixState {
+  if (!row.open.includes(persona)) return "refused";
+  return "flag" in row && row.flag !== undefined && !flags.has(row.flag) ? "not-enabled" : "page";
+}
+
+/** A role's menu in a settings area on a server with `flags` on, or null
+ * where it may not enter the area. */
+export function settingsMenu(
+  area: MatrixSettingsArea,
+  persona: Persona,
+  flags: ReadonlySet<string>,
+): readonly string[] | null {
+  const menu = SETTINGS_MENUS[area][persona];
+  if (menu === null) return null;
+  return menu.filter((label) => {
+    const flag = MENU_FLAGS[area][label];
+    return flag === undefined || flags.has(flag);
+  });
+}

@@ -14,13 +14,15 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import { memo, useState } from "react";
+import { useState } from "react";
 import { Link as RouterLink, useLocation } from "react-router";
 import type { MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
 import { type RailItem as RailItemDefinition, railFor } from "../routes/routeTable";
 import ThemeModeToggle from "./ThemeModeToggle";
+import { useWebChats } from "../pages/chats/WebChatHost";
+import { observer } from "mobx-react-lite";
 
 // The rail follows the window's height: at a laptop's it is sized so an
 // operator's eleven labelled items and the account button fit, and it grows
@@ -30,7 +32,7 @@ const ICON = "clamp(20px, 2.2vh, 22px)";
 const ITEM_GAP = "clamp(4px, 1.4vh, 16px)";
 const LABEL = "clamp(0.6875rem, 1.05vh, 0.75rem)";
 
-function RailItem({ item, active }: { item: RailItemDefinition; active: boolean }) {
+function RailItem({ item, active, badge }: { item: RailItemDefinition; active: boolean; badge?: number }) {
   return (
     // A plain link: NavLink would set aria-current from its own match, which
     // misses the paths an item also stands for (`activeFor`).
@@ -77,6 +79,29 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
         }}
       >
         <item.icon sx={{ fontSize: ICON, strokeWidth: 1.5 }} />
+        {badge !== undefined && badge > 0 && (
+          <Box
+            sx={{
+              position: "absolute",
+              top: 2,
+              right: 2,
+              minWidth: 14,
+              height: 14,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: "7px",
+              backgroundColor: "primary.main",
+              color: "primary.contrastText",
+              fontSize: "9px",
+              fontWeight: 600,
+              px: 0.25,
+            }}
+            aria-label={`${badge} unread`}
+          >
+            {badge > 99 ? "99+" : badge}
+          </Box>
+        )}
       </Box>
       {item.labelled && (
         <Typography
@@ -99,13 +124,14 @@ export function accountInitials(user: { name: string; email: string } | null): s
   return (initials === "" ? (user?.email ?? "?").charAt(0) : initials).toLocaleUpperCase();
 }
 
-export default memo(function NavRail() {
+const NavRailContent = observer(function NavRailContent() {
   const location = useLocation();
   const { user, session, isOperator, capabilities, logout, logoutEverywhere } = useAuth();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   // What the menu last failed to do: signing out.
   const [menuError, setMenuError] = useState<string | null>(null);
+  const webChats = useWebChats();
 
   // A sign-out that works leaves the dashboard; one that fails says so.
   const signOut = async (action: () => Promise<void>, failure: string) => {
@@ -121,6 +147,14 @@ export default memo(function NavRail() {
   const isActive = (item: RailItemDefinition) =>
     item.activeFor.some((prefix) => location.pathname.startsWith(prefix));
   const initials = accountInitials(user);
+
+  // Total unread count across all chats for the Chats badge.
+  const totalUnread = webChats
+    ? Array.from(webChats.chats.chats.values()).reduce(
+        (sum, chat) => sum + webChats.chats.unread(chat.roomId),
+        0,
+      )
+    : 0;
 
   return (
     <Stack
@@ -153,7 +187,12 @@ export default memo(function NavRail() {
           {items
             .filter((item) => !item.bottom)
             .map((item) => (
-              <RailItem key={item.to} item={item} active={isActive(item)} />
+              <RailItem
+                key={item.to}
+                item={item}
+                active={isActive(item)}
+                badge={item.label === "Chats" ? totalUnread : undefined}
+              />
             ))}
         </Stack>
         {items.some((item) => item.bottom) && (
@@ -161,7 +200,12 @@ export default memo(function NavRail() {
             {items
               .filter((item) => item.bottom)
               .map((item) => (
-                <RailItem key={item.to} item={item} active={isActive(item)} />
+                <RailItem
+                  key={item.to}
+                  item={item}
+                  active={isActive(item)}
+                  badge={item.label === "Chats" ? totalUnread : undefined}
+                />
               ))}
           </Stack>
         )}
@@ -261,7 +305,7 @@ export default memo(function NavRail() {
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle>Create an organization</DialogTitle>
         <DialogContent sx={{ pt: "8px !important" }}>
-          <CreateWorkspaceForm onCancel={() => setCreateOpen(false)} />
+          <CreateWorkspaceForm landing="/" onCancel={() => setCreateOpen(false)} />
         </DialogContent>
       </Dialog>
 
@@ -277,3 +321,7 @@ export default memo(function NavRail() {
     </Stack>
   );
 });
+
+export default function NavRail() {
+  return <NavRailContent />;
+}

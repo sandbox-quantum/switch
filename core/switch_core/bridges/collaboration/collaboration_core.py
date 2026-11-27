@@ -74,7 +74,7 @@ from switch_core.clients.admin_messages import (
     AdminMessageType,
     platform_on_behalf_of,
 )
-from switch_core.clients.mentions import mention_regex, strip_emphasis
+from switch_core.clients.mentions import mention_regex, mentionable_text
 from switch_core.db.models import Agent, BridgeMessageMap, Client, ExternalUser
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
@@ -89,6 +89,8 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
+from switch_core.delivery.send_limits import MessageRefused, SendRateLimited
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
@@ -160,6 +162,55 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+_LOG_ID = re.compile(r"[A-Za-z0-9._:@-]{1,128}")
+
+
+def _log_platform(bridge: object) -> str:
+    """The platform name for a hand-in failure's log line. Read defensively: a warning must
+    never be what breaks the hand-in it reports, and some tests build the core
+    with `__new__` and set only the fields they use."""
+    platform = getattr(bridge, "_bridge_type", None)
+    return platform if isinstance(platform, str) and platform else "<unknown>"
+
+
+_NO_ROOM_EVERY_S = 3600.0
+_NO_ROOM_MAX_CHANNELS = 4096
+#: (platform, channel) -> (when its last no-room WARN was logged, drops since).
+_no_room_seen: dict[tuple[str, str], tuple[float, int]] = {}
+
+
+def _warn_no_room(platform: str, channel_id: str, message_ref: str) -> None:
+    """A post dropped because its channel has no room: at most one WARN per
+    channel an hour, with how many were dropped since the last one, so a bot
+    sitting in channels that aren't Switch rooms can't fill the log."""
+    key = (platform, channel_id)
+    now = time.monotonic()
+    last = _no_room_seen.get(key)
+    if last is not None and now - last[0] < _NO_ROOM_EVERY_S:
+        _no_room_seen[key] = (last[0], last[1] + 1)
+        return
+    if last is None and len(_no_room_seen) >= _NO_ROOM_MAX_CHANNELS:
+        _no_room_seen.pop(next(iter(_no_room_seen)))
+    _no_room_seen[key] = (now, 0)
+    logger.warning(
+        "[BRIDGE-IN] hand-in dropped: platform=%s channel=%s post=%s reason=no_room "
+        "dropped_since_last=%d",
+        platform,
+        _log_id(channel_id),
+        _log_id(message_ref),
+        last[1] if last is not None else 0,
+    )
+
+
+def _log_id(value: object) -> str:
+    """A platform id as a log field: kept when it looks like an id, else
+    `<other>`, so a log line never carries text a sender chose."""
+    if isinstance(value, str) and _LOG_ID.fullmatch(value):
+        return value
+    return "<none>" if value is None else "<other>"
+
 
 # (bridge type, agent name, failure) of identity provisioning failures already
 # logged as a warning by this process; see `_sync_agent_identities`.
@@ -695,11 +746,22 @@ class CollaborationCore:
                     with tenant_scope(tenant_id), log_context(room_id=room_id):
                         try:
                             await handler(event)
-                        except Exception:
-                            # Counted here and re-raised unchanged: whoever handles
-                            # it above still does. An inbound handler that fails is
-                            # a message a person sent and nobody received, which is
-                            # invisible from the platform's side.
+                        except Exception as exc:
+                            # Counted and logged here, then re-raised unchanged:
+                            # whoever handles it above still does. An inbound
+                            # handler that fails is a message a person sent and
+                            # nobody received, which is invisible from the
+                            # platform's side (one WARN, ids and the error's type
+                            # only, never the message or the error text).
+                            logger.warning(
+                                "[BRIDGE-IN] hand-in failed: platform=%s event=%s "
+                                "channel=%s post=%s error=%s",
+                                _log_platform(self),
+                                kind,
+                                _log_id(event.channel_id),
+                                _log_id(getattr(event, "message_ref", None)),
+                                type(exc).__name__,
+                            )
                             metrics().increment(
                                 BRIDGE_ERRORS,
                                 {
@@ -1798,7 +1860,7 @@ class CollaborationCore:
         a message Switch never mapped) goes to the room's agent when it has
         exactly one, the rule a mention of the bot follows.
         """
-        body = strip_emphasis(content)
+        body = mentionable_text(content)
         async with self._session_factory() as session:
             agents = [
                 agent
@@ -1901,7 +1963,10 @@ class CollaborationCore:
         A room that is frozen or archived takes no posts
         (`room_read_only.py`): the router refuses the row, and the sender is
         told their message did not reach the room (`_tell_read_only`), as
-        they are told of a Switch Trust block.
+        they are told of a Switch Trust block. A message too long or sent
+        faster than the sender's allowance is refused before Switch Trust
+        reads it or a file of it is stored (`send_limits.py`), and the sender
+        is told (`_tell_message_refused`).
         """
         logger.debug(
             "[BRIDGE-IN] channel=%s sender=%s content=%s",
@@ -1927,6 +1992,12 @@ class CollaborationCore:
             await self._remember_lobby_sender(msg.sender_id, msg.sender_name)
             await self._handle_lobby_message(msg)
             return None
+        if process_hosted_v2() and await self._already_handed_in(msg):
+            # A second copy of a post already in its room (a bridge that hears
+            # each post on several connections, or fetches missed posts after
+            # a reconnect) is not a second message. Hosted agents v2 only: with
+            # it off the inbound path is main's, with no extra read.
+            return None
         # An answer typed in words, or a word that a card is waiting. It does
         # not consume the message: the room still sees what was said.
         answered_card = await self._handle_text_answer(msg)
@@ -1944,6 +2015,7 @@ class CollaborationCore:
                         channel_name=msg.channel_name,
                     )
             if room_ids is None:
+                _warn_no_room(_log_platform(self), msg.channel_id, msg.message_ref)
                 return None
 
         room_id, transport_room_id = room_ids
@@ -1966,9 +2038,28 @@ class CollaborationCore:
             transport_room_id=transport_room_id,
         )
         if human_actor is None:
+            logger.warning(
+                "[BRIDGE-IN] hand-in dropped: platform=%s channel=%s post=%s "
+                "room=%s reason=no_sender_identity",
+                _log_platform(self),
+                _log_id(msg.channel_id),
+                _log_id(msg.message_ref),
+                room_id,
+            )
             return None
 
         content = self._adapter.translate_inbound(msg.content)
+        # What the person wrote, which is what the length limit is held to:
+        # the `@name`, notes and Switch Trust annotation added below are
+        # Switch's, and the room makes space for them (`send_limits.py`).
+        authored = content
+        # Before Switch Trust reads it or a file of it is stored, so a
+        # message refused for its length or pace costs neither.
+        try:
+            human_actor.admit_message(authored)
+        except MessageRefused as refused:
+            await self._tell_message_refused(msg, refused, transport_room_id)
+            return None
 
         # Bridge threads inbound: if the external post replied into a thread,
         # resolve that external root to the room event we bridged for it.
@@ -1989,7 +2080,7 @@ class CollaborationCore:
             mention_target = await self._reply_target(room_id, thread_root_id, content)
 
         if mention_target is not None and (
-            mention_regex(mention_target).search(strip_emphasis(content)) is None
+            mention_regex(mention_target).search(mentionable_text(content)) is None
         ):
             content = f"@{mention_target} {content}"
         logger.debug(
@@ -2062,7 +2153,11 @@ class CollaborationCore:
                         thread_root_id=thread_root_id,
                         metered=True,
                         extra_content=_inbound_extra_content(msg, check),
+                        authored=authored,
                     )
+            except MessageRefused as refused:
+                await self._tell_message_refused(msg, refused, transport_room_id)
+                return None
             except RoomReadOnly as refused:
                 await self._tell_read_only(msg, refused)
                 return None
@@ -2193,16 +2288,17 @@ class CollaborationCore:
         source = _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
         group_id = str(uuid.uuid5(uuid.NAMESPACE_URL, source)) if total > 1 else None
         _mark_sending()
-        for index, attachment in enumerate(msg.attachments):
-            media_uri = await human_actor.upload_media(
-                attachment.data, attachment.mimetype, attachment.filename
-            )
-            msgtype = (
-                "m.image" if attachment.mimetype.startswith("image/") else "m.file"
-            )
-            # Numbered from the post and the file's place in it, as the text
-            # above is, so a second delivery of the post writes no file twice.
-            try:
+        try:
+            for index, attachment in enumerate(msg.attachments):
+                media_uri = await human_actor.upload_media(
+                    attachment.data, attachment.mimetype, attachment.filename
+                )
+                msgtype = (
+                    "m.image" if attachment.mimetype.startswith("image/") else "m.file"
+                )
+                # Numbered from the post and the file's place in it, as the
+                # text above is, so a second delivery of the post writes no
+                # file twice.
                 with writes_derived_from(human_actor.client_id, f"{source}\x1f{index}"):
                     event_id = await human_actor.send_media(
                         transport_room_id,
@@ -2220,19 +2316,26 @@ class CollaborationCore:
                         ),
                         metered=True,
                         extra_content=_inbound_extra_content(msg, caption_check),
+                        authored=authored if index == 0 else None,
                     )
-            except RoomReadOnly as refused:
-                await self._tell_read_only(msg, refused)
-                return None
-            if event_id is None:
-                logger.error(
-                    "[BRIDGE-IN] failed to relay attachment %s from %s into room %s",
-                    attachment.filename,
-                    msg.sender_name,
-                    transport_room_id,
-                )
-            if index == 0:
-                first_event_id = event_id
+                if event_id is None:
+                    logger.error(
+                        "[BRIDGE-IN] failed to relay attachment %s from %s into "
+                        "room %s",
+                        attachment.filename,
+                        msg.sender_name,
+                        transport_room_id,
+                    )
+                if index == 0:
+                    first_event_id = event_id
+        except MessageRefused as refused:
+            # Admitted above, so only a row longer than any may be: the
+            # caption with what Switch wrote into it (`require_row_length`).
+            await self._tell_message_refused(msg, refused, transport_room_id)
+            return None
+        except RoomReadOnly as refused:
+            await self._tell_read_only(msg, refused)
+            return None
 
         if first_event_id is not None:
             # As for a text-only message, the sender hears what Switch Trust
@@ -2261,6 +2364,48 @@ class CollaborationCore:
             )
         return first_event_id
 
+    async def _tell_message_refused(
+        self, msg: InboundMessage, refused: MessageRefused, transport_room_id: str
+    ) -> None:
+        """Tell the sender why Switch did not write their message into the
+        room: too long, or sent too fast. A sender over their allowance is told
+        once for a run of refusals, until their allowance has refilled, not
+        once for every message refused in it; each refusal is counted either
+        way (`SendRateLimited.first`)."""
+        if isinstance(refused, SendRateLimited) and not refused.first:
+            return
+        logger.warning(
+            "[BRIDGE-IN] message from %s not relayed into room %s: %s",
+            msg.sender_name,
+            transport_room_id,
+            refused.reason,
+        )
+        await self._post_sender_notice(
+            msg,
+            f"🚫 Your message was not delivered to the room. {refused}",
+            AdminMessageType.MESSAGE_REFUSED,
+        )
+
+    async def _tell_command_refused(
+        self, cmd: InboundCommand, refused: MessageRefused, transport_room_id: str
+    ) -> None:
+        """Tell the sender why Switch did not run their command: it came
+        faster than their allowance (`SendLimits.admit_command`), or its
+        arguments were too long. Told once for a run of refusals, as for a
+        message (`_tell_message_refused`)."""
+        if isinstance(refused, SendRateLimited) and not refused.first:
+            return
+        logger.warning(
+            "[BRIDGE-IN] command %s from %s not run in room %s: %s",
+            cmd.command,
+            cmd.sender_name,
+            transport_room_id,
+            refused.reason,
+        )
+        await self._adapter.answer_command(
+            cmd, f"🚫 Your `{cmd.command}` command was not run. {refused}"
+        )
+
     async def _tell_read_only(self, msg: InboundMessage, refused: RoomReadOnly) -> None:
         logger.warning(
             "[BRIDGE-IN] message from %s in channel %s not relayed: the room is %s",
@@ -2277,7 +2422,8 @@ class CollaborationCore:
     ) -> None:
         """Tell the sender, and only the sender, what happened to their
         message: what Switch Trust did with it (blocked, redacted, flagged, or
-        not fully checked), or that its room takes no posts.
+        not fully checked), that its room takes no posts, or that Switch
+        refused it (`_tell_message_refused`).
 
         Each of these is about what one person wrote, so it goes to them the
         way the platform allows (`private_notice_delivery`). Where it has no
@@ -2552,6 +2698,9 @@ class CollaborationCore:
                 event_id = await human_actor.send_event(
                     transport_room_id, "com.switch.command", content
                 )
+        except MessageRefused as refused:
+            await self._tell_command_refused(cmd, refused, transport_room_id)
+            return
         except RoomReadOnly as refused:
             logger.warning(
                 "Command %s from %s in channel %s not run: the room is %s",
@@ -4860,6 +5009,29 @@ class CollaborationCore:
                 ),
             )
             await session.commit()
+
+    async def _already_handed_in(self, msg: InboundMessage) -> bool:
+        """Whether this platform post is already an event in its room.
+
+        Keyed by the post's id and its channel: a platform whose message ids
+        are only unique within a chat cannot then mistake one chat's post for
+        another's.
+        """
+        if not msg.message_ref:
+            return False
+        async with self._session_factory() as session:
+            mapping = await self._bridge_message_map_store.get_by_external_post_id(
+                session, self._bridge_id, msg.message_ref
+            )
+        if mapping is None or mapping.external_channel_id != msg.channel_id:
+            return False
+        logger.info(
+            "Platform post %s in channel %s is already in its room; not handing "
+            "it in again",
+            msg.message_ref,
+            msg.channel_id,
+        )
+        return True
 
     async def _event_for_external_post(self, external_post_id: str) -> str | None:
         async with self._session_factory() as session:

@@ -14,15 +14,21 @@ Whatever the purge left of the account then goes through `AccountDeletion`,
 which leaves the remaining workspaces, the server's default one included,
 and drops the organization memberships, once the account's cloud machines
 are torn down. Every refusal is checked before anything changes.
+
+Keeping the login (`keep_login`) wipes the same workspaces and cloud
+machines but leaves the account itself, with its sign-in and any workspace
+someone else is in, so the person can run getting started again from
+creating a workspace, with their answers about their team and their
+license acceptance cleared so those steps are asked again.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import null, select, update
 
 from switch_core.accounts.deletion import (
     FORMER_MEMBER,
@@ -41,6 +47,7 @@ from switch_core.db.models import (
     OrganizationMember,
     Tenant,
     TenantMember,
+    User,
 )
 from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.messaging_install_store import INSTALL_ACTIVE
@@ -50,7 +57,6 @@ if TYPE_CHECKING:
 
     from switch_core.accounts.deletion import AccountDeletion
     from switch_core.accounts.organization_purge import OrganizationPurge
-    from switch_core.db.models import User
     from switch_core.organization_admin_notices import AdminChange
 
 
@@ -61,13 +67,20 @@ class AccountReset:
     deletion: AccountDeletion
 
     async def reset(
-        self, session: AsyncSession, user: User, workspaces: list[Workspace]
+        self,
+        session: AsyncSession,
+        user: User,
+        workspaces: list[Workspace],
+        *,
+        keep_login: bool,
     ) -> list[AdminChange]:
-        """Wipe the account. `session` is the caller's, as `AccountDeletion`
+        """Wipe the account, or with `keep_login` everything it owns but the
+        account itself. `session` is the caller's, as `AccountDeletion`
         takes it. Returns what `AccountDeletion.delete` returns for the
-        caller to send, nothing when the purge deleted the account. Raises
-        `AccountDeletionRefused`, before anything changes, for what can't be
-        wiped now."""
+        caller to send, nothing when the purge deleted the account or the
+        login is kept. Raises `AccountDeletionRefused`, before anything
+        changes, for what can't be wiped now, and `ResetWaiting` while a
+        cloud machine is still being torn down: asking again finishes it."""
         by_organization: dict[str, list[Workspace]] = defaultdict(list)
         for workspace in workspaces:
             if workspace.role == FORMER_MEMBER or workspace.id == TENANT_ZERO_ID:
@@ -85,6 +98,8 @@ class AccountReset:
         alone: dict[str, set[str]] = {}
         for organization_id, own in by_organization.items():
             plan = await self._sole_plan(user, organization_id)
+            if plan is not None and keep_login:
+                plan = _keeping(plan, user.id)
             if plan is not None:
                 if plan.refusals:
                     raise AccountDeletionRefused(" ".join(plan.refusals))
@@ -120,7 +135,7 @@ class AccountReset:
             for plan in plans
             for account in plan.accounts
         )
-        if not deleted_by_purge:
+        if not deleted_by_purge and not keep_login:
             reason = await self.deletion.refusal_besides_machines(user, remaining)
             if reason is not None:
                 raise AccountDeletionRefused(reason)
@@ -149,6 +164,21 @@ class AccountReset:
             except PurgeRefused as refused:
                 raise AccountDeletionRefused(str(refused)) from None
             _finished(outcome, user.id)
+        if keep_login:
+            # So the person is asked about their team and the license again.
+            await session.execute(
+                update(User)
+                .where(User.id == user.id)
+                .values(
+                    # SQL NULL; a plain None would store JSON null in the JSONB column.
+                    team_survey=null(),
+                    team_survey_answered_at=None,
+                    license_accepted_version=None,
+                    license_accepted_at=None,
+                )
+            )
+            await session.commit()
+            return []
         if deleted_by_purge:
             return []
         return await self.deletion.delete(session, user, remaining, actor_id=user.id)
@@ -193,9 +223,30 @@ class AccountReset:
                     )
 
 
+KEPT_BY_RESET = "The reset keeps the login."
+
+
+class ResetWaiting(AccountDeletionRefused):
+    """The reset waits on a cloud machine being torn down; ask again."""
+
+
+def _keeping(plan: PurgePlan, user_id: str) -> PurgePlan:
+    """`plan`, with the account `user_id` kept rather than deleted. Its cloud
+    machines stay among those torn down: the next run gets a new one."""
+    return replace(
+        plan,
+        accounts=[
+            replace(account, kept_because=KEPT_BY_RESET)
+            if account.id == user_id
+            else account
+            for account in plan.accounts
+        ],
+    )
+
+
 def _finished(outcome: PurgeOutcome, user_id: str) -> None:
     if not outcome.finished:
-        raise AccountDeletionRefused(" ".join(outcome.waiting))
+        raise ResetWaiting(" ".join(outcome.waiting))
     for account, error in outcome.failed_accounts:
         if account.id == user_id:
             raise RuntimeError(f"Resetting user {user_id} failed: {error}")

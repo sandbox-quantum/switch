@@ -62,6 +62,12 @@ def session_key() -> str | None:
     return bound.session_key if bound is not None else None
 
 
+def client_txn_id() -> str | None:
+    """The key the caller's host put on this call's room post, if any."""
+    bound = current_call_context()
+    return bound.client_txn_id if bound is not None else None
+
+
 def caller_session() -> CallerSession | None:
     """The SDK session this call was made by, when the caller named one.
 

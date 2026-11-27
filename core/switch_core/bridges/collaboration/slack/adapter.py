@@ -28,6 +28,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     AgentIdentity,
     AgentIdentityConflict,
+    MessagePartlySent,
     PlatformAdapter,
     RefusalKind,
     RemovalFailed,
@@ -40,6 +41,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentWedged,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.chunking import split_markdown
 from switch_core.bridges.collaboration.cooldown import Cooldown
 from switch_core.bridges.collaboration.models import (
     Attachment,
@@ -85,9 +87,13 @@ from switch_core.bridges.collaboration.slack.avatar import (
     on_slack_background,
     slack_icon_argument,
 )
-from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
+from switch_core.bridges.collaboration.slack.mrkdwn import (
+    escape_body_markup,
+    escape_mrkdwn,
+)
 from switch_core.bridges.collaboration.slack.ui_blocks import ui_spec_to_blocks
 from switch_core.chat_account_links import ACCOUNT_COMMANDS
+from switch_core.clients.mentions import sub_outside_inline_code
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
     defuse_mass_mention_words_in_prose,
@@ -135,6 +141,18 @@ _READ_BACK_SECONDS = 10.0
 # retries connection errors but not throttling.
 _RATE_LIMIT_MAX_ATTEMPTS = 5
 _RATE_LIMIT_DEFAULT_DELAY = 30
+
+# A message is posted as many messages of at most this much text: Slack
+# refuses longer text (`msg_too_long`). Slack may count a part longer than
+# Python does, so a part it still calls too long is split again at the 4,000
+# characters Slack recommends a message keep to.
+_MESSAGE_TEXT_MAX = 40_000
+_MESSAGE_TEXT_RECOMMENDED = 4_000
+
+# Every attempt at one post, the first included, while Slack answers
+# `ratelimited`. Each waits the `Retry-After` Slack names, and the delivery
+# loop waits with it, so the bound is small.
+_SEND_ATTEMPTS = 3
 
 # These responses confirm that Slack rejected the format before publication.
 # Never retry an uncertain delivery as another message merely to change format.
@@ -1001,25 +1019,143 @@ class SlackAdapter(PlatformAdapter):
             )
 
         agent = await self.agent_rendering(sender_name)
-        try:
-            result = await self._web_client.chat_postMessage(
-                channel=channel_id,
-                text=content,
-                username=agent.field_label,
-                icon_url=slack_icon_argument(agent.icon_url, sender_name),
-                thread_ts=self._reply_thread_ts(
+        return await self._post_parts(
+            channel_id,
+            content,
+            {
+                "username": agent.field_label,
+                "icon_url": slack_icon_argument(agent.icon_url, sender_name),
+                "thread_ts": self._reply_thread_ts(
                     channel_id, thread_root_id, room_wide_mention
                 ),
-                unfurl_links=False,
-                unfurl_media=False,
-            )
-        except SlackApiError as e:
+                "unfurl_links": False,
+                "unfurl_media": False,
+            },
+        )
+
+    async def _post_parts(
+        self, channel_id: str, text: str, arguments: dict[str, Any]
+    ) -> str | None:
+        """Post `text` as however many messages Slack's length limit needs.
+
+        `arguments` is the rest of every part's `chat.postMessage`: who it is
+        posted as and the thread it goes in. Returns the FIRST part's ref, the
+        one the bridge maps the room event to. When Slack takes no part at all,
+        its `SlackApiError` is logged and raised, as `post_blocks` does, so the
+        caller can tell an archived channel from an outage.
+
+        A refused later part ends the run, as on every platform that splits:
+        the channel is told how much of the message it has, and
+        `MessagePartlySent` is raised so the parts already posted are not
+        posted again.
+        """
+        pending = split_markdown(text, _MESSAGE_TEXT_MAX)
+        first_ref: str | None = None
+        delivered = 0
+        while pending:
+            part = pending.pop(0)
+            try:
+                ts = await self._post_part(channel_id, part, arguments)
+            except SlackApiError as error:
+                refusal = error.response.get("error")
+                if refusal == "msg_too_long" and len(part) > _MESSAGE_TEXT_RECOMMENDED:
+                    pending[:0] = split_markdown(part, _MESSAGE_TEXT_RECOMMENDED)
+                    continue
+                if first_ref is None:
+                    logger.error(
+                        "Slack refused a message for channel %s (%s), so none of "
+                        "it was posted",
+                        channel_id,
+                        refusal or error,
+                    )
+                    raise
+                total = delivered + 1 + len(pending)
+                await self._say_partly_sent(
+                    channel_id, arguments, delivered, total, refusal or str(error)
+                )
+                raise MessagePartlySent(
+                    platform="Slack",
+                    first_ref=first_ref,
+                    delivered=delivered,
+                    total=total,
+                ) from error
+            if first_ref is None:
+                if not ts:
+                    raise RuntimeError(
+                        f"Slack accepted a message in channel {channel_id} "
+                        "without returning its message reference."
+                    )
+                first_ref = f"{channel_id}:{ts}"
+            delivered += 1
+        return first_ref
+
+    async def _post_part(
+        self, channel_id: str, text: str, arguments: dict[str, Any]
+    ) -> str:
+        """One `chat.postMessage`, waiting out a rate limit; its `ts`."""
+        client = self._require_web_client()
+        result = await self._waiting_out_rate_limits(
+            lambda: client.chat_postMessage(channel=channel_id, text=text, **arguments),
+            what=f"post to channel {channel_id}",
+        )
+        return str(result.get("ts", ""))
+
+    async def _say_partly_sent(
+        self,
+        channel_id: str,
+        arguments: dict[str, Any],
+        delivered: int,
+        total: int,
+        refusal: str,
+    ) -> None:
+        logger.error(
+            "Only %d of %d parts of a message reached Slack channel %s: %s",
+            delivered,
+            total,
+            channel_id,
+            refusal,
+        )
+        notice = (
+            f"_Only {delivered} of {total} parts of this message could be "
+            "delivered; Slack refused the rest._"
+        )
+        try:
+            await self._post_part(channel_id, notice, arguments)
+        except SlackApiError as error:
             logger.error(
-                "Failed to send message to Slack channel %s: %s", channel_id, e
+                "Could not tell Slack channel %s that a message is missing its "
+                "last %d parts; nothing there says it is cut short: %s",
+                channel_id,
+                total - delivered,
+                error,
             )
-            raise
-        ts = result.get("ts", "")
-        return f"{channel_id}:{ts}" if ts else None
+
+    async def _waiting_out_rate_limits(
+        self, call: Callable[[], Awaitable[Any]], *, what: str
+    ) -> Any:
+        """Make one Slack call that posts, waiting out a rate limit rather
+        than losing what it posts.
+
+        Slack names the wait in `Retry-After`. After `_SEND_ATTEMPTS` the last
+        refusal is raised like any other, so a caller handles a workspace that
+        stays throttled the way it handles every refusal."""
+        for attempt in range(1, _SEND_ATTEMPTS + 1):
+            try:
+                return await call()
+            except SlackApiError as error:
+                if attempt == _SEND_ATTEMPTS or not _rate_limit(error):
+                    raise
+                delay = self._retry_after(error)
+                logger.warning(
+                    "Slack rate-limited the attempt to %s; trying again in %.0fs "
+                    "(attempt %d of %d)",
+                    what,
+                    delay,
+                    attempt,
+                    _SEND_ATTEMPTS,
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError(f"Unreachable: no attempt was made to {what}")
 
     def _reply_thread_ts(
         self, channel_id: str, thread_root_id: str | None, room_wide_mention: bool
@@ -1144,6 +1280,16 @@ class SlackAdapter(PlatformAdapter):
             if thread_root_id and ":" in thread_root_id
             else thread_root_id
         )
+        if len(text) > _MESSAGE_TEXT_MAX:
+            logger.warning(
+                "The text under a card for Slack channel %s is %d characters, over "
+                "the %d Slack takes; it is cut short, with an ellipsis, in the "
+                "notification and wherever the card cannot be drawn",
+                channel_id,
+                len(text),
+                _MESSAGE_TEXT_MAX,
+            )
+            text = text[: _MESSAGE_TEXT_MAX - 1] + "…"
         agent = await self.agent_rendering(sender_name)
         arguments: dict[str, Any] = dict(
             channel=channel_id,
@@ -1158,9 +1304,13 @@ class SlackAdapter(PlatformAdapter):
         )
         if reply_broadcast and thread_ts:
             arguments["reply_broadcast"] = True
+        client = self._web_client
+        what = f"post a card to channel {channel_id}"
         try:
             try:
-                result = await self._web_client.chat_postMessage(**arguments)
+                result = await self._waiting_out_rate_limits(
+                    lambda: client.chat_postMessage(**arguments), what=what
+                )
             except SlackApiError as exc:
                 if exc.response.get("error") not in _BLOCK_FORMAT_ERRORS:
                     raise
@@ -1170,7 +1320,9 @@ class SlackAdapter(PlatformAdapter):
                     exc.response.get("error"),
                 )
                 arguments.pop("blocks")
-                result = await self._web_client.chat_postMessage(**arguments)
+                result = await self._waiting_out_rate_limits(
+                    lambda: client.chat_postMessage(**arguments), what=what
+                )
             ts = result.get("ts", "")
             if not ts:
                 raise RuntimeError(
@@ -2434,21 +2586,11 @@ class SlackAdapter(PlatformAdapter):
                 else thread_root_id
             )
 
-        try:
-            result = await self._web_client.chat_postMessage(
-                channel=channel_id,
-                text=self._admin_body(self.translate_outbound(content), drawn),
-                thread_ts=thread_ts,
-                unfurl_links=False,
-                unfurl_media=False,
-            )
-            ts = result.get("ts", "")
-            return f"{channel_id}:{ts}" if ts else None
-        except SlackApiError as e:
-            logger.error(
-                "Failed to post admin message to Slack channel %s: %s", channel_id, e
-            )
-            return None
+        return await self._post_parts(
+            channel_id,
+            self._admin_body(self.translate_outbound(content), drawn),
+            {"thread_ts": thread_ts, "unfurl_links": False, "unfurl_media": False},
+        )
 
     async def send_attachment(
         self,
@@ -2614,9 +2756,11 @@ class SlackAdapter(PlatformAdapter):
             logger.error("Cannot update message: invalid message ref %s", message_ref)
             return
 
+        client = self._web_client
         try:
-            await self._web_client.chat_update(
-                channel=channel_id, ts=ts, text=new_content
+            await self._waiting_out_rate_limits(
+                lambda: client.chat_update(channel=channel_id, ts=ts, text=new_content),
+                what=f"edit message {message_ref}",
             )
         except SlackApiError as e:
             logger.error("Failed to update Slack message %s: %s", message_ref, e)
@@ -2989,6 +3133,13 @@ class SlackAdapter(PlatformAdapter):
         return (
             f"slack://channel?team={self._config.workspace_id}&id={external_channel_id}"
         )
+
+    async def channel_web_url(self, external_channel_id: str) -> str | None:
+        """`https://app.slack.com/client/<workspace>/<channel>` — web-safe link
+        that opens the channel in Slack (web or desktop app)."""
+        if not external_channel_id or not self._config.workspace_id:
+            return None
+        return f"https://app.slack.com/client/{self._config.workspace_id}/{external_channel_id}"
 
     async def home_deeplink(self) -> str | None:
         """`slack://open?team=<workspace>` — opens this workspace in the Slack
@@ -3927,7 +4078,23 @@ class SlackAdapter(PlatformAdapter):
     # ── Translation ──────────────────────────────────────────────────────────
 
     def _render_outbound(self, content: str) -> str:
-        return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(content))
+        """Switch Markdown as mrkdwn, where only this bridge's markup is live.
+
+        Slack's own syntax already in the body is escaped before anything is
+        translated, the order `_card_mrkdwn` keeps for a card: a `<@U…>` or
+        `<!subteam^…>` an agent echoed from a web page or a pasted message
+        would otherwise reach whoever it names. What the translation writes
+        after that — the `<@U…>` for a name it resolved, a link from Markdown
+        — is the only markup Slack reads.
+
+        The app's own mention is put back: it is how a notice from the bridge
+        core names the app (`render_app_mention`), and it pages nobody."""
+        escaped = escape_body_markup(content)
+        if self._bot_user_id:
+            escaped = escaped.replace(
+                f"&lt;@{self._bot_user_id}&gt;", f"<@{self._bot_user_id}>"
+            )
+        return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(escaped))
 
     def defuse_mass_mentions(self, text: str) -> str:
         """Escape Slack's own channel-wide syntax; defuse the words as prose.
@@ -4084,7 +4251,9 @@ class SlackAdapter(PlatformAdapter):
             group_id = self._agent_group_ids.get(username.casefold())
             return f"<!subteam^{group_id}>" if group_id else match.group(0)
 
-        return re.sub(r"@([A-Za-z0-9][A-Za-z0-9._-]*)", _replace, content)
+        return sub_outside_inline_code(
+            r"@([A-Za-z0-9][A-Za-z0-9._-]*)", _replace, content
+        )
 
     # ── Event handling ───────────────────────────────────────────────────────
 

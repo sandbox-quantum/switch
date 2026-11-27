@@ -20,9 +20,10 @@ class RoomMeta(BaseModel):
     # `!assign-agent`), read with the room from its metadata.
     follow_ups_enabled: bool = True
     main_agent_id: str | None = None
-    # Whether a message no rule delivers is sent to the decision service
-    # (`!auto-route`), read with the room from its metadata.
-    auto_route_on: bool = False
+    # The room's own choice of whether a message no rule delivers is sent to
+    # the decision service (`!auto-route`), read with the room from its
+    # metadata; None while it has not chosen and the server's default applies.
+    auto_route_choice: bool | None = None
     # The agent that gets what auto-route could not decide because the
     # decision service failed (`!auto-route fallback`), if any.
     auto_route_fallback_agent_id: str | None = None

@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -145,11 +145,13 @@ class TestSigningInWithADirectory:
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=self._config(),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=directory,  # type: ignore[arg-type]
+                hosted=None,
             )
             user = await UserStore().get_by_email(session, "dana@example.com")
 
@@ -172,11 +174,13 @@ class TestSigningInWithADirectory:
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=self._config(),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=directory,  # type: ignore[arg-type]
+                hosted=None,
             )
 
         assert response.status_code == 303
@@ -197,11 +201,13 @@ class TestSigningInWithADirectory:
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=self._config(),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=_Directory([]),  # type: ignore[arg-type]
+                hosted=None,
             )
 
         assert response.status_code == 303
@@ -222,11 +228,13 @@ class TestSigningInWithADirectory:
             with pytest.raises(HTTPException) as refused:
                 await oidc_routes.oidc_callback(
                     request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                    background=BackgroundTasks(),
                     config=self._config(),
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=_Directory([]),  # type: ignore[arg-type]
+                    hosted=None,
                 )
 
         assert refused.value.status_code == 409
@@ -246,11 +254,13 @@ class TestSigningInWithADirectory:
             with pytest.raises(HTTPException) as refused:
                 await oidc_routes.oidc_callback(
                     request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                    background=BackgroundTasks(),
                     config=self._config(),
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=_Directory([]),  # type: ignore[arg-type]
+                    hosted=None,
                 )
             stored = await UserStore().get_by_email(session, "dana@example.com")
 
@@ -277,11 +287,13 @@ class TestOidcCallback:
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
 
             assert response.status_code == 303
@@ -327,11 +339,13 @@ class TestOidcCallback:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
                     request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                    background=BackgroundTasks(),
                     config=_config(),
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 401
 
@@ -359,11 +373,13 @@ class TestOidcCallback:
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=_config(gateway_oidc_require_email_verified=False),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
 
             assert response.status_code == 303
@@ -387,11 +403,13 @@ class TestOidcCallback:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
                     request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                    background=BackgroundTasks(),
                     config=_config(gateway_oidc_require_email_verified=False),
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 401
 
@@ -427,11 +445,13 @@ class TestOidcCallback:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
                     request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                    background=BackgroundTasks(),
                     config=_config(gateway_oidc_require_email_verified=False),
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 409
 
@@ -468,11 +488,13 @@ class TestOidcCallback:
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert response.status_code == 303
 
@@ -508,11 +530,13 @@ class TestOidcCallback:
         async with session_factory() as session:
             first = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert first.status_code == 303
             carol = await UserStore().get_by_email(session, "carol@example.com")
@@ -534,11 +558,13 @@ class TestOidcCallback:
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert response.status_code == 303
             linked = await UserStore().get_by_oidc_identity(
@@ -584,11 +610,13 @@ class TestOidcCallback:
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=_config(gateway_oidc_require_email_verified=False),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert response.status_code == 303
 
@@ -624,11 +652,13 @@ class TestOidcCallback:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
                     request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                    background=BackgroundTasks(),
                     config=_config(),
                     session=session,
                     session_factory=session_factory,
                     user_store=_AlwaysRacingStore(),  # type: ignore[arg-type]
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 503
             assert exc.value.headers is not None
@@ -657,6 +687,7 @@ class TestOidcCallback:
                         headers={"x-amzn-waf-signup-refused": "country"},
                         client=None,
                     ),
+                    background=BackgroundTasks(),
                     config=_config(
                         gateway_signup_refused_header="x-amzn-waf-signup-refused"
                     ),
@@ -664,6 +695,7 @@ class TestOidcCallback:
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert not session.in_transaction()
             stored = await UserStore().get_by_email(session, "far.away@example.com")
@@ -711,6 +743,7 @@ class TestOidcCallback:
                     headers={"x-amzn-waf-signup-refused": "country"},
                     client=None,
                 ),
+                background=BackgroundTasks(),
                 config=_config(
                     gateway_signup_refused_header="x-amzn-waf-signup-refused"
                 ),
@@ -718,6 +751,7 @@ class TestOidcCallback:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert response.status_code == 303
             linked = await UserStore().get_by_oidc_identity(
@@ -744,11 +778,13 @@ class TestOidcCallback:
         async with session_factory() as session:
             first = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, headers={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=config,
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert first.status_code == 303
             again = await oidc_routes.oidc_callback(
@@ -757,11 +793,13 @@ class TestOidcCallback:
                     headers={"x-amzn-waf-signup-refused": "country"},
                     client=None,
                 ),
+                background=BackgroundTasks(),
                 config=config,
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert again.status_code == 303
 
@@ -777,11 +815,13 @@ class TestOidcCallback:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
                     request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                    background=BackgroundTasks(),
                     config=_config(),
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 401
 
@@ -805,11 +845,13 @@ class TestOidcCallback:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
                     request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                    background=BackgroundTasks(),
                     config=_config(),
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 502
             assert exc.value.detail == "OIDC provider did not respond"
@@ -834,11 +876,13 @@ class TestOidcCallback:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
                     request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                    background=BackgroundTasks(),
                     config=_config(),
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 502
             assert exc.value.detail == "OIDC provider did not respond"
@@ -865,17 +909,67 @@ class TestOidcCallback:
             with pytest.raises(HTTPException) as exc:
                 await oidc_routes.oidc_callback(
                     request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                    background=BackgroundTasks(),
                     config=_config(),
                     session=session,
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 503
             assert exc.value.detail == (
                 "OIDC provider has no userinfo endpoint and no claims were "
                 "available from the token"
             )
+
+    async def test_warm_after_sign_in_runs_in_background_and_cannot_fail_the_sign_in(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The warm-up task is queued in the background, so the sign-in succeeds
+        # even if the warm-up would fail.
+        token = {
+            "userinfo": {
+                "email": "warm@example.com",
+                "email_verified": True,
+                "sub": "okta|warm",
+                "name": "Warm",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async def failing_warm(*_args: object, **_kwargs: object) -> None:
+            raise Exception("warm-up failed")
+
+        monkeypatch.setattr(oidc_routes, "warm_after_sign_in", failing_warm)
+
+        background = BackgroundTasks()
+        async with session_factory() as session:
+            response = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=background,
+                config=_config(),
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+                organization_directory=LocalDirectory(),
+                hosted=None,
+            )
+
+        assert response.status_code == 303
+        # The sign-in succeeded even though warm-up would fail.
+        async with session_factory() as session:
+            user = await UserStore().get_by_email(session, "warm@example.com")
+        assert user is not None
+
+        assert len(background.tasks) == 1, "warm-up task should be queued"
+        with pytest.raises(Exception, match="warm-up failed"):
+            await background()
+        async with session_factory() as session:
+            user = await UserStore().get_by_email(session, "warm@example.com")
+        assert user is not None, "user should still exist after warm-up failure"
 
 
 class TestTheCallbackPlacesTheUserInATenant:
@@ -913,11 +1007,13 @@ class TestTheCallbackPlacesTheUserInATenant:
         async with session_factory() as session:
             await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             user = await UserStore().get_by_email(session, "jit@example.com")
             assert user is not None
@@ -958,11 +1054,13 @@ class TestTheCallbackPlacesTheUserInATenant:
         async with session_factory() as session:
             await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             memberships = await self._memberships(session, user_id)
 
@@ -998,11 +1096,13 @@ class TestTheCallbackPlacesTheUserInATenant:
         async with session_factory() as session:
             await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=_config(),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             memberships = await self._memberships(session, user_id)
 
@@ -1046,11 +1146,13 @@ class TestSignUpWithoutADefaultTenant:
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=_config(gateway_signup_mode=mode),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             user = await UserStore().get_by_email(session, email)
             assert user is not None
@@ -1084,11 +1186,13 @@ class TestSignUpWithoutADefaultTenant:
         async with session_factory() as session:
             await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=_config(gateway_signup_mode="open"),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             identity = (
                 await session.execute(
@@ -1131,11 +1235,13 @@ class TestSignUpWithoutADefaultTenant:
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
                 request=SimpleNamespace(session={}, client=None),  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=_config(gateway_signup_mode="open"),
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
 
         set_cookie = response.headers.get("set-cookie")
@@ -1421,11 +1527,13 @@ class TestLoginOptionsAndHandoff:
         async with session_factory() as session:
             response = await oidc_routes.oidc_callback(
                 request=request,  # type: ignore[arg-type]
+                background=BackgroundTasks(),
                 config=config,
                 session=session,
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             # No cookie in the browser: the code goes back to the app.
             assert response.headers.get("set-cookie") is None

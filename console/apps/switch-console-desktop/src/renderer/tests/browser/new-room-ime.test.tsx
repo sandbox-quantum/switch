@@ -1,3 +1,5 @@
+import { RoomNameInput } from '@switch-console/chat-ui/components/room-name-input';
+import type { Participant } from '@switch-console/chat-ui/model/participant-search';
 /**
  * In the New room dialog, an Enter the IME is handling confirms the
  * composition and nothing else: it neither adds a participant nor creates
@@ -7,9 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { RoomNameInput } from '@renderer/features/switch-servers/room-name-input';
 import { ParticipantPicker } from '@renderer/lib/components/participant-picker';
-import type { Participant } from '@renderer/lib/components/participant-search';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 
 let container: HTMLDivElement | null = null;

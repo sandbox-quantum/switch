@@ -1,3 +1,6 @@
+import { BUDDY_ICON_URL } from '@switch-console/chat-ui/model/switch-buddy';
+import { Button } from '@switch-console/chat-ui/primitives/button';
+import { SidebarMenuRow } from '@switch-console/chat-ui/primitives/sidebar';
 import { ChevronDown, Laptop, MessageSquare } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useEffect } from 'react';
@@ -5,15 +8,12 @@ import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { AgentProfile } from '@renderer/features/managed-agents/agent-profile';
 import { agentSections } from '@renderer/features/managed-agents/agent-sections';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
-import { SidebarMenuRow } from '@renderer/features/sidebar/sidebar-primitives';
 import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
-import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 import { expectedBuddyName, findBuddy, firstNameOf } from './buddy-identity';
 import { buddyPerson } from './buddy-person';
 import { reportBuddyStep } from './buddy-telemetry';
@@ -80,6 +80,7 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
     <div className="flex h-full min-h-0">
       <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
         <AgentProfile
+          agentId={null}
           name={expectedBuddyName(person)}
           iconUrl={BUDDY_ICON_URL}
           serverId={serverId}

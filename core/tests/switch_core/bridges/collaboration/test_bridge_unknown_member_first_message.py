@@ -14,6 +14,12 @@ from switch_core.bridges.collaboration.collaboration_core import CollaborationCo
 from switch_core.bridges.collaboration.models import InboundMessage
 from switch_core.trust.client import NullTrustClient
 
+
+async def _not_handed_in(_msg: object) -> bool:
+    """No post is in its room yet: these tests are not about second copies."""
+    return False
+
+
 # CHOO-1781: the first message from a channel member not yet known to the room
 # must not be dropped. Provisioning invites the external user's human actor and
 # its membership can land after the call returns. A message written before the
@@ -54,6 +60,9 @@ class _FakeHumanActor:
         self._joined = asyncio.Event()
         self.sent: list[tuple[str, str]] = []
         self.wait_joined_calls: list[tuple[str, float]] = []
+
+    def admit_message(self, authored: str | None) -> None:
+        return None
 
     async def wait_ready(self) -> None:
         return None
@@ -202,6 +211,7 @@ async def test_first_message_from_app_sender_is_relayed(
         _bridge_id="bridge-1",
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
+        _already_handed_in=_not_handed_in,
         _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
         _adapter=SimpleNamespace(translate_inbound=lambda text: text),
@@ -253,6 +263,7 @@ async def test_first_message_from_unknown_member_is_relayed(
         _bridge_id="bridge-1",
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
+        _already_handed_in=_not_handed_in,
         _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
         _adapter=SimpleNamespace(translate_inbound=lambda text: text),

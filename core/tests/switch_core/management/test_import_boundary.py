@@ -27,6 +27,10 @@ _ALLOWED_IMPORTERS = {
     # a suspended agent on its device, and disconnect a suspended person's
     # devices. Nothing in the serving process imports it.
     "switch_core.suspension_admin",
+    # `switch-hosted-migration`, the operator's command for moving a person's
+    # v1 machine to a box: its own entry point, run where switch-core runs, so
+    # it wires the controller revoke from agent management as `main` does.
+    "switch_core.hosted_migration_cli",
 }
 
 

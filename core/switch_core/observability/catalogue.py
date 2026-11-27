@@ -279,6 +279,21 @@ SEND_FAILURES = _spec(
     "kind",
     "actor",
 )
+# A message or room command a person or an agent sent that was refused before
+# it reached the router (`delivery/send_limits.py`). `reason` is `too_long` or
+# `rate_limited`; `actor` is `human` or `agent`.
+MESSAGES_REFUSED = _spec(
+    "switch.messages.refused",
+    "sum",
+    "{message}",
+    "Messages and room commands a person or an agent sent that were refused "
+    "before they were written: `reason:too_long` for one longer than "
+    "MAX_MESSAGE_CHARS, `reason:rate_limited` for one sent faster than one "
+    "sender's allowance (MESSAGE_RATE_BURST, MESSAGE_RATE_PER_SECOND). The "
+    "sender is told why. `actor` is who sent it: human or agent.",
+    "reason",
+    "actor",
+)
 DELIVERY_FAILURES = _spec(
     "switch.messages.delivery_failures",
     "sum",
@@ -897,8 +912,9 @@ HEALTH_CHECK = _spec(
 # every value is a word from a fixed set mapped in `observability/hosted.py`,
 # never a report's text. The gauges are reported by one process only, the one
 # holding the hosted metrics advisory lock, so several Core processes don't
-# each report every machine. `backend` is the kind of cloud machine: `vm` for
-# every machine this server makes today.
+# each report every machine. `backend` is the kind of cloud machine, from the
+# machine row: `vm` for a v1 machine and `box` for a hosted agents v2 box. The
+# series with no `backend` are reported by boxes only.
 HOSTED_AGENTS = _spec(
     "switch.hosted.agents",
     "gauge",
@@ -915,9 +931,24 @@ HOSTED_AGENTS_STOPPED = _spec(
     "gauge",
     "{agent}",
     "Agents on cloud machines that are crashed or failed, by reason: "
-    "`out_of_memory`, `crash_loop`, and any other reason `other`.",
+    "`out_of_memory`, `crash_loop`, and any other reason `other`. On a box, "
+    "an agent the memory guard holds counts as `out_of_memory`.",
     "reason",
     "backend",
+)
+HOSTED_AGENT_RESTARTS_10M = _spec(
+    "switch.hosted.agent_restarts_10m",
+    "gauge",
+    "{restart}",
+    "Agent restarts on hosted boxes in the last 10 minutes, summed over every "
+    "agent's reported count.",
+)
+HOSTED_AGENT_OOM_KILLS = _spec(
+    "switch.hosted.agent_oom_kills",
+    "gauge",
+    "{kill}",
+    "Out-of-memory kills of agents on hosted boxes, summed over every agent's "
+    "reported count.",
 )
 HOSTED_SESSIONS = _spec(
     "switch.hosted.sessions",
@@ -928,6 +959,21 @@ HOSTED_SESSIONS = _spec(
     "kind",
     "backend",
 )
+HOSTED_WAITING_FOR_ROOM = _spec(
+    "switch.hosted.waiting_for_room",
+    "gauge",
+    "{session}",
+    "Sessions on hosted boxes waiting for room to start, summed over every "
+    "agent's reported count.",
+)
+HOSTED_BOXES_VALVE_MEMORY = _spec(
+    "switch.hosted.boxes_valve_memory",
+    "gauge",
+    "{box}",
+    "Hosted boxes whose valve reports a memory problem: `unprotected` (it has "
+    "never read the box's memory) or `failing` (its readings fail).",
+    "state",
+)
 HOSTED_BOX_MEMORY_USED = _spec(
     "switch.hosted.box_memory_used",
     "histogram",
@@ -937,6 +983,43 @@ HOSTED_BOX_MEMORY_USED = _spec(
     "workspaces counts once). The max and p95 show the fullest machines.",
     "backend",
     bounds=(25.0, 50.0, 60.0, 70.0, 75.0, 80.0, 85.0, 90.0, 92.0, 95.0, 98.0),
+)
+HOSTED_BOX_ANON_MEMORY = _spec(
+    "switch.hosted.box_anon_memory",
+    "histogram",
+    "By",
+    "A hosted box's anonymous memory (`AnonPages`), per status report, where "
+    "the box sends it.",
+    bounds=tuple(float(2**n) for n in range(27, 36)),
+)
+HOSTED_GATEWAY = _spec(
+    "switch.hosted.gateway",
+    "gauge",
+    "{count}",
+    "The provider gateway on hosted boxes: `agents` whose login it fronts, "
+    "calls it `refused` since each controller started, and `capped_boxes` "
+    "that reached their daily call cap.",
+    "kind",
+)
+HOSTED_BOX_EVICTIONS = _spec(
+    "switch.hosted.box_evictions",
+    "sum",
+    "{eviction}",
+    "Hosted boxes pushed off their machine, as the operator reports them.",
+)
+HOSTED_GUARD_STOPS = _spec(
+    "switch.hosted.guard_stops",
+    "sum",
+    "{stop}",
+    "Agents the memory guard stopped on hosted boxes: the rise in each box's "
+    "since-start count, so a controller restart reads as a reset, not a drop.",
+)
+HOSTED_VALVE_PARKS = _spec(
+    "switch.hosted.valve_parks",
+    "sum",
+    "{session}",
+    "Sessions the box valve parked on hosted boxes: the rise in each box's "
+    "since-start count, so a controller restart reads as a reset, not a drop.",
 )
 HOSTED_BOXES_REPORTING = _spec(
     "switch.hosted.boxes_reporting",
@@ -968,6 +1051,88 @@ HOSTED_MACHINE_EVENTS = _spec(
     "reason",
     "backend",
 )
+HOSTED_CLAIM_REFUSED = _spec(
+    "switch.hosted.claim_refused",
+    "sum",
+    "{claim}",
+    "Cloud machine claims refused at a limit. `reason` is a fixed word: "
+    "`workspace_full` (the workspace's `HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE`, "
+    "hosted agents v2 only). Never which workspace or person.",
+    "reason",
+)
+HOSTED_POOL_SIZE = _spec(
+    "switch.hosted.pool.size",
+    "gauge",
+    "{box}",
+    "The warm pool's configured size (`HOSTED_POOL_SIZE`), as this Core "
+    "process reads it: 0 is no pool.",
+)
+HOSTED_POOL_BOXES = _spec(
+    "switch.hosted.pool.boxes",
+    "gauge",
+    "{box}",
+    "Warm pool boxes by `state`: `requested` (being made), `waiting` (ready "
+    "for the next person's first start) and `retiring` (for the reaper). "
+    "Never which box.",
+    "state",
+)
+HOSTED_POOL_CLAIMS = _spec(
+    "switch.hosted.pool.claims",
+    "sum",
+    "{claim}",
+    "New boxes with the warm pool on, by `path`: `pool` (a waiting box was "
+    "taken) or `fallback` (none was, so one was made from scratch).",
+    "path",
+)
+HOSTED_POOL_REFILL_SECONDS = _spec(
+    "switch.hosted.pool.refill_seconds",
+    "histogram",
+    "s",
+    "How long a warm pool box took from Core asking for it to the operator "
+    "reporting it made.",
+    bounds=(10.0, 15.0, 20.0, 30.0, 45.0, 60.0, 90.0, 120.0, 300.0, 900.0),
+)
+HOSTED_POOL_RETIRED = _spec(
+    "switch.hosted.pool.retired",
+    "sum",
+    "{box}",
+    "Warm pool boxes retired for the reaper, by `reason`: `image`, `age`, "
+    "`size`, `make_failed` or `failed_claim` (a bind that failed before its "
+    "owner was written).",
+    "reason",
+)
+HOSTED_POOL_REAP_REFUSED = _spec(
+    "switch.hosted.pool.reap_refused",
+    "sum",
+    "{report}",
+    "Reaper reports Core refused: a box reported gone that Core never agreed "
+    "to reap (not retiring, not reapable, or its bind reached its owner). "
+    "Should always be 0.",
+)
+HOSTED_OPERATOR_BOXES_LIVE = _spec(
+    "switch.hosted.operator_boxes_live",
+    "gauge",
+    "{box}",
+    "The box operator's live boxes (its box map entries not listed for "
+    "removal), from its report with each claim. Absent until it sends one.",
+)
+HOSTED_OPERATOR_CEILING = _spec(
+    "switch.hosted.operator_ceiling",
+    "gauge",
+    "{box}",
+    "The ceiling the box operator refuses new boxes at, from its report with "
+    "each claim. Absent until it sends one.",
+)
+HOSTED_BOX_REMOVALS = _spec(
+    "switch.hosted.box_removals",
+    "sum",
+    "{removal}",
+    "Box removals by `outcome`: `claimed` (the provisioner took one), "
+    "`removed` (confirmed gone), `refused` (a confirmation or a reaper check "
+    "Core didn't back) and `unjustified` (a `box-removals` entry with no "
+    "claim). The last two should always be 0. Never which box.",
+    "outcome",
+)
 HOSTED_RECONCILER_SILENCE = _spec(
     "switch.hosted.reconciler_silence",
     "gauge",
@@ -976,6 +1141,14 @@ HOSTED_RECONCILER_SILENCE = _spec(
     "service (its machine list poll or an observation), counted from the "
     "process's start until it first hears. Each process reports its own: the "
     "minimum over pods is how long the reconciler has been silent.",
+)
+HOSTED_ALERTS_OPEN = _spec(
+    "switch.hosted.alerts_open",
+    "gauge",
+    "{alert}",
+    "Operator alerts open now, by condition. No target: the "
+    "box, machine or service is on the operator's Alerts tab, never here.",
+    "condition",
 )
 HOSTED_PROVIDER_LOGIN_PROBLEMS = _spec(
     "switch.hosted.provider_login_problems",
@@ -996,6 +1169,35 @@ HOSTED_PROVISION_SECONDS = _spec(
     "report. Starts after the first aren't timed.",
     "backend",
     bounds=(60.0, 120.0, 180.0, 240.0, 300.0, 420.0, 600.0, 900.0, 1200.0, 1800.0),
+)
+HOSTED_START_SECONDS = _spec(
+    "switch.hosted.start_seconds",
+    "histogram",
+    "s",
+    "A hosted agents v2 box start, timed from the person's first request that "
+    "needs it (the start clock), in stages that add up to `total`: by `case` "
+    "(first_start or wake) and `stage` only, both fixed words "
+    "(`observability.hosted.START_CASES` and `START_STAGES`). `since_box_request` "
+    "times a first start from its box request instead, which may predate the "
+    "click (a sign-up). Never a user, workspace or machine.",
+    "case",
+    "stage",
+    bounds=(
+        1.0,
+        2.0,
+        5.0,
+        10.0,
+        15.0,
+        20.0,
+        30.0,
+        45.0,
+        60.0,
+        90.0,
+        120.0,
+        180.0,
+        300.0,
+        600.0,
+    ),
 )
 HOSTED_DISK_USED = _spec(
     "switch.hosted.disk_used",
@@ -1071,10 +1273,30 @@ CONTROLLER_CREDENTIAL_REFUSALS = _spec(
     "sum",
     "{refusal}",
     "Controller credentials refused with a 401, by reason code and kind of "
-    "route (`agent`, `management`, `controller`, `hosted_controller` or "
-    "`other`), never the path or any part of the credential.",
+    "route (`agent`, `management`, `controller`, `hosted_controller`, "
+    "`hosted_provisioner`, `hosted_operator` or `other`), never the path or "
+    "any part of the credential. With hosted agents v2 on, also `locked_out` "
+    "for a request refused while its address is locked out, and "
+    "`lockout_started` each time an address is locked out for repeated "
+    "refusals.",
     "reason",
     "route",
+)
+
+# ── Switch Trust ───────────────────────────────────────────────────────────
+# `reason` is `timeout`, `refused` or `error` (`trust/client.py`).
+TRUST_CHECK_FAILURES = _spec(
+    "switch.trust.check_failures",
+    "sum",
+    "{check}",
+    "Switch Trust checks that did not complete, so the message or file went "
+    "through unchecked with a visible note: `reason:timeout` when Switch Trust "
+    "did not answer within SWITCH_TRUST_TIMEOUT_SECONDS, `reason:refused` when "
+    "it answered with an error status, `reason:error` for anything else (not "
+    "reachable, an answer that could not be read, settings that could not be "
+    "read). A run of timeouts is worth a look: each one lets a message through "
+    "unchecked.",
+    "reason",
 )
 
 # ── Unhandled exceptions ────────────────────────────────────────────────────
@@ -1116,6 +1338,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         MESSAGES_SENT,
         MESSAGES_DELIVERED,
         SEND_FAILURES,
+        MESSAGES_REFUSED,
         DELIVERY_FAILURES,
         OBSERVER_FAILURES,
         DELIVERY_BACKLOG_SKIPPED,
@@ -1172,14 +1395,35 @@ CATALOGUE: dict[str, MetricSpec] = {
         HEALTH_CHECK,
         HOSTED_AGENTS,
         HOSTED_AGENTS_STOPPED,
+        HOSTED_AGENT_RESTARTS_10M,
+        HOSTED_AGENT_OOM_KILLS,
         HOSTED_SESSIONS,
+        HOSTED_WAITING_FOR_ROOM,
+        HOSTED_BOXES_VALVE_MEMORY,
         HOSTED_BOX_MEMORY_USED,
+        HOSTED_BOX_ANON_MEMORY,
+        HOSTED_GATEWAY,
+        HOSTED_BOX_EVICTIONS,
+        HOSTED_GUARD_STOPS,
+        HOSTED_VALVE_PARKS,
         HOSTED_BOXES_REPORTING,
         HOSTED_BOXES_EXPECTED,
         HOSTED_MACHINE_EVENTS,
+        HOSTED_CLAIM_REFUSED,
+        HOSTED_POOL_SIZE,
+        HOSTED_POOL_BOXES,
+        HOSTED_POOL_CLAIMS,
+        HOSTED_POOL_REFILL_SECONDS,
+        HOSTED_POOL_RETIRED,
+        HOSTED_POOL_REAP_REFUSED,
+        HOSTED_BOX_REMOVALS,
+        HOSTED_OPERATOR_BOXES_LIVE,
+        HOSTED_OPERATOR_CEILING,
         HOSTED_RECONCILER_SILENCE,
+        HOSTED_ALERTS_OPEN,
         HOSTED_PROVIDER_LOGIN_PROBLEMS,
         HOSTED_PROVISION_SECONDS,
+        HOSTED_START_SECONDS,
         HOSTED_DISK_USED,
         OBSERVABILITY_SAMPLE_FAILURES,
         HOSTED_CLOUD_ERRORS,
@@ -1188,6 +1432,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         AUTH_SIGN_IN_FAILURES,
         AUTH_SIGN_IN_LOCKOUTS,
         CONTROLLER_CREDENTIAL_REFUSALS,
+        TRUST_CHECK_FAILURES,
         RUNTIME_UNHANDLED_EXCEPTIONS,
     )
 }

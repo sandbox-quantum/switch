@@ -1,14 +1,18 @@
+import { SidebarMenuAction, SidebarMenuRow } from '@switch-console/chat-ui/primitives/sidebar';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { Bot } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import type { CSSProperties, ReactNode } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { AgentStatusSlot } from './agent-status-slot';
-import { SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
 import { depthIndent } from './sidebar-store';
 
 /**
@@ -18,6 +22,7 @@ import { depthIndent } from './sidebar-store';
  * the one warning the status slot shows, and the row's own buttons.
  */
 export const SidebarAgentRow = observer(function SidebarAgentRow({
+  agentId,
   label,
   iconUrl,
   serverId,
@@ -33,6 +38,8 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
   showProviderMark = true,
   title,
 }: {
+  /** The agent's id on its Switch server, or null when it has none there. */
+  agentId: string | null;
   label: string;
   iconUrl: string | null;
   /** The Switch server this agent belongs to, or null when it has none. */
@@ -75,6 +82,7 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
         <span className="relative flex size-[20px] shrink-0 items-center justify-center">
           <span className="-mx-[2px] flex shrink-0" style={presence ? PRESENCE_NOTCH : undefined}>
             <AgentAvatar
+              agentId={agentId}
               name={label}
               iconUrl={iconUrl}
               serverId={serverId}

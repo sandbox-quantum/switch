@@ -36,6 +36,7 @@ from switch_core.telemetry import TelemetryService, emit_after_commit
 from switch_core.telemetry.ages import age_days
 from switch_core.telemetry.snapshot import normalise_template_kind
 from switch_core.template_lint import lint_template
+from switch_core.template_yaml import load_template_yaml
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,7 +83,7 @@ def _params(content: str) -> list[dict[str, Any]]:
     A stored document may be malformed (saving checks only what would block
     it), and an agent still needs to read it to repair it."""
     try:
-        doc = yaml.safe_load(content)
+        doc = load_template_yaml(content)
     except yaml.YAMLError:
         return []
     raw = doc.get("params") if isinstance(doc, dict) else None

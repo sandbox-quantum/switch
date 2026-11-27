@@ -3,6 +3,7 @@ import ssh2, { type Client, type ConnectConfig } from 'ssh2';
 import type { ConnectionState, SshHealthState } from '@shared/core/ssh/ssh';
 import type { SshConnectionEvent } from '@shared/core/ssh/sshEvents';
 import type { SshConnectResult } from '../connect/resolve-ssh-connect-config';
+import { SshHostKeyError } from '../host-keys/host-key-check';
 import {
   isSshChannelOpenFailure,
   isSshChannelTimeout,
@@ -96,7 +97,11 @@ interface ConnectionRecord {
   readonly id: string;
   /** Stable proxy handed to consumers; survives reconnects. */
   readonly proxy: SshClientProxy;
-  state: 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'suspended';
+  /**
+   * `suspended`: authentication was rejected. `untrusted`: the host's key was
+   * refused. Neither recovers by retrying, so neither is retried on its own.
+   */
+  state: 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'suspended' | 'untrusted';
   /** Bumped on every connect/disconnect intent; stale attempts check it. */
   generation: number;
   resolver?: SshConnectResolver;
@@ -187,8 +192,9 @@ export class SshConnectionManager extends EventEmitter {
    * - Reuses an existing connection if already in the pool.
    * - Concurrent calls for the same ID coalesce to a single attempt.
    * - Requires a resolver registered via `register(id, ...)`.
-   * - Revives a connection suspended by an auth failure.
-   * - Throws SshAuthError, SshTimeoutError, or SshConnectionError on failure.
+   * - Revives a connection suspended by an auth failure or a refused host key.
+   * - Throws SshAuthError, SshHostKeyError, SshTimeoutError, or
+   *   SshConnectionError on failure.
    */
   async connect(id: string): Promise<SshClientProxy> {
     const record = this.record(id);
@@ -212,7 +218,7 @@ export class SshConnectionManager extends EventEmitter {
         resolved.cleanup();
         throw new SshConnectionError(`SSH connection '${id}' was disconnected before connecting`);
       }
-      return await this.createConnection(record, resolved.config, resolved.cleanup, generation);
+      return await this.createConnection(record, resolved, generation);
     })();
 
     record.pending = pending;
@@ -291,6 +297,7 @@ export class SshConnectionManager extends EventEmitter {
       case 'connecting':
         return 'connecting';
       case 'suspended':
+      case 'untrusted':
         return 'error';
       case 'disconnected':
         return 'disconnected';
@@ -503,9 +510,12 @@ export class SshConnectionManager extends EventEmitter {
     record.intentional = true;
     const generation = ++record.generation;
     this.setState(record, 'connecting');
-    const pending = this.createConnection(record, config, cleanup, generation, {
-      emitConnecting: true,
-    });
+    const pending = this.createConnection(
+      record,
+      { config, cleanup, debugLogs: [], hostKeyRejection: () => undefined },
+      generation,
+      { emitConnecting: true }
+    );
     record.pending = pending;
     try {
       return await pending;
@@ -518,11 +528,11 @@ export class SshConnectionManager extends EventEmitter {
 
   private createConnection(
     record: ConnectionRecord,
-    config: ConnectConfig,
-    cleanup: () => void,
+    resolved: SshConnectResult,
     generation: number,
     options: { emitConnecting?: boolean } = {}
   ): Promise<SshClientProxy> {
+    const { config, cleanup, hostKeyRejection } = resolved;
     const id = record.id;
     this.deps.log.info('SshConnectionManager: creating connection', {
       connectionId: id,
@@ -601,7 +611,11 @@ export class SshConnectionManager extends EventEmitter {
       // "Not connected", so this is the moment the connection is gone.
       client.on('end', () => abandon('the transport ended'));
 
-      client.on('error', (error: Error) => {
+      client.on('error', (rawError: Error) => {
+        // ssh2 reports a refused host key only as a generic handshake error;
+        // the check that refused it knows why.
+        const hostKeyError = hostKeyRejection();
+        const error = hostKeyError ?? rawError;
         // A remote host being down is an expected condition, not a fault in the
         // app: laptops sleep, VPNs drop, SSO tokens expire. The host's
         // reachability state is what escalates a persistent outage — this is
@@ -632,7 +646,7 @@ export class SshConnectionManager extends EventEmitter {
           this.setState(record, 'disconnected');
         }
         cleanupOnce();
-        reject(classifyError(error));
+        reject(hostKeyError ?? classifyError(rawError));
       });
 
       client.on('close', () => {
@@ -768,6 +782,17 @@ export class SshConnectionManager extends EventEmitter {
       this.connect(id).catch((error: unknown) => {
         if (record.intentional) {
           record.reconnect = undefined;
+          return;
+        }
+        // A refused host key is never retried on its own: the user decides
+        // about the key, and connect()/forceReconnect() revive it after that.
+        if (error instanceof SshHostKeyError) {
+          this.deps.log.warn('SshConnectionManager: reconnect stopped — host key refused', {
+            connectionId: id,
+            kind: error.problem.kind,
+          });
+          record.reconnect = undefined;
+          this.setState(record, 'untrusted');
           return;
         }
         // Auth failures won't resolve with blind retries — suspend instead of

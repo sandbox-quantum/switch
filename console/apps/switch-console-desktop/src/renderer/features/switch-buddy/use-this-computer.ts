@@ -8,23 +8,26 @@ import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 /**
  * This computer as a machine of the workspace, for the buddy to run on.
  *
- * `starting`: being enrolled, or enrolled and not yet reported to Switch.
- * `failed`: it could not be set up, or its machines could not be read;
- * `error` says why, and nothing pretends the providers are known. `retry`
- * (from `useThisComputer`) tries again.
+ * `off`: it does not run managed agents for the workspace, and stays so
+ * until the person turns it on (`turnOn`, from `useThisComputer`, after they
+ * confirm). `starting`: being enrolled, or enrolled and not yet reported to
+ * Switch. `failed`: it could not be set up, or its machines could not be
+ * read; `error` says why, and nothing pretends the providers are known.
+ * `retry` tries again.
  */
 export type ThisComputer =
+  | { kind: 'off' }
   | { kind: 'starting' }
   | { kind: 'ready'; machine: OwnedMachine }
   | { kind: 'failed'; error: string };
 
 /**
- * One setup per server at a time: the buddy pages each ask, and a second
- * enrolment started while the first runs would be refused as a duplicate.
+ * One setup per server at a time: a second enrolment started while the first
+ * runs would be refused as a duplicate.
  */
 const settingUp = new Map<string, Promise<void>>();
 
-function ensureRunsAgents(serverId: string, workspaceId: string): Promise<void> {
+function turnOnThisComputer(serverId: string, workspaceId: string): Promise<void> {
   const running = settingUp.get(serverId);
   if (running) return running;
   const attempt = (async () => {
@@ -38,17 +41,19 @@ function ensureRunsAgents(serverId: string, workspaceId: string): Promise<void> 
 }
 
 /**
- * Makes sure this computer runs managed agents for the workspace, enrolling
- * it when it does not yet, and follows what it reports.
+ * Whether this computer runs managed agents for the workspace, and what it
+ * reports once it does.
  *
- * The buddy always runs on the person's own computer, whatever server they
- * chose, so this happens on every path, in the background, as soon as the
- * workspace is known.
+ * The buddy always runs on the person's own computer, but this never turns
+ * it on by itself: the pages that use it open from links too, and making the
+ * computer a machine lets the server run agents on it. `turnOn` does, once
+ * the person has confirmed.
  */
 export function useThisComputer(serverId: string, workspaceId: string) {
   const queryClient = useQueryClient();
   const [setupError, setSetupError] = useState<string | null>(null);
-  // Bumped by `retry`, to set this computer up again after a failure.
+  const [enrolled, setEnrolled] = useState<boolean | null>(null);
+  // Bumped by `retry`, to read this computer again after a failure.
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
@@ -56,17 +61,29 @@ export function useThisComputer(serverId: string, workspaceId: string) {
     setSetupError(null);
     void (async () => {
       try {
-        await ensureRunsAgents(serverId, workspaceId);
-        await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, serverId] });
+        const overview = await rpc.embeddedController.getOverview({ serverId, workspaceId });
+        if (overview.unsupportedReason) throw new Error(overview.unsupportedReason);
+        if (!cancelled) setEnrolled(overview.enrollment !== null);
       } catch (cause) {
         if (!cancelled)
-          setSetupError(failureText(cause, 'Could not set this computer up to run agents.'));
+          setSetupError(failureText(cause, 'Could not check whether this computer runs agents.'));
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [serverId, workspaceId, queryClient, attempt]);
+  }, [serverId, workspaceId, attempt]);
+
+  const turnOn = useCallback(async () => {
+    setSetupError(null);
+    setEnrolled(true);
+    try {
+      await turnOnThisComputer(serverId, workspaceId);
+      await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, serverId] });
+    } catch (cause) {
+      setSetupError(failureText(cause, 'Could not set this computer up to run agents.'));
+    }
+  }, [serverId, workspaceId, queryClient]);
 
   const machines = useQuery({
     queryKey: [MANAGED_AGENTS_KEY, serverId, 'machines', workspaceId],
@@ -110,26 +127,28 @@ export function useThisComputer(serverId: string, workspaceId: string) {
     machines.data === undefined && machines.error
       ? failureText(machines.error, 'Could not reach Switch to check this computer.')
       : null;
-  const state = thisComputerState(setupError ?? readError, machines.data);
+  const state = thisComputerState(setupError ?? readError, enrolled, machines.data);
   const earlyProviders = !reported && early.data && early.data.length > 0 ? early.data : null;
   const { refetch } = machines;
   const retry = useCallback(() => {
     setAttempt((n) => n + 1);
     void refetch();
   }, [refetch]);
-  return { state, recheck, earlyProviders, retry };
+  return { state, recheck, earlyProviders, retry, turnOn };
 }
 
 /**
  * Where this computer stands, from why setting it up failed (null when it
- * did not) and the workspace's machines as last read: null when the server
- * runs no managed agents, undefined before the first read. Ready once this
- * computer is among them and has reported its providers, even if setting it
- * up said it failed: a setup that timed out may still have worked, and the
- * report is what Switch checks.
+ * did not), whether it is enrolled (null until known) and the workspace's
+ * machines as last read: null when the server runs no managed agents,
+ * undefined before the first read. Ready once this computer is among them
+ * and has reported its providers, even if setting it up said it failed: a
+ * setup that timed out may still have worked, and the report is what Switch
+ * checks.
  */
 export function thisComputerState(
   setupError: string | null,
+  enrolled: boolean | null,
   machines: OwnedMachine[] | null | undefined
 ): ThisComputer {
   const machine = thisComputerIn(machines);
@@ -140,6 +159,7 @@ export function thisComputerState(
       kind: 'failed',
       error: 'This server does not run managed agents, so switch-buddy cannot be set up here.',
     };
+  if (enrolled === false && machine === null) return { kind: 'off' };
   return { kind: 'starting' };
 }
 

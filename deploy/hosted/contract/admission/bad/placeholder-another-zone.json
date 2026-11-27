@@ -1,0 +1,248 @@
+{
+  "as": "system:serviceaccount:switch-hosted:switch-drain",
+  "expect": "refuse",
+  "from_good": "good/drain-worker-a-placeholder-made-post-pod-drain-room-contract1.json",
+  "group": "",
+  "message": "a placeholder asks only for an agents machine in one zone",
+  "name": "drain-room-contract1",
+  "namespace": "switch-drain-room",
+  "object": {
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+      "labels": {
+        "app": "switch-drain-room"
+      },
+      "name": "drain-room-contract1",
+      "namespace": "switch-drain-room"
+    },
+    "spec": {
+      "automountServiceAccountToken": false,
+      "containers": [
+        {
+          "image": "registry.example/pause@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "name": "pause",
+          "resources": {
+            "limits": {
+              "cpu": "500m",
+              "memory": "11776Mi"
+            },
+            "requests": {
+              "cpu": "500m",
+              "memory": "11776Mi"
+            }
+          },
+          "securityContext": {
+            "allowPrivilegeEscalation": false,
+            "capabilities": {
+              "drop": [
+                "ALL"
+              ]
+            },
+            "readOnlyRootFilesystem": true,
+            "runAsGroup": 65535,
+            "runAsNonRoot": true,
+            "runAsUser": 65535,
+            "seccompProfile": {
+              "type": "RuntimeDefault"
+            }
+          }
+        }
+      ],
+      "enableServiceLinks": false,
+      "nodeSelector": {
+        "topology.kubernetes.io/zone": "xx-example-9z"
+      },
+      "priorityClassName": "switch-placeholder",
+      "restartPolicy": "Always",
+      "runtimeClassName": "gvisor",
+      "terminationGracePeriodSeconds": 0
+    }
+  },
+  "operation": "CREATE",
+  "policies": [
+    "switch-operator-placeholder-shape"
+  ],
+  "refused_by": "admission",
+  "request": {
+    "body": {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {
+        "labels": {
+          "app": "switch-drain-room"
+        },
+        "name": "drain-room-contract1",
+        "namespace": "switch-drain-room"
+      },
+      "spec": {
+        "automountServiceAccountToken": false,
+        "containers": [
+          {
+            "image": "registry.example/pause@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "name": "pause",
+            "resources": {
+              "limits": {
+                "cpu": "500m",
+                "memory": "11776Mi"
+              },
+              "requests": {
+                "cpu": "500m",
+                "memory": "11776Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "readOnlyRootFilesystem": true,
+              "runAsGroup": 65535,
+              "runAsNonRoot": true,
+              "runAsUser": 65535,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            }
+          }
+        ],
+        "enableServiceLinks": false,
+        "nodeSelector": {
+          "topology.kubernetes.io/zone": "xx-example-9z"
+        },
+        "priorityClassName": "switch-placeholder",
+        "restartPolicy": "Always",
+        "runtimeClassName": "gvisor",
+        "terminationGracePeriodSeconds": 0
+      }
+    },
+    "method": "POST",
+    "path": "/api/v1/namespaces/switch-drain-room/pods"
+  },
+  "resource": "pods",
+  "setup": [
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "name": "switch-hosted"
+        }
+      },
+      "path": "/api/v1/namespaces/switch-hosted"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "name": "switch-drain-room"
+        }
+      },
+      "path": "/api/v1/namespaces/switch-drain-room"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "00000001-0000-4000-8000-000000000001": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDIx",
+          "00000002-0000-4000-8000-000000000002": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDIy",
+          "00000003-0000-4000-8000-000000000003": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDIz",
+          "00000004-0000-4000-8000-000000000004": "YWdlbnRzLXVzZXItazEtNDQ0NDQ0NDQ0NDQ0NDQ0NA==",
+          "00000005-0000-4000-8000-000000000005": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDI1",
+          "0000000f-0000-4000-8000-00000000000f": "YWdlbnRzLWJveC1rMS1mZmZmZmZmZmZmZmZmZmZm"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-map",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-map"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "00000005-0000-4000-8000-000000000005": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDI1",
+          "00000006-0000-4000-8000-000000000006": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDI2",
+          "0000000e-0000-4000-8000-00000000000e": "YWdlbnRzLWJveC1rMS1lZWVlZWVlZWVlZWVlZWVl"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "pool-map",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/pool-map"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-0000000000000021": "azEtMTExMTExMTExMTExMTExMQ==",
+          "agents-box-k1-0000000000000022": "azEtMjIyMjIyMjIyMjIyMjIyMg==",
+          "agents-box-k1-0000000000000023": "azEtMzMzMzMzMzMzMzMzMzMzMw==",
+          "agents-box-k1-0000000000000025": "azEtNTU1NTU1NTU1NTU1NTU1NQ==",
+          "agents-box-k1-ffffffffffffffff": "azEtZGRkZGRkZGRkZGRkZGRkZA=="
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-owners",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-owners"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-0000000000000022": "MDAwMDAwMDItMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAy",
+          "agents-box-k1-cccccccccccccccc": "MDAwMDAwMGMtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBj"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-removals",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-removals"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-0000000000000021": ""
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "egress-held",
+          "namespace": "switch-hosted"
+        }
+      },
+      "path": "/api/v1/namespaces/switch-hosted/configmaps/egress-held"
+    }
+  ],
+  "subresource": "",
+  "version": "v1",
+  "what": "refused: placeholder another zone"
+}

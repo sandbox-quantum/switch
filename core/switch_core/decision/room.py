@@ -2,9 +2,10 @@
 room detail, the room toggle (`PUT /rooms/{id}/auto-route`) and
 `!auto-route`.
 
-The switch is room metadata `auto_route_on`, the triage agent
-`auto_route_fallback_agent` (an agent id). Whether auto-route can act in the
-room is the workspace's (`decision/settings.py`).
+The switch is room metadata `auto_route_on`, with the server's default
+(`DECISION_AUTO_ROUTE_DEFAULT_ON`) while the room has not chosen; the triage
+agent is `auto_route_fallback_agent` (an agent id). Whether auto-route can act
+in the room is the workspace's (`decision/settings.py`).
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ from switch_core.db.models import Agent, Room, room_agents
 from switch_core.db.stores.room_store import (
     RoomStore,
     auto_route_fallback_in,
-    auto_route_on_in,
     main_agent_in,
 )
 
@@ -59,7 +59,7 @@ async def auto_route_state(
     assigned_id = main_agent_in(room.metadata_)
     assigned = await session.get(Agent, assigned_id) if assigned_id else None
     return AutoRouteState(
-        on=auto_route_on_in(room.metadata_),
+        on=availability.room_on(room.metadata_),
         available=checked.available,
         reason=checked.reason,
         fallback_agent=fallback_id,

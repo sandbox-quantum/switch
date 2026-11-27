@@ -310,6 +310,14 @@ polkit.addRule(function (action, subject) {
  * The controller as a system service of its user, with the agents' group as a
  * supplementary group, so it can read what its agents write. Restarted on exit
  * codes 1 and 7 (restarting into an update), as the user service is.
+ *
+ * Denied the cloud instance metadata, as its agents are: on a cloud machine it
+ * holds every seat's boot bundle, other workspaces' enrollment codes included,
+ * and the controller never needs it (the machine's boot, as root, hands each
+ * controller its own code). Also kept from the kernel's settings, the clock and
+ * new privileges. Its filesystem is not narrowed as an agent's is: the user may
+ * be a person's own account, with its data directory under their home and IPC
+ * of their own, and the controller writes into every agent's directory.
  */
 export function controllerSystemUnit(
   config: SeparateUsersConfig,
@@ -344,6 +352,20 @@ export function controllerSystemUnit(
     'Restart=on-failure',
     'RestartSec=5',
     'RestartPreventExitStatus=2 3 4 5 6',
+    'NoNewPrivileges=yes',
+    'CapabilityBoundingSet=',
+    'AmbientCapabilities=',
+    'ProtectKernelTunables=yes',
+    'ProtectKernelModules=yes',
+    'ProtectKernelLogs=yes',
+    'ProtectControlGroups=yes',
+    'ProtectClock=yes',
+    'ProtectHostname=yes',
+    'RestrictRealtime=yes',
+    'RestrictSUIDSGID=yes',
+    'LockPersonality=yes',
+    'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK',
+    'IPAddressDeny=169.254.169.254/32 fd00:ec2::254/128',
     '',
     '[Install]',
     'WantedBy=multi-user.target',

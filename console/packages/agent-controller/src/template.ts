@@ -13,19 +13,21 @@ import {
 import { advancedConfigProblem, sessionLaunchConfig } from '@switch-console/plugins/agents';
 import type { AgentDefinition, Provider } from './schemas';
 
-const capabilityCache = new Map<Provider, ProviderCapabilities>();
+/** By provider and executable: whether a session can steer can follow the executable. */
+const capabilityCache = new Map<string, ProviderCapabilities>();
 
 /** What the provider's adapter says it can do; the session record advertises the same. */
-function adapterCapabilities(provider: Provider): ProviderCapabilities {
-  const cached = capabilityCache.get(provider);
+function adapterCapabilities(provider: Provider, binaryPath: string | null): ProviderCapabilities {
+  const key = `${provider}\u0000${binaryPath ?? ''}`;
+  const cached = capabilityCache.get(key);
   if (cached) return cached;
   const adapter = providerRuntime(provider).createAdapter({
-    binaryPath: undefined,
+    binaryPath: binaryPath ?? undefined,
     logger: undefined,
     skill: '',
     serviceSkills: [],
   });
-  capabilityCache.set(provider, adapter.capabilities);
+  capabilityCache.set(key, adapter.capabilities);
   return adapter.capabilities;
 }
 
@@ -56,6 +58,15 @@ export function advancedConfigDefinitionProblem(
     .map((issue) => `${issue.path.join('.') || 'definition'}: ${issue.message}`)
     .join('; ');
   return `The advanced configuration has settings a session cannot start with (${problems}).`;
+}
+
+/** The permission mode the agent definition a session of this agent runs as names; null for none. */
+export function launchPermissionMode(
+  provider: Provider,
+  definition: Pick<AgentDefinition, 'name' | 'model' | 'advanced_config' | 'instructions'>
+): string | null {
+  const mode = launchFor(provider, definition, '').agent?.definition.permissionMode;
+  return typeof mode === 'string' ? mode : null;
 }
 
 function launchFor(
@@ -98,7 +109,7 @@ export function buildWatcherTemplate(input: {
   binaryPath: string | null;
 }): SharedHostConfig {
   const { provider } = input;
-  const capabilities = adapterCapabilities(provider);
+  const capabilities = adapterCapabilities(provider, input.binaryPath);
   const sessionId = watcherSessionId(input.agentId);
   const launch = launchFor(provider, input.definition, input.cwd);
   const runtimeMode = runtimeModeFor({

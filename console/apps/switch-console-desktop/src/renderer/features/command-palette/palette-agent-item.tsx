@@ -40,6 +40,7 @@ export const PaletteAgentItem = observer(function PaletteAgentItem({
           glyphs on the other rows without widening the icon column. */}
       <span className="flex size-3.5 shrink-0 items-center justify-center">
         <AgentAvatar
+          agentId={agent?.switchAgentId ?? null}
           name={item.title}
           iconUrl={iconUrl}
           serverId={agent?.serverId ?? null}
@@ -76,6 +77,7 @@ export const PaletteManagedAgentItem = observer(function PaletteManagedAgentItem
     <Command.Item value={value} onSelect={onSelect} className={PALETTE_ITEM_CLASS}>
       <span className="flex size-3.5 shrink-0 items-center justify-center">
         <AgentAvatar
+          agentId={agent.agentId}
           name={label}
           iconUrl={agent.iconUrl}
           serverId={agent.serverId}

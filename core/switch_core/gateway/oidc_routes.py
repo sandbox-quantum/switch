@@ -13,7 +13,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 from authlib.integrations.starlette_client import OAuth, OAuthError
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -43,12 +43,14 @@ from switch_core.gateway.dependencies import (
     get_system_session,
     get_user_store,
 )
+from switch_core.gateway.hosted_machines import hosted_settings, warm_after_sign_in
 from switch_core.gateway.sign_in_events import record_sign_in, sign_in_failed
 from switch_core.organization_directory import (
     DirectoryUnavailable,
     OrganizationDirectory,
 )
 from switch_core.organization_mirror import bring_in_memberships
+from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 
@@ -278,6 +280,7 @@ async def _bring_in_organizations(
 )
 async def oidc_callback(
     request: Request,
+    background: BackgroundTasks,
     config: Annotated[SwitchConfig, Depends(get_config)],
     session: Annotated[AsyncSession, Depends(get_system_session)],
     session_factory: Annotated[
@@ -287,6 +290,7 @@ async def oidc_callback(
     organization_directory: Annotated[
         OrganizationDirectory, Depends(get_organization_directory)
     ],
+    hosted: Annotated[HostedControllerSettings | None, Depends(hosted_settings)],
 ) -> RedirectResponse:
     # `get_system_session`: nobody is signed in yet, so there is no principal
     # to take a tenant from — the tenant this route writes into is chosen
@@ -513,13 +517,17 @@ async def oidc_callback(
     # origin, which on a split deployment is not the host the provider
     # returned to.
     response = RedirectResponse(url=config.frontend_base_url or "/", status_code=303)
+    tenant_id = await initial_tenant_claim(session_factory, user_store, user)
     set_session_cookie(
         response,
         user,
         config.keyring,
         config.gateway_cookie_secure,
-        await initial_tenant_claim(session_factory, user_store, user),
+        tenant_id,
         signed_in_now(),
+    )
+    background.add_task(
+        warm_after_sign_in, session_factory, user.id, tenant_id, config, hosted
     )
     return response
 

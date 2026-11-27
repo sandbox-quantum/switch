@@ -36,7 +36,7 @@ vi.mock('@renderer/features/sidebar/sidebar-tree-data', () => ({
   refreshSidebarRoomStateAfterOnboarding: async () => {},
 }));
 vi.mock('@renderer/features/switch-rooms/open-room', () => ({ openRoom: async () => {} }));
-vi.mock('@renderer/features/chats/components/unread-badge', () => ({ UnreadBadge: () => null }));
+vi.mock('@switch-console/chat-ui/components/unread-badge', () => ({ UnreadBadge: () => null }));
 // The chats the user is in, as GET /gateway/chats lists them.
 vi.mock('@renderer/features/chats/stores/chats', async () => {
   const { observable } = await import('mobx');

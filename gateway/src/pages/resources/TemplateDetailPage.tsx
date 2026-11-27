@@ -1,23 +1,34 @@
-import ArrowBack from "@mui/icons-material/ArrowBack";
-import TransferOwnershipSection from "../../components/TransferOwnershipSection";
-import ContentCopy from "@mui/icons-material/ContentCopy";
-import ContentCopyOutlined from "@mui/icons-material/ContentCopyOutlined";
-import DeleteOutline from "@mui/icons-material/DeleteOutline";
-import Download from "@mui/icons-material/Download";
+import "@switch-console/chat-ui/theme.css";
 import {
-  Alert,
-  Box,
-  Button,
-  CircularProgress,
-  Divider,
-  IconButton,
-  Stack,
-  TextField,
-  Typography,
-} from "@mui/material";
+  FactRow,
+  TemplateCreates,
+  TemplateDetailError,
+  TemplateDetailFrame,
+  TemplateDetailHeader,
+  TemplateDetailLoading,
+  TemplateDocument,
+  TemplateProblem,
+} from "@switch-console/chat-ui/components/template-detail";
+import { SHARED_UI_CLASS } from "@switch-console/chat-ui/model/scope";
+import { kindOf } from "@switch-console/chat-ui/model/template-filters";
+import {
+  TEMPLATE_ACCESS_OPTIONS,
+  type TemplateAccess,
+  accessLine,
+  accessOf,
+  visibilityOf,
+} from "@switch-console/chat-ui/model/template-visibility";
+import { Alert, AlertAction, AlertDescription } from "@switch-console/chat-ui/primitives/alert";
+import { Button } from "@switch-console/chat-ui/primitives/button";
+import { Field, FieldDescription, FieldLabel } from "@switch-console/chat-ui/primitives/field";
+import { Input } from "@switch-console/chat-ui/primitives/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@switch-console/chat-ui/primitives/select";
+import { Textarea } from "@switch-console/chat-ui/primitives/textarea";
+import { ArrowRightLeft, Check, Copy, Download, Pencil, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import ConfirmDialog from "../../components/ConfirmDialog";
+import { TransferOwnershipDialog } from "../../components/TransferOwnershipSection";
 import { useAuth } from "../../data/AuthContext";
 import {
   ApiError,
@@ -28,54 +39,67 @@ import {
   fetchTemplateContent,
   updateTemplate,
 } from "../../data/api";
-import { AccessChip, AccessSelect } from "../../components/AccessControls";
-import {
-  type AccessLevel,
-  fromAccessLevel,
-  toAccessLevel,
-} from "../../data/visibility";
-import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/format";
+import { formatDateTime } from "../../theme/format";
 import { duplicateDraft } from "../templates/duplicate";
-import { UseInConsoleDialog } from "../templates/OpenInConsoleDialog";
-import { TemplateKindChip, UseTemplateButton } from "../templates/TemplateCard";
-import { consoleRunLink, createsLine, useCaseLabel } from "../templates/templateRows";
-import UseCaseSelect from "../templates/UseCaseSelect";
+import TemplateRunDialog from "../templates/TemplateRunDialog";
+import { FORMER_MEMBER, USE_CASES, createsLine, useCaseLabel } from "../templates/templateRows";
 import CreateTemplateDialog, { type TemplateDraft } from "./CreateTemplateDialog";
-import { TEMPLATE_ACCESS_HELPERS } from "./templateAccess";
-import TemplateFindings from "./TemplateFindings";
 import { formatBytes, templateFilename } from "./templateFormat";
 import { useTemplateValidation } from "./useTemplateValidation";
 
 const LIST_URL = "/templates";
+const NO_USE_CASE = "none";
 
 /** What the server's 404 means here. It does not say which, on purpose: a
  * private template is reported as missing to anyone who may not see it. */
 export const NOT_AVAILABLE =
   "This template isn’t available to you. Its owner may keep it private, or it may have been deleted.";
 
+/** Why someone who may not edit the template can only read it. */
+function readOnlyReason(template: TemplateDetail): string {
+  if (template.official) {
+    return "Maintained by Switch, so nobody can change it. Copy or download it to make your own version.";
+  }
+  return template.owner_name === null
+    ? "This template belongs to a former member. You can copy or download it; only a workspace admin can change it."
+    : `This template belongs to ${template.owner_name}. You can copy or download it; only they or a workspace admin can change it.`;
+}
+
+/**
+ * One template, as Switch Console shows it: its name and whose it is, what it
+ * creates, and its document, with Use, Edit, Duplicate, Transfer and Delete
+ * as the server says the viewer may.
+ */
 export default function TemplateDetailPage() {
+  return (
+    <div className={`${SHARED_UI_CLASS} flex min-h-0 flex-1 flex-col`}>
+      <TemplateDetail />
+    </div>
+  );
+}
+
+function TemplateDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user, session } = useAuth();
-  const workspace = session?.tenant ?? null;
+  const { user } = useAuth();
   const [template, setTemplate] = useState<TemplateDetail | null>(null);
-  const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [useOpen, setUseOpen] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [showDocument, setShowDocument] = useState(false);
   const [copy, setCopy] = useState<TemplateDraft | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
-    setLoading(true);
+    setTemplate(null);
     setFetchError(null);
     fetchTemplate(id)
       .then((t) => {
-        if (cancelled) return;
-        setTemplate(t);
-        setLoading(false);
+        if (!cancelled) setTemplate(t);
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -89,33 +113,15 @@ export default function TemplateDetailPage() {
               ? e.message
               : "Could not load this template",
         );
-        setLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, [id]);
 
-  if (loading) {
-    return (
-      <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}>
-        <CircularProgress />
-      </Box>
-    );
-  }
-
-  if (fetchError || !template || !id) {
-    return (
-      <Box>
-        <Button startIcon={<ArrowBack />} onClick={() => navigate(LIST_URL)}>
-          Back to templates
-        </Button>
-        <Alert severity="error" sx={{ mt: 2 }}>
-          {fetchError ?? "Template not found"}
-        </Alert>
-      </Box>
-    );
-  }
+  const back = () => navigate(LIST_URL);
+  if (fetchError || !id) return <TemplateDetailError error={fetchError ?? "Template not found"} onBack={back} />;
+  if (!template) return <TemplateDetailLoading />;
 
   // The server says what this user may do. The user's global role would not:
   // a workspace admin whose global role is plain "user" may still manage
@@ -124,6 +130,12 @@ export default function TemplateDetailPage() {
   // On an official template, managing it means only removing it from the workspace.
   const canManage = template.can_manage;
   const official = template.official;
+  const blocked = template.run_blocked_reason;
+  const ownerLine = official
+    ? "Comes with Switch"
+    : user !== null && template.owner_id === user.id
+      ? "Yours"
+      : `Uploaded by ${template.owner_name ?? FORMER_MEMBER.toLowerCase()}`;
 
   const duplicate = async () => {
     setCopyError(null);
@@ -136,62 +148,110 @@ export default function TemplateDetailPage() {
   };
 
   return (
-    <Box>
-      <Stack direction="row" spacing={1} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap", mb: 2 }}>
-        <IconButton onClick={() => navigate(LIST_URL)} size="small" aria-label="Back to templates">
-          <ArrowBack />
-        </IconButton>
-        <Typography variant="h5" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>
-          {template.name || "Template"}
-        </Typography>
-        <TemplateKindChip template={template} />
-        <Box sx={{ flexGrow: 1 }} />
-        <Button variant="outlined" startIcon={<ContentCopyOutlined />} onClick={() => void duplicate()}>
-          Duplicate as my own
-        </Button>
-        <UseTemplateButton
-          template={template}
-          label="Use template"
-          accessibleName="Use template"
-          variant="contained"
-          onUse={() => setUseOpen(true)}
-        />
-      </Stack>
+    <TemplateDetailFrame>
+      <TemplateDetailHeader
+        name={template.name || "Template"}
+        description={template.description}
+        ownerLine={ownerLine}
+        accessLine={accessLine(accessOf({ readVisibility: template.read_visibility, writeVisibility: template.write_visibility }))}
+        version={template.version}
+        kind={kindOf(template.kind)}
+        official={official}
+        onBack={back}
+        actions={
+          <>
+            {canEdit && !editing && (
+              <Button type="button" variant="outline" size="sm" onClick={() => setEditing(true)}>
+                <Pencil className="size-3.5" />
+                Edit
+              </Button>
+            )}
+            <Button type="button" variant="outline" size="sm" onClick={() => void duplicate()}>
+              <Copy className="size-3.5" />
+              Duplicate as my own
+            </Button>
+            {canManage && !official && (
+              <Button type="button" variant="outline" size="sm" onClick={() => setTransferOpen(true)}>
+                <ArrowRightLeft className="size-3.5" />
+                Transfer ownership
+              </Button>
+            )}
+            {canManage && (
+              <Button type="button" variant="outline" size="sm" onClick={() => setDeleteOpen(true)}>
+                <Trash2 className="size-3.5" />
+                {official ? "Remove from this workspace" : "Delete template"}
+              </Button>
+            )}
+            {/* Greyed with `aria-disabled` rather than `disabled`, so it stays
+                in the focus order and its reason can be reached. */}
+            <Button
+              type="button"
+              size="sm"
+              aria-disabled={blocked !== null || undefined}
+              title={blocked ?? undefined}
+              className={blocked !== null ? "cursor-default opacity-50" : undefined}
+              onClick={blocked === null ? () => setUseOpen(true) : undefined}
+            >
+              Use template
+            </Button>
+          </>
+        }
+      />
+
       {copyError && (
-        <Alert severity="error" onClose={() => setCopyError(null)} sx={{ mb: 2 }}>
-          {copyError}
+        <Alert variant="destructive">
+          <AlertDescription>{copyError}</AlertDescription>
+          <AlertAction>
+            <Button variant="ghost" size="icon-xs" aria-label="Dismiss" onClick={() => setCopyError(null)}>
+              <X className="size-3.5" />
+            </Button>
+          </AlertAction>
         </Alert>
       )}
+      {!canEdit && <p className="text-sm text-foreground-muted">{readOnlyReason(template)}</p>}
+      {template.agent_count === null && (
+        <TemplateProblem problem="Its document could not be read." canFix={canEdit || canManage} />
+      )}
 
-      <Stack spacing={4}>
-        <InfoSection template={template} />
-        <Divider />
-        <DocumentSection
+      <TemplateCreates creates={null} summary={createsLine(template)}>
+        <div className="flex flex-col gap-2 pt-1">
+          <FactRow label="Use case">{template.use_case ? useCaseLabel(template.use_case) : "None"}</FactRow>
+          <FactRow label="Runs">{template.run_count}</FactRow>
+          <FactRow label="Last used">
+            {template.last_run_at === null ? "Never" : formatDateTime(template.last_run_at)}
+          </FactRow>
+          <FactRow label="Size">{formatBytes(template.size_bytes)}</FactRow>
+          {/* One that comes with Switch changes only with a release, so it
+              has no dates of its own. */}
+          {!official && (
+            <>
+              <FactRow label="Created">{formatDateTime(template.created_at)}</FactRow>
+              <FactRow label="Updated">{formatDateTime(template.updated_at)}</FactRow>
+            </>
+          )}
+        </div>
+      </TemplateCreates>
+
+      {editing && (
+        <EditTemplate
           template={template}
-          canEdit={canEdit}
           canManage={canManage && !official}
-          onSaved={setTemplate}
+          onSaved={(updated) => {
+            setTemplate(updated);
+            setEditing(false);
+          }}
+          onCancel={() => setEditing(false)}
         />
-        {canManage && (
-          <>
-            {!official && (
-              <>
-                <Divider />
-                <TransferOwnershipSection
-                  kind="template"
-                  resourceId={id}
-                  resourceLabel={template.name || id}
-                  ownerId={template.owner_id}
-                  blockedReason={null}
-                  onTransferred={() => navigate(0)}
-                />
-              </>
-            )}
-            <Divider />
-            <DangerSection official={official} onDelete={() => setDeleteOpen(true)} />
-          </>
-        )}
-      </Stack>
+      )}
+
+      <TemplateDocument
+        open={showDocument}
+        onToggle={() => setShowDocument((o) => !o)}
+        fileName={templateFilename(template.name)}
+        note="Stored exactly as uploaded"
+        actions={<DocumentActions template={template} />}
+        document={template.content}
+      />
 
       <ConfirmDialog
         open={deleteOpen}
@@ -209,12 +269,18 @@ export default function TemplateDetailPage() {
         }}
         onClose={() => setDeleteOpen(false)}
       />
-      {useOpen && workspace && (
-        <UseInConsoleDialog
-          templateName={template.name}
-          link={consoleRunLink(template.id, workspace.id, window.location.origin)}
-          onClose={() => setUseOpen(false)}
+      {transferOpen && (
+        <TransferOwnershipDialog
+          kind="template"
+          resourceId={id}
+          resourceLabel={template.name || id}
+          ownerId={template.owner_id}
+          onClose={() => setTransferOpen(false)}
+          onTransferred={() => navigate(0)}
         />
+      )}
+      {useOpen && (
+        <TemplateRunDialog templateId={template.id} templateName={template.name} onClose={() => setUseOpen(false)} />
       )}
       {copy && (
         <CreateTemplateDialog
@@ -229,151 +295,24 @@ export default function TemplateDetailPage() {
           }}
         />
       )}
-    </Box>
+    </TemplateDetailFrame>
   );
 }
 
-function InfoSection({ template }: { template: TemplateDetail }) {
-  return (
-    <Stack spacing={1}>
-      <Typography
-        variant="overline"
-        sx={{ color: "text.secondary", display: "block" }}
-      >
-        Info
-      </Typography>
-      <InfoLine
-        label="Owner"
-        value={template.owner_name ?? template.owner_id}
-        mono={!template.owner_name}
-      />
-      {/* A div: the chip is one, and may not sit inside a paragraph. */}
-      <Typography variant="body2" color="text.secondary" component="div">
-        <strong>Access:</strong> <AccessChip pair={template} />
-      </Typography>
-      <InfoLine label="Use case" value={template.use_case ? useCaseLabel(template.use_case) : null} />
-      <InfoLine label="Creates" value={createsLine(template)} />
-      <InfoLine label="Revision" value={String(template.version)} />
-      <InfoLine label="Runs" value={String(template.run_count)} />
-      <InfoLine
-        label="Last used"
-        value={template.last_run_at === null ? "Never" : formatDateTime(template.last_run_at)}
-      />
-      <InfoLine label="Size" value={formatBytes(template.size_bytes)} />
-      {/* One that comes with Switch changes only with a release, so it has
-          no dates of its own. */}
-      {!template.official && (
-        <>
-          <InfoLine label="Created" value={formatDateTime(template.created_at)} />
-          <InfoLine label="Updated" value={formatDateTime(template.updated_at)} />
-        </>
-      )}
-    </Stack>
-  );
-}
-
-function InfoLine({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: string | null | undefined;
-  mono?: boolean;
-}) {
-  return (
-    <Typography variant="body2" color="text.secondary">
-      <strong>{label}:</strong>{" "}
-      {value ? (
-        <Box component="span" sx={mono ? MONO_SX : undefined}>
-          {value}
-        </Box>
-      ) : (
-        <Box component="span" sx={{ color: "text.secondary" }}>
-          {EM_DASH}
-        </Box>
-      )}
-    </Typography>
-  );
-}
-
-function DocumentSection({
-  template,
-  canEdit,
-  canManage,
-  onSaved,
-}: {
-  template: TemplateDetail;
-  canEdit: boolean;
-  /** Only the owner or an admin changes who may see or edit it. */
-  canManage: boolean;
-  onSaved: (updated: TemplateDetail) => void;
-}) {
-  const [name, setName] = useState(template.name);
-  const [description, setDescription] = useState(template.description);
-  const [kind, setKind] = useState(template.kind);
-  const [useCase, setUseCase] = useState<TemplateUseCase | null>(template.use_case);
-  const [access, setAccess] = useState<AccessLevel>(toAccessLevel(template));
-  const [content, setContent] = useState(template.content);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [exportError, setExportError] = useState<string | null>(null);
+/** Copy and Download on the document's bar. Both go back to the server for
+ * the document rather than using the copy on screen, so what you take is what
+ * is stored even while the edit form holds unsaved changes. */
+function DocumentActions({ template }: { template: TemplateDetail }) {
   const [copied, setCopied] = useState(false);
-  // Only while the document is editable — a reader cannot act on the findings.
-  const { result: validation, checking } = useTemplateValidation(content, {
-    enabled: canEdit,
-  });
+  const [error, setError] = useState<string | null>(null);
 
-  const dirty = useMemo(
-    () =>
-      name !== template.name ||
-      description !== template.description ||
-      kind !== template.kind ||
-      useCase !== template.use_case ||
-      content !== template.content ||
-      access !== toAccessLevel(template),
-    [name, description, kind, useCase, content, access, template],
-  );
-
-  const handleSave = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-            // Only what changed is sent, so an edit to the name or the access
-      // cannot put back a document someone else saved meanwhile.
-      const updated = await updateTemplate(template.id, {
-        ...(name !== template.name ? { name } : {}),
-        ...(description !== template.description ? { description } : {}),
-        ...(kind !== template.kind ? { kind } : {}),
-        ...(useCase !== template.use_case ? { use_case: useCase } : {}),
-        ...(content !== template.content ? { content } : {}),
-        // Sent only by someone allowed to change it; the server refuses it otherwise.
-        ...(canManage && access !== toAccessLevel(template) ? fromAccessLevel(access) : {}),
-      });
-      onSaved(updated);
-      setName(updated.name);
-      setDescription(updated.description);
-      setKind(updated.kind);
-      setUseCase(updated.use_case);
-      setContent(updated.content);
-      setAccess(toAccessLevel(updated));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // Both of these go back to the server for the document rather than using the
-  // copy on screen, so what you download is what is stored even if the editor
-  // has unsaved edits in it.
   const withStoredDocument = async (use: (text: string) => Promise<void> | void) => {
-    setExportError(null);
+    setError(null);
     setCopied(false);
     try {
       await use(await fetchTemplateContent(template.id));
     } catch (e) {
-      setExportError(e instanceof Error ? e.message : "Failed to fetch document");
+      setError(e instanceof Error ? e.message : "Failed to fetch document");
     }
   };
 
@@ -386,13 +325,12 @@ function DocumentSection({
       }
       await navigator.clipboard.writeText(text);
       setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     });
 
   const handleDownload = () =>
     withStoredDocument((text) => {
-      const url = URL.createObjectURL(
-        new Blob([text], { type: "application/x-yaml" }),
-      );
+      const url = URL.createObjectURL(new Blob([text], { type: "application/x-yaml" }));
       const a = document.createElement("a");
       a.href = url;
       a.download = templateFilename(template.name);
@@ -405,120 +343,202 @@ function DocumentSection({
     });
 
   return (
-    <Stack spacing={2}>
-      <Stack direction="row" alignItems="center" spacing={1}>
-        <Typography
-          variant="overline"
-          sx={{ color: "text.secondary", flexGrow: 1 }}
-        >
-          Document
-        </Typography>
-        <Button size="small" startIcon={<ContentCopy />} onClick={handleCopy}>
-          Copy
-        </Button>
-        <Button size="small" startIcon={<Download />} onClick={handleDownload}>
-          Download
-        </Button>
-      </Stack>
-      {exportError && <Alert severity="error">{exportError}</Alert>}
-      {copied && <Alert severity="success">Document copied to the clipboard.</Alert>}
-      {!canEdit &&
-        // Reading someone else's shared template is the ordinary case here,
-        // and a disabled field alone reads as a page that failed to load.
-        (template.official ? (
-          <Alert severity="info">
-            Maintained by Switch, so nobody can change it. Copy or download it to
-            make your own version.
-          </Alert>
-        ) : (
-          <Alert severity="info">
-            {template.owner_name === null
-              ? "This template belongs to a former member. You can copy or download it; only a workspace admin can change it."
-              : `This template belongs to ${template.owner_name}. You can copy or download it; only they or a workspace admin can change it.`}
-          </Alert>
-        ))}
-      <TextField
-        label="Name"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        disabled={!canEdit || saving}
-      />
-      <TextField
-        label="Description"
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        disabled={!canEdit || saving}
-        multiline
-        minRows={2}
-        helperText="Shown in the catalogue, and searched alongside the name."
-      />
-      <TextField
-        label="Kind"
-        value={kind}
-        onChange={(e) => setKind(e.target.value)}
-        disabled={!canEdit || saving}
-        sx={{ maxWidth: 320 }}
-      />
-      <UseCaseSelect value={useCase} onChange={setUseCase} disabled={!canEdit || saving} sx={{ maxWidth: 320 }} />
-      {/* Who may see and change an official template is not anyone's to
-          choose, and its helper text would speak to an owner it has not got. */}
-      {!template.official && (
-        <AccessSelect
-          value={access}
-          onChange={setAccess}
-          disabled={!canManage || saving}
-          helpers={TEMPLATE_ACCESS_HELPERS}
-          sx={{ maxWidth: 320 }}
-        />
+    <>
+      {error && (
+        <span role="alert" className="text-foreground-destructive">
+          {error}
+        </span>
       )}
-      <TextField
-        label="Document"
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
-        disabled={!canEdit || saving}
-        multiline
-        minRows={16}
-        slotProps={{ input: { sx: { fontFamily: "monospace" } } }}
-        helperText="Saving a changed document bumps the revision."
-      />
-      <TemplateFindings result={validation} checking={checking} />
-      {error && <Alert severity="error">{error}</Alert>}
-      {/* Only for someone who may save: for anyone else the banner above
-          says why it is read-only, and a greyed Save would only repeat it. */}
-      {canEdit && (
-        <Box>
-          <Button
-            variant="contained"
-            onClick={handleSave}
-            disabled={!dirty || saving || checking || !!validation?.blocked}
-            startIcon={saving ? <CircularProgress size={16} /> : undefined}
-          >
-            Save
-          </Button>
-        </Box>
-      )}
-    </Stack>
+      <Button type="button" variant="outline" size="sm" onClick={() => void handleCopy()}>
+        {copied ? <Check className="size-3.5 text-foreground-success" /> : <Copy className="size-3.5" />}
+        {copied ? "Copied" : "Copy"}
+      </Button>
+      <Button type="button" variant="ghost" size="xs" onClick={() => void handleDownload()}>
+        <Download className="size-3.5" />
+        Download
+      </Button>
+    </>
   );
 }
 
-function DangerSection({ official, onDelete }: { official: boolean; onDelete: () => void }) {
+/** The template's fields and document, editable, for someone the server lets
+ * change it. */
+function EditTemplate({
+  template,
+  canManage,
+  onSaved,
+  onCancel,
+}: {
+  template: TemplateDetail;
+  /** Only the owner or an admin changes who may see or edit it. */
+  canManage: boolean;
+  onSaved: (updated: TemplateDetail) => void;
+  onCancel: () => void;
+}) {
+  const stored = accessOf({ readVisibility: template.read_visibility, writeVisibility: template.write_visibility });
+  const [name, setName] = useState(template.name);
+  const [description, setDescription] = useState(template.description);
+  const [kind, setKind] = useState(template.kind);
+  const [useCase, setUseCase] = useState<TemplateUseCase | null>(template.use_case);
+  const [access, setAccess] = useState<TemplateAccess>(stored);
+  const [content, setContent] = useState(template.content);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { result: validation, checking } = useTemplateValidation(content);
+
+  const dirty = useMemo(
+    () =>
+      name !== template.name ||
+      description !== template.description ||
+      kind !== template.kind ||
+      useCase !== template.use_case ||
+      content !== template.content ||
+      access !== stored,
+    [name, description, kind, useCase, content, access, template, stored],
+  );
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const { readVisibility, writeVisibility } = visibilityOf(access);
+      // Only what changed is sent, so an edit to the name or the access
+      // cannot put back a document someone else saved meanwhile.
+      onSaved(
+        await updateTemplate(template.id, {
+          ...(name !== template.name ? { name } : {}),
+          ...(description !== template.description ? { description } : {}),
+          ...(kind !== template.kind ? { kind } : {}),
+          ...(useCase !== template.use_case ? { use_case: useCase } : {}),
+          ...(content !== template.content ? { content } : {}),
+          // Sent only by someone allowed to change it; the server refuses it otherwise.
+          ...(canManage && access !== stored
+            ? { read_visibility: readVisibility, write_visibility: writeVisibility }
+            : {}),
+        }),
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save");
+      setSaving(false);
+    }
+  };
+
   return (
-    <Stack spacing={1}>
-      <Typography
-        variant="overline"
-        sx={{ color: "error.main", display: "block" }}
-      >
-        Danger zone
-      </Typography>
-      <Button
-        variant="outlined"
-        color="error"
-        startIcon={<DeleteOutline />}
-        onClick={onDelete}
-        sx={{ alignSelf: "flex-start" }}
-      >
-        {official ? "Remove from this workspace" : "Delete template"}
-      </Button>
-    </Stack>
+    <section className="flex flex-col gap-4" aria-label="Edit template">
+      <h2 className="text-sm font-semibold text-foreground">Edit</h2>
+      <Field>
+        <FieldLabel htmlFor="template-name">Name</FieldLabel>
+        <Input id="template-name" value={name} onChange={(e) => setName(e.target.value)} disabled={saving} />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="template-description">Description</FieldLabel>
+        <Textarea
+          id="template-description"
+          rows={2}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          disabled={saving}
+        />
+        <FieldDescription>Shown in the catalogue, and searched alongside the name.</FieldDescription>
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="template-kind">Kind</FieldLabel>
+        <Input id="template-kind" value={kind} onChange={(e) => setKind(e.target.value)} disabled={saving} />
+      </Field>
+      <Field>
+        <FieldLabel>Use case</FieldLabel>
+        <Select
+          value={useCase ?? NO_USE_CASE}
+          onValueChange={(next) => setUseCase(next === NO_USE_CASE ? null : (next as TemplateUseCase))}
+          disabled={saving}
+        >
+          <SelectTrigger aria-label="Use case" className="w-72">
+            <SelectValue>{useCase ? useCaseLabel(useCase) : "None"}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NO_USE_CASE}>None</SelectItem>
+            {USE_CASES.map((u) => (
+              <SelectItem key={u.value} value={u.value}>
+                {u.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <FieldDescription>Optional. Shown on the template's page, and searched alongside its name.</FieldDescription>
+      </Field>
+      {canManage && (
+        <Field>
+          <FieldLabel>Access</FieldLabel>
+          <Select value={access} onValueChange={(next) => setAccess(next as TemplateAccess)} disabled={saving}>
+            <SelectTrigger aria-label="Access" className="w-72">
+              <SelectValue>{TEMPLATE_ACCESS_OPTIONS.find((o) => o.value === access)?.label}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {TEMPLATE_ACCESS_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <FieldDescription>{TEMPLATE_ACCESS_OPTIONS.find((o) => o.value === access)?.hint}</FieldDescription>
+        </Field>
+      )}
+      <Field>
+        <FieldLabel htmlFor="template-document">Document</FieldLabel>
+        <Textarea
+          id="template-document"
+          rows={16}
+          className="font-mono text-xs"
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          disabled={saving}
+        />
+        <FieldDescription>Saving a changed document bumps the revision.</FieldDescription>
+      </Field>
+      {!checking && validation && validation.errors.length > 0 && (
+        <Alert variant="destructive">
+          <AlertDescription>
+            <p className="font-medium">
+              {validation.errors.length === 1
+                ? "This does not look like a valid template"
+                : `${validation.errors.length} problems with this template`}
+            </p>
+            <ul className="list-disc pl-5">
+              {validation.errors.map((f, i) => (
+                <li key={`${f.code}-${f.subject ?? i}`}>{f.message}</li>
+              ))}
+            </ul>
+            {validation.blocked
+              ? "This cannot be saved until it parses."
+              : "You can still save it — the registry stores documents it does not understand — but check this is what you meant."}
+          </AlertDescription>
+        </Alert>
+      )}
+      {!checking && validation && validation.warnings.length > 0 && (
+        <Alert variant="warning">
+          <AlertDescription>
+            <ul className="list-disc pl-5">
+              {validation.warnings.map((f, i) => (
+                <li key={`${f.code}-${f.subject ?? i}`}>{f.message}</li>
+              ))}
+            </ul>
+          </AlertDescription>
+        </Alert>
+      )}
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+      <div className="flex gap-2">
+        <Button onClick={() => void save()} disabled={!dirty || saving || checking || !!validation?.blocked}>
+          Save
+        </Button>
+        <Button variant="outline" onClick={onCancel} disabled={saving}>
+          Cancel
+        </Button>
+      </div>
+    </section>
   );
 }

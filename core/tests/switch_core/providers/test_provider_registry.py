@@ -194,6 +194,7 @@ class TestANewProvider:
             "id": "newcli",
             "label": "New CLI",
             "advanced_fields": [],
+            "supports_auto_mode": True,
         }
         assert advanced.json()["providers"]["newcli"] == {"fields": []}
 

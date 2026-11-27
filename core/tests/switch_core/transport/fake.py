@@ -19,6 +19,7 @@ from switch_core.transport import (
     TransportHandlers,
     UploadResult,
 )
+from switch_core.transport.cursors import DeliveryProgress
 
 
 class FakeTransport:
@@ -39,6 +40,7 @@ class FakeTransport:
         self._download = download or DownloadResult(body=b"", content_type="text/plain")
         self._fail_send = fail_send
 
+        self.admitted: list[str | None] = []
         self.sent_messages: list[dict[str, Any]] = []
         self.sent_events: list[tuple[str, str, dict[str, object]]] = []
         self.sent_media: list[dict[str, Any]] = []
@@ -51,6 +53,9 @@ class FakeTransport:
         self.closed = False
         self.events_by_id: dict[str, InboundEvent] = {}
         self.next_event_id = 0
+        # This client's keyed sends: a second send under a key is the first
+        # one, as the real port does per sending client.
+        self.sent_keys: dict[str, SendResult] = {}
 
     # ── Session ───────────────────────────────────────────────────────────────
 
@@ -70,10 +75,24 @@ class FakeTransport:
     def register_handlers(self, handlers: TransportHandlers) -> None:
         self.handlers = handlers
 
-    async def receive_forever(self, *, since: str | None) -> None:
+    async def receive_forever(
+        self,
+        progress: DeliveryProgress,
+        *,
+        row_types: frozenset[str] | None = None,
+    ) -> None:
         return None
 
+    def held_back_released(self, room_id: str) -> None:
+        return None
+
+    async def wait_receiving(self, timeout: float) -> bool:
+        return True
+
     # ── Outbound ──────────────────────────────────────────────────────────────
+
+    def admit_message(self, authored: str | None) -> None:
+        self.admitted.append(authored)
 
     def _next_id(self) -> str:
         self.next_event_id += 1
@@ -90,9 +109,13 @@ class FakeTransport:
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
+        client_txn_id: str | None = None,
     ) -> SendResult:
         if self._fail_send:
             raise TransportError(self._fail_send)
+        if client_txn_id is not None and client_txn_id in self.sent_keys:
+            return self.sent_keys[client_txn_id]
         self.sent_messages.append(
             {
                 "room_id": room_id,
@@ -103,6 +126,8 @@ class FakeTransport:
                 "mentions": mentions,
                 "thread_root_id": thread_root_id,
                 "extra_content": extra_content,
+                "authored": authored,
+                "client_txn_id": client_txn_id,
             }
         )
         content: dict[str, object] = {
@@ -117,11 +142,18 @@ class FakeTransport:
                 "rel_type": "m.thread",
                 "event_id": thread_root_id,
             }
-        return SendResult(
+        result = SendResult(
             event_id=self._next_id(),
             event_type="m.room.message",
             content=content,
         )
+        if client_txn_id is not None:
+            self.sent_keys[client_txn_id] = result
+        return result
+
+    async def sent_under(self, room_id: str, client_txn_id: str) -> str | None:
+        sent = self.sent_keys.get(client_txn_id)
+        return sent.event_id if sent is not None else None
 
     async def send_event(
         self, room_id: str, event_type: str, content: dict[str, object]
@@ -148,6 +180,7 @@ class FakeTransport:
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
     ) -> SendResult:
         if self._fail_send:
             raise TransportError(self._fail_send)
@@ -165,6 +198,7 @@ class FakeTransport:
                 "thread_root_id": thread_root_id,
                 "group": group,
                 "extra_content": extra_content,
+                "authored": authored,
             }
         )
         content: dict[str, object] = {

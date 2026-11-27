@@ -108,6 +108,9 @@ def _free_port() -> int:
 def _boot_env(tmp_path: Path, db: BootDatabase, port: int) -> dict[str, str]:
     """Only what Core needs, all throwaway: nothing leaks in from the runner's
     own environment."""
+    key = tmp_path / "keyed-id.key"
+    key.write_bytes(secrets.token_bytes(32))
+    key.chmod(0o600)
     return {
         "PATH": os.environ.get("PATH", ""),
         "HOME": str(tmp_path),
@@ -127,6 +130,7 @@ def _boot_env(tmp_path: Path, db: BootDatabase, port: int) -> dict[str, str]:
         "GATEWAY_ADMIN_EMAIL": "boot-admin@example.com",
         "GATEWAY_ADMIN_PASSWORD": secrets.token_hex(16),
         "FEATURE_FLAGS_ENABLED": _FLAGS,
+        "VISIBILITY_KEYED_ID_KEY_PATH": str(key),
         "TELEMETRY_ENABLED": "false",
         "TELEMETRY_ENVIRONMENT": "local",
     }
@@ -217,6 +221,10 @@ def test_python_m_boots_core_serves_and_stops_cleanly(
     assert _health(port) == 200
     log = booted.text()
     assert "Traceback" not in log, log[-4000:]
+    # With the flag and a keyed-id key, the hosted alerts worker starts rather
+    # than saying it's off.
+    assert "Hosted alerts are off" not in log
+    assert "bulk operator alert sweep isn't running" not in log
     booted.process.send_signal(signal.SIGTERM)
     assert _wait_exit(booted) == 0, booted.text()[-4000:]
 

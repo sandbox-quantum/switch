@@ -7,29 +7,29 @@
  * looks like one.
  */
 
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { Plus } from 'lucide-react';
-import { useMemo, useState } from 'react';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
-import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
-import { Button } from '@renderer/lib/ui/button';
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
   DialogContentArea,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@renderer/lib/ui/dialog';
-import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
-import { Input } from '@renderer/lib/ui/input';
+} from '@switch-console/chat-ui/primitives/dialog';
+import { Field, FieldGroup, FieldLabel } from '@switch-console/chat-ui/primitives/field';
+import { Input } from '@switch-console/chat-ui/primitives/input';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@renderer/lib/ui/select';
-import { Spinner } from '@renderer/lib/ui/spinner';
+} from '@switch-console/chat-ui/primitives/select';
+import { Spinner } from '@switch-console/chat-ui/primitives/spinner';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Plus } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
+import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { log } from '@renderer/utils/logger';
 
 export type AddHostModalProps = BaseModalProps<void> & {

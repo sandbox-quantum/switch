@@ -60,7 +60,11 @@ export async function testSshConnection(
     });
 
     client.on('error', (error: Error) => {
-      finish({ success: false, error: error.message, debugLogs });
+      finish({
+        success: false,
+        error: (resolved.hostKeyRejection() ?? error).message,
+        debugLogs,
+      });
     });
 
     client.on('close', () => {

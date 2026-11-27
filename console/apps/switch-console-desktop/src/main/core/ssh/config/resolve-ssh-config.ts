@@ -1,6 +1,7 @@
 // Canonical OpenSSH resolution via `ssh -G`. Source of truth at connect time.
 // Ported from Switch Console for Switch Console remote-SSH agents (CHOO-1059).
 import { execFile } from 'node:child_process';
+import type { StrictHostKeyChecking } from '../host-keys/host-key-check';
 
 export interface SshConfigRunnerResult {
   stdout: string;
@@ -29,6 +30,10 @@ export interface ResolvedSshConfig {
   connectTimeout?: number;
   serverAliveInterval?: number;
   serverAliveCountMax?: number;
+  hostKeyAlias?: string;
+  userKnownHostsFiles: string[];
+  globalKnownHostsFiles: string[];
+  strictHostKeyChecking: StrictHostKeyChecking;
 }
 
 export interface ResolveSshConfigOptions {
@@ -46,6 +51,23 @@ const DEFAULT_SSH_G_MAX_BUFFER = 256 * 1024;
 function parseInteger(value: string): number | undefined {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** `ssh -G` prints `true`/`false` for yes/no, and accepts either spelling in a config. */
+function parseStrictHostKeyChecking(value: string | undefined): StrictHostKeyChecking {
+  switch (value?.toLowerCase()) {
+    case 'true':
+    case 'yes':
+      return 'yes';
+    case 'false':
+    case 'no':
+    case 'off':
+      return 'no';
+    case 'accept-new':
+      return 'accept-new';
+    default:
+      return 'ask';
+  }
 }
 
 function optionalString(value: string): string | undefined {
@@ -82,6 +104,9 @@ export function parseSshGOutput(output: string): ResolvedSshConfig {
     return value === undefined ? undefined : parseInteger(value);
   };
 
+  const fileList = (key: string): string[] =>
+    (latest(key) ?? '').split(/\s+/).filter((path) => path && path.toLowerCase() !== 'none');
+
   const identityAgent = latest('identityagent');
   const forwardAgentValue = latest('forwardagent')?.trim();
   const normalizedForwardAgent = forwardAgentValue?.toLowerCase();
@@ -105,6 +130,10 @@ export function parseSshGOutput(output: string): ResolvedSshConfig {
     connectTimeout: latestInt('connecttimeout'),
     serverAliveInterval: latestInt('serveraliveinterval'),
     serverAliveCountMax: latestInt('serveralivecountmax'),
+    hostKeyAlias: latestOptional('hostkeyalias'),
+    userKnownHostsFiles: fileList('userknownhostsfile'),
+    globalKnownHostsFiles: fileList('globalknownhostsfile'),
+    strictHostKeyChecking: parseStrictHostKeyChecking(latest('stricthostkeychecking')),
   };
 }
 

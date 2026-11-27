@@ -1,9 +1,21 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import {
+  readDevicePolicy,
+  SDK_SESSIONS_DIR_ENV,
+  sealingKeyFingerprint,
+} from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
-import { infoChange, installerFor, isSupervised, main, planServiceReleases } from './main';
+import {
+  boxModeFrom,
+  infoChange,
+  installerFor,
+  isSupervised,
+  main,
+  planServiceReleases,
+} from './main';
 import { dataLayout } from './paths';
 import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
 import { ReleasesDirInstaller } from './self-update';
@@ -23,10 +35,15 @@ beforeEach(() => {
     return true;
   });
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  // `run` unrefs its IPC channel so a parent's channel never keeps a controller
+  // alive. Here that channel is the test worker's own link to vitest: unrefed,
+  // the worker can exit mid-file whenever nothing else holds its event loop.
+  if (process.channel) vi.spyOn(process.channel, 'unref').mockImplementation(() => {});
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  delete process.env[SDK_SESSIONS_DIR_ENV];
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -56,6 +73,54 @@ describe('main', () => {
     expect(await main(['--help'])).toBe(EXIT_OK);
     expect(await main(['--device-id'])).toBe(EXIT_CONFIGURATION);
     expect(lastLine()).toBe('switch-agent-controller: --device-id needs --device-root.');
+  });
+
+  it('allows an agent bypass or a directory on this device, and takes it back', async () => {
+    const data = join(dir, 'data');
+    expect(await main(['allow', 'agent-1', '--data-dir', data])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/allow needs --bypass, --directory <dir>, or both/);
+    expect(await main(['allow', '../agent', '--bypass', '--data-dir', data])).toBe(
+      EXIT_CONFIGURATION
+    );
+    expect(
+      await main(['allow', 'agent-1', '--bypass', '--directory', '/srv/repos', '--data-dir', data])
+    ).toBe(EXIT_OK);
+    expect(
+      await main(['allow', '--every-agent', '--directory', '/srv/shared', '--data-dir', data])
+    ).toBe(EXIT_OK);
+    expect(await readDevicePolicy(data)).toEqual({
+      version: 1,
+      agents: {
+        'agent-1': { bypass: true, directories: [resolve('/srv/repos')] },
+        '*': { directories: [resolve('/srv/shared')] },
+      },
+    });
+    expect(await main(['disallow', 'agent-1', '--bypass', '--data-dir', data])).toBe(EXIT_OK);
+    expect((await readDevicePolicy(data)).agents['agent-1']).toEqual({
+      directories: [resolve('/srv/repos')],
+    });
+    expect(await main(['disallow', 'agent-1', '--data-dir', data])).toBe(EXIT_OK);
+    expect(await main(['policy', '--data-dir', data])).toBe(EXIT_OK);
+    expect((await readDevicePolicy(data)).agents['agent-1']).toBeUndefined();
+  });
+
+  it('lands every one of several changes to what the device allows made at once', async () => {
+    const data = join(dir, 'data');
+    expect(await main(['allow', 'agent-1', '--bypass', '--data-dir', data])).toBe(EXIT_OK);
+    expect(
+      await Promise.all([
+        main(['disallow', 'agent-1', '--bypass', '--data-dir', data]),
+        main(['allow', 'agent-2', '--bypass', '--data-dir', data]),
+        main(['allow', 'agent-3', '--directory', '/srv/repos', '--data-dir', data]),
+      ])
+    ).toEqual([EXIT_OK, EXIT_OK, EXIT_OK]);
+    expect(await readDevicePolicy(data)).toEqual({
+      version: 1,
+      agents: {
+        'agent-2': { bypass: true },
+        'agent-3': { directories: [resolve('/srv/repos')] },
+      },
+    });
   });
 
   it('enrolls with the name and description it is given', async () => {
@@ -91,6 +156,51 @@ describe('main', () => {
     expect(bodies[0]).toMatchObject({
       controller: { kind: 'daemon', name: 'build-box', description: 'The build box in the office' },
     });
+  });
+
+  it('prints the key logins are sealed to, as enrolled, and nothing for a directory with none', async () => {
+    const out = () =>
+      vi
+        .mocked(process.stdout.write)
+        .mock.calls.map(([chunk]) => String(chunk))
+        .join('');
+    expect(await main(['sealing-key', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(JSON.parse(out())).toEqual({ publicKey: null, fingerprint: null });
+
+    const bodies: { public_key: { key: string } }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)));
+        return new Response(
+          JSON.stringify({ controller_id: 'controller-1', credential: 'swcc_test' }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        );
+      })
+    );
+    const enrolled = await main([
+      'enroll',
+      '--server',
+      'https://switch.example.com',
+      '--code',
+      'swce_test',
+      '--data-dir',
+      dir,
+      '--secret-store',
+      'file',
+    ]);
+    vi.unstubAllGlobals();
+    expect(enrolled).toBe(EXIT_OK);
+    const sent = bodies[0]!.public_key.key;
+    expect(out()).toContain(`Login key: ${sealingKeyFingerprint(sent)}`);
+
+    vi.mocked(process.stdout.write).mockClear();
+    expect(await main(['sealing-key', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(JSON.parse(out())).toEqual({
+      publicKey: sent,
+      fingerprint: sealingKeyFingerprint(sent),
+    });
+    expect(out()).not.toContain('privateKey');
   });
 
   it('says which controller it is when it took over the one this machine was', async () => {
@@ -326,6 +436,17 @@ describe('main', () => {
     );
     expect(lastLine()).toMatch(/not enrolled/);
   });
+
+  it('keeps the sessions of a controller with a data directory of its own in it', async () => {
+    await main(['run', '--data-dir', dir, '--shared-host-bundle', bundle]);
+    expect(process.env[SDK_SESSIONS_DIR_ENV]).toBe(join(dir, 'sdk-sessions'));
+    expect(statSync(join(dir, 'sdk-sessions')).isDirectory()).toBe(true);
+  });
+
+  it("leaves a Console controller's sessions where Console reads them", async () => {
+    await main(['run', '--data-dir', dir, '--shared-host-bundle', bundle, '--updated-by-console']);
+    expect(process.env[SDK_SESSIONS_DIR_ENV]).toBeUndefined();
+  });
 });
 
 describe('infoChange', () => {
@@ -433,5 +554,95 @@ describe.skipIf(process.platform === 'win32')('planServiceReleases', () => {
     await expect(planServiceReleases(cliIn(join(other, '0.31.0')), own)).rejects.toThrow(
       /releases directory of another setup/
     );
+  });
+});
+
+describe('box mode', () => {
+  it('refuses a box image without --box, and --box outside one, for every command', async () => {
+    for (const command of ['run', 'enroll', 'status']) {
+      expect(await main([command, '--box'], false)).toBe(EXIT_CONFIGURATION);
+      expect(lastLine()).toBe(
+        'switch-agent-controller: --box is only for the box image, which this is not.'
+      );
+      expect(await main([command], true)).toBe(EXIT_CONFIGURATION);
+      expect(lastLine()).toBe(
+        'switch-agent-controller: This is a box image: the controller runs here only in box mode (--box).'
+      );
+    }
+  });
+
+  it('outside box mode, knows none of the box-only commands or flags', async () => {
+    expect(await main(['launcher', '--data-dir', dir], false)).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe("switch-agent-controller: Unknown command 'launcher'.");
+    for (const flag of ['--launcher-socket', '--agents-data-dir', '--agents-workspaces']) {
+      expect(await main(['run', flag, join(dir, 'x')], false)).toBe(EXIT_CONFIGURATION);
+      expect(lastLine()).toMatch(new RegExp(`^switch-agent-controller: Unknown option '${flag}'`));
+    }
+    expect(await main(['run', '--operator-exec'], false)).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/^switch-agent-controller: Unknown option '--operator-exec'/);
+    for (const flag of ['--live', '--json']) {
+      expect(await main(['status', flag], false)).toBe(EXIT_CONFIGURATION);
+      expect(lastLine()).toMatch(new RegExp(`^switch-agent-controller: Unknown option '${flag}'`));
+    }
+  });
+
+  it('outside box mode, leaves the gateway proxy variable alone', async () => {
+    process.env.SWITCH_CONTROLLER_GATEWAY_PROXY = 'http://proxy.example:3128';
+    try {
+      await main(['run', '--no-such-flag'], false);
+      await main(['status', '--data-dir', join(dir, 'none')], false);
+      expect(process.env.SWITCH_CONTROLLER_GATEWAY_PROXY).toBe('http://proxy.example:3128');
+    } finally {
+      delete process.env.SWITCH_CONTROLLER_GATEWAY_PROXY;
+    }
+  });
+
+  it('takes --box out of the arguments, and leaves desktop and v1 arguments as they are', () => {
+    expect(boxModeFrom(['--data-dir', '/data', '--box', '--updated-by-console'], true)).toEqual({
+      box: true,
+      rest: ['--data-dir', '/data', '--updated-by-console'],
+    });
+    expect(boxModeFrom(['--data-dir', '/data'], false)).toEqual({
+      box: false,
+      rest: ['--data-dir', '/data'],
+    });
+  });
+});
+
+describe('in box mode', () => {
+  it('reads the live status file for status --live and --json, and nothing else', async () => {
+    expect(await main(['status', '--box', '--live', '--live-dir', dir], true)).toBe(EXIT_FAILURE);
+    expect(lastLine()).toBe(
+      `No live status in ${dir}: the controller is not running here, or has not written one yet.`
+    );
+    expect(await main(['status', '--box', '--live-dir', dir], true)).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe(
+      'switch-agent-controller: --live-dir and --since go with --live or --json.'
+    );
+  });
+
+  it('takes the gateway proxy out of the environment before any command', async () => {
+    process.env.SWITCH_CONTROLLER_GATEWAY_PROXY = 'http://proxy.example:3128';
+    try {
+      await main(['status', '--box', '--live', '--live-dir', dir], true);
+      expect(process.env).not.toHaveProperty('SWITCH_CONTROLLER_GATEWAY_PROXY');
+    } finally {
+      delete process.env.SWITCH_CONTROLLER_GATEWAY_PROXY;
+    }
+  });
+
+  it('sends no device id', async () => {
+    const out: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk));
+      return true;
+    });
+    expect(await main(['--device-id', '--device-root', dir, '--box'], true)).toBe(EXIT_OK);
+    expect(out.join('')).toBe('\n');
+  });
+
+  it('refuses operator exec unless the template marks a split test box', async () => {
+    expect(await main(['run', '--box', '--operator-exec'], true)).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/--operator-exec is for test boxes only/);
   });
 });

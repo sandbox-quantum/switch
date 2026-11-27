@@ -26,6 +26,7 @@ const adoptRunningStack = vi.hoisted(() => vi.fn());
 const listManagedServers = vi.hoisted(() => vi.fn());
 const getRemoteManagedServer = vi.hoisted(() => vi.fn());
 const ensureManagedServer = vi.hoisted(() => vi.fn());
+const followManagedServerAddress = vi.hoisted(() => vi.fn(async () => {}));
 const removeServer = vi.hoisted(() => vi.fn());
 const clearSecrets = vi.hoisted(() => vi.fn());
 const clearPorts = vi.hoisted(() => vi.fn());
@@ -69,6 +70,7 @@ vi.mock('./pipeline', () => ({
   stopStack,
   resetStack,
 }));
+vi.mock('./follow-server-address', () => ({ followManagedServerAddress }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   listManagedServers,
   getRemoteManagedServer,
@@ -185,8 +187,8 @@ function fakeHost() {
 const RECORD = {
   id: 'srv-1',
   name: 'Team server',
-  url: 'http://localhost:41001',
-  dashboardUrl: 'http://localhost:41000',
+  url: 'http://127.0.0.1:41001',
+  dashboardUrl: 'http://127.0.0.1:41000',
   managed: true,
   managementKind: 'remote',
   sshHost: 'vm-1',
@@ -507,9 +509,10 @@ describe('picking a shared stack back up', () => {
     inspectStack.mockResolvedValue(present(true));
     getRemoteManagedServer.mockResolvedValue({
       ...RECORD,
-      url: 'http://localhost:8000',
-      dashboardUrl: 'http://localhost:3300',
+      url: 'http://127.0.0.1:8000',
+      dashboardUrl: 'http://127.0.0.1:3300',
     });
+    ensureManagedServer.mockResolvedValue(RECORD);
     const service = await loadService();
 
     await boot(service);
@@ -517,11 +520,36 @@ describe('picking a shared stack back up', () => {
     expect(ensureManagedServer).toHaveBeenCalledWith(
       {
         name: 'Team server',
-        url: 'http://localhost:41001',
-        dashboardUrl: 'http://localhost:41000',
+        url: 'http://127.0.0.1:41001',
+        dashboardUrl: 'http://127.0.0.1:41000',
       },
       { kind: 'remote', sshHost: 'vm-1' }
     );
+    expect(followManagedServerAddress).toHaveBeenCalledWith('http://127.0.0.1:8000', RECORD);
+  });
+
+  it('moves a record that still names localhost to 127.0.0.1, and its agents with it', async () => {
+    createRemoteServerHost.mockResolvedValue(fakeHost());
+    inspectStack.mockResolvedValue(present(true));
+    getRemoteManagedServer.mockResolvedValue({
+      ...RECORD,
+      url: 'http://localhost:41001',
+      dashboardUrl: 'http://localhost:41000',
+    });
+    ensureManagedServer.mockResolvedValue(RECORD);
+    const service = await loadService();
+
+    await boot(service);
+
+    expect(ensureManagedServer).toHaveBeenCalledWith(
+      {
+        name: 'Team server',
+        url: 'http://127.0.0.1:41001',
+        dashboardUrl: 'http://127.0.0.1:41000',
+      },
+      { kind: 'remote', sshHost: 'vm-1' }
+    );
+    expect(followManagedServerAddress).toHaveBeenCalledWith('http://localhost:41001', RECORD);
   });
 
   it('shows a stopped stack as stopped, with nothing to explain when this Console did not see it run', async () => {

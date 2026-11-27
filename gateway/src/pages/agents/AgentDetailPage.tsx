@@ -16,6 +16,7 @@ import {
 } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
+import { agentPath } from "../../data/agentPaths";
 import {
   type AgentDetail,
   type AgentRoomMembership,
@@ -31,14 +32,15 @@ import {
   sentenceCase,
 } from "../../theme/format";
 import { useAuth } from "../../data/AuthContext";
+import ChatWithAgentButton from "../chats/ChatWithAgentButton";
 import { mayBeInAnotherWorkspace } from "../../data/workspaceLink";
-import AddressingPolicySection from "./AddressingPolicySection";
 import RenameAgentDialog from "./RenameAgentDialog";
-import AgentManagementSection from "./AgentManagementSection";
-import MidTurnDeliverySection from "./MidTurnDeliverySection";
-import ServiceAccessSection from "./ServiceAccessSection";
 import { extractDefaults, renderOptionFields } from "./optionFields";
 import { sessionPlace, sessionRunner } from "./sessionLabels";
+import AddressingPolicySection from "./AddressingPolicySection";
+import MidTurnDeliverySection from "./MidTurnDeliverySection";
+import AgentManagementSection from "./AgentManagementSection";
+import ServiceAccessSection from "./ServiceAccessSection";
 
 // Presence of an agent within a room — mirrors the room detail page so the two
 // views report status identically.
@@ -140,6 +142,7 @@ export default function AgentDetailPage() {
           </Tooltip>
         )}
         <Box sx={{ flexGrow: 1 }} />
+        <ChatWithAgentButton agentId={agent.id} />
         <Chip label={agent.connector_type} size="small" variant="outlined" />
         {agent.connection_model && (
           <Chip
@@ -185,6 +188,35 @@ export default function AgentDetailPage() {
         <InfoSection agent={agent} />
         <Divider />
         <CapabilitiesSection agent={agent} />
+        <Divider />
+        <Typography variant="h6">Permissions</Typography>
+        <AddressingPolicySection
+          agent={agent}
+          canEdit={agent.can_manage}
+          canWiden={agent.can_widen_addressing}
+          onUpdated={refetch}
+        />
+        <MidTurnDeliverySection
+          agent={agent}
+          canEdit={agent.can_manage}
+          onUpdated={refetch}
+        />
+        <AgentManagementSection
+          agent={agent}
+          canEdit={agent.can_change_manage_agents}
+          onUpdated={refetch}
+        />
+        {capabilities.features.service_connections && (
+          <>
+            <Divider />
+            <Typography variant="h6">Service Access</Typography>
+            <ServiceAccessSection
+              agent={agent}
+              canGrant={agent.can_grant_services}
+              onAgentUpdated={refetch}
+            />
+          </>
+        )}
         {agent.known_agent_type && (
           <>
             <Divider />
@@ -194,30 +226,6 @@ export default function AgentDetailPage() {
               onUpdated={refetch}
             />
           </>
-        )}
-        <Divider />
-        <AddressingPolicySection
-          agent={agent}
-          canEdit={canManage}
-          canWiden={agent.can_widen_addressing}
-          onUpdated={refetch}
-        />
-        <MidTurnDeliverySection
-          agent={agent}
-          canEdit={canManage}
-          onUpdated={refetch}
-        />
-        <AgentManagementSection
-          agent={agent}
-          canEdit={agent.can_change_manage_agents}
-          onUpdated={refetch}
-        />
-        {capabilities.features.service_connections && (
-          <ServiceAccessSection
-            agent={agent}
-            canGrant={agent.can_grant_services}
-            onAgentUpdated={refetch}
-          />
         )}
         {(agent.can_transfer || agent.transfer_blocked_reason !== null) && (
           <>
@@ -251,7 +259,7 @@ export default function AgentDetailPage() {
         {agent.children.length > 0 && (
           <>
             <Divider />
-            <SubagentsSection children={agent.children} />
+            <SubagentsSection children={agent.children} capabilities={capabilities} />
           </>
         )}
       </Stack>
@@ -640,7 +648,13 @@ function ListSection({
   );
 }
 
-function SubagentsSection({ children }: { children: AgentSummary[] }) {
+function SubagentsSection({
+  children,
+  capabilities,
+}: {
+  children: AgentSummary[];
+  capabilities: import("../../data/capabilities").Capabilities;
+}) {
   const navigate = useNavigate();
   return (
     <Stack spacing={1}>
@@ -654,7 +668,7 @@ function SubagentsSection({ children }: { children: AgentSummary[] }) {
             label={child.name}
             size="small"
             variant="outlined"
-            onClick={() => navigate(`/agents/${child.id}`)}
+            onClick={() => navigate(agentPath(child.id, capabilities))}
             sx={{ cursor: "pointer" }}
           />
         ))}

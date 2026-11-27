@@ -553,7 +553,7 @@ async def test_a_retry_after_the_workspaces_went_still_purges_the_organization(
     purge = app.state.organization_purge
     original = purge._delete_organization
 
-    async def interrupted(plan, request):
+    async def interrupted(plan, request, boxes_awaiting_removal):
         monkeypatch.setattr(purge, "_delete_organization", original)
         raise RuntimeError("interrupted")
 
@@ -616,3 +616,113 @@ async def test_in_a_shared_organization_a_cloud_machine_is_torn_down_first(
         assert await session.get(Tenant, mine) is None
         assert await session.get(CloudMachine, machine_id) is None
         assert await session.get(Organization, organization_id) is not None
+
+
+async def test_starting_over_is_not_found_unless_the_server_allows_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, email, solo, _ = await _solo_workspace(session_factory)
+    app, _, _ = _app(session_factory, enabled=False)
+    async with _client(app, user_id, email, solo) as client:
+        response = await client.post("/auth/me/start-over", json={"email": email})
+    assert response.status_code == 404
+    async with session_factory() as session:
+        assert await session.get(Tenant, solo) is not None
+
+
+async def test_starting_over_purges_what_the_account_owns_and_keeps_the_login(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, email, solo, organization_id = await _solo_workspace(session_factory)
+    async with tenant_session(session_factory, solo) as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        agent = await _agent(session, solo, user, "helper")
+        await session.commit()
+        agent_id = agent.id
+
+    app, _, _ = _app(session_factory, enabled=True)
+    async with _client(app, user_id, email, solo) as client:
+        response = await client.post("/auth/me/start-over", json={"email": email})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"finished": True, "waiting": None}
+    assert 'switch_auth=""' in response.headers["set-cookie"]
+    async with session_factory() as session:
+        assert await session.get(User, user_id) is not None
+        assert await session.get(Tenant, solo) is None
+        assert await session.get(Agent, agent_id) is None
+        assert await session.get(Organization, organization_id) is None
+        assert not await session.scalar(
+            select(TenantMember.tenant_id).where(TenantMember.user_id == user_id)
+        )
+        assert not await session.scalar(
+            select(OrganizationMember.organization_id).where(
+                OrganizationMember.user_id == user_id
+            )
+        )
+
+
+async def test_starting_over_asks_about_the_team_and_the_license_again(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, email, solo, _ = await _solo_workspace(session_factory)
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        user.team_survey = {"role": "Platform / DevOps"}
+        user.team_survey_answered_at = datetime.now(UTC)
+        user.license_accepted_version = "v1"
+        user.license_accepted_at = datetime.now(UTC)
+        await session.commit()
+
+    app, _, _ = _app(session_factory, enabled=True)
+    async with _client(app, user_id, email, solo) as client:
+        response = await client.post("/auth/me/start-over", json={"email": email})
+
+    assert response.json() == {"finished": True, "waiting": None}
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        assert user.team_survey is None
+        assert user.team_survey_answered_at is None
+        assert user.license_accepted_version is None
+        assert user.license_accepted_at is None
+
+
+async def test_starting_over_waits_for_the_cloud_machine_signing_nobody_out(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, email, solo, _ = await _solo_workspace(session_factory)
+    async with tenant_session(session_factory, solo) as session:
+        machine = await seed_machine(
+            session,
+            owner_id=user_id,
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+        )
+        await session.commit()
+        machine_id = machine.id
+
+    app, _, _ = _app(session_factory, enabled=True)
+    async with _client(app, user_id, email, solo) as client:
+        waiting = await client.post("/auth/me/start-over", json={"email": email})
+        assert waiting.status_code == 200, waiting.text
+        assert waiting.json()["finished"] is False
+        assert "being torn down" in waiting.json()["waiting"]
+        assert "set-cookie" not in waiting.headers
+        async with session_factory() as session:
+            assert await session.get(Tenant, solo) is not None
+            machine = await session.get(CloudMachine, machine_id)
+            assert machine is not None and machine.desired_state == "deleted"
+            # The hosted controller terminates it.
+            machine.state = "deleted"
+            await session.commit()
+        response = await client.post("/auth/me/start-over", json={"email": email})
+
+    assert response.json() == {"finished": True, "waiting": None}
+    async with session_factory() as session:
+        assert await session.get(User, user_id) is not None
+        assert await session.get(Tenant, solo) is None

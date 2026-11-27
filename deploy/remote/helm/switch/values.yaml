@@ -85,6 +85,33 @@ ingress:
     - /api/messages
     - /api/teams/notifications
 
+# ── Network policies ──────────────────────────────────────────────────────────
+# NetworkPolicies that admit to each pod only who needs it. They need a CNI
+# that enforces NetworkPolicy; without one they are accepted and ignored. The
+# decision service has its own (decision.networkPolicy).
+#
+# The in-cluster Postgres (postgresql.mode: managed) admits only this
+# release's switch-core and migration Jobs, on 5432.
+#
+# switch-core and the gateway serve people, agents and webhooks
+# from outside the cluster, through whatever ingress controller or load
+# balancer you run, which the chart cannot name. So they get a policy only
+# once `ingressFrom` names who reaches them: then each admits, on the ports it
+# serves, those peers and the release's own pods that call it, and nothing
+# else. Left empty they get none, rather than one admitting everyone, which
+# would only widen a stricter policy of your own in the namespace. Kubelet
+# probes come from the node, which CNIs admit by default.
+networkPolicy:
+  enabled: true
+  # NetworkPolicyPeer entries: your ingress controller's pods, a load
+  # balancer's address ranges, and wherever your agents connect from. E.g.
+  #   ingressFrom:
+  #     - namespaceSelector:
+  #         matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+  #       podSelector:
+  #         matchLabels: {app.kubernetes.io/name: ingress-nginx}
+  ingressFrom: []
+
 # ── Secrets ───────────────────────────────────────────────────────────────────
 # Two ways to supply secrets:
 #
@@ -214,7 +241,7 @@ switchCore:
   airtableClientSecret: ""
   # Existing Secret with client.json ({"client_id", "client_secret"}): the
   # GitLab OAuth application for the GitLab connection, with the scopes mcp,
-  # read_api, read_user and api, and the redirect URI
+  # read_user and api, and the redirect URI
   # https://<public URL>/gateway/service-connections/gitlab/flows/callback.
   # Without it or one saved under Connectors, GitLab shows as not set up.
   gitlabClientSecret: ""
@@ -230,11 +257,73 @@ switchCore:
   hostedLaunchCapacity: 0
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
+  # Hosted agents v2 (HOSTED_BOX_PROVISIONING): each person gets a box on a
+  # shared cluster instead of a cloud machine of their own. false is v1,
+  # exactly as before. switch-core reads it once at start-up, so switching
+  # between v1 and v2 is this value plus a rollout, with no code change.
+  # true needs hostedControllerSecret, hostedLaunchCapacity above 0,
+  # visibilityKeyedIdKeySecret, and the "hosted_agents" and
+  # "agent_management" feature flags (the chart refuses to render without
+  # them). The box side (gVisor nodes, the box provisioner
+  # and controller) is set up in the cluster separately, from the deployment repository.
+  # Only true (a real true, or the string "true") turns it on; anything else is off.
+  hostedBoxProvisioning: false
+  # v2 only. How many boxes switch-core asks for per minute (1-60), and how
+  # many may exist at once (1-10000). Empty uses switch-core's defaults (5
+  # and 50).
+  hostedProvisionsPerMinute: ""
+  hostedBoxCeiling: ""
+  # v2 only, and set only with hostedBoxProvisioning on. The warm pool: how
+  # many boxes wait, made ahead, for the next person's first start (0-50).
+  # Spare boxes count towards hostedLaunchCapacity and hostedBoxCeiling (empty:
+  # switch-core's 50), so the chart refuses to render v2 unless each is at
+  # least the pool plus 2. 0 or empty makes none. Each spare is a running box,
+  # so the pool is a standing cost: size it to how many new people arrive.
+  # And the most live machines serving one workspace (0-100, 0 for no limit;
+  # spares count against no workspace until they're bound to a person).
+  # Empty uses switch-core's default (0).
+  hostedPoolSize: 10
+  hostedLaunchCapacityPerWorkspace: ""
+  # v2's Hosted area for Switch operators. Each is an existing Secret,
+  # mounted as a single file (subPath, mode 0400), because switch-core
+  # refuses a key or operator list that is a link or that anyone else can
+  # read. A subPath mount doesn't pick up changes to the Secret: restart
+  # switch-core after changing either.
+  # Secret with keyed-id.key: the key that turns ids into the keyed ids the
+  # Hosted area shows (VISIBILITY_KEYED_ID_KEY_PATH). Required with
+  # hostedBoxProvisioning on; with v2 off and no key, the Hosted area's pages
+  # say they're unavailable.
+  visibilityKeyedIdKeySecret: ""
+  # The key's version, prefixed to every keyed id ("k1", "k2", ...). Empty
+  # uses switch-core's default, k1. Change it when the key changes.
+  visibilityKeyedIdKeyVersion: ""
+  # Secret with operators.json, {"operators": [user ids]}: who is a Switch
+  # operator (VISIBILITY_OPERATORS_PATH). Without it nobody is.
+  visibilityOperatorsSecret: ""
   image: switch-core:latest
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""
   logLevel: INFO
+
+  # Every pod that runs the switch-core image: the server and its migrate init
+  # container, and the migration Job. The image's user is 10001. The root
+  # filesystem is read-only; /tmp, where uploads spool, is an emptyDir. The
+  # pods mount no ServiceAccount token: switch-core never calls the Kubernetes
+  # API, and workload identity (IRSA, EKS Pod Identity, Azure) and the Teams
+  # app's federated credential mount tokens of their own.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
 
   # The ServiceAccount switch-core runs as: one of its own, never the
   # namespace's `default`, which every pod that names no account shares.
@@ -378,10 +467,16 @@ switchCore:
   forwardedAllowIps: "127.0.0.1"
   # Allow email+password self sign-up on the gateway login page. Takes effect
   # only while signup.mode is default_tenant, where a new account joins the
-  # deployment's one pre-existing workspace.
+  # deployment's one pre-existing workspace, or open, where it joins none and
+  # the web dashboard has it create one. Addresses are not verified, so keep
+  # it to test servers until they are.
   signupEnabled: false
   # Most users created per rolling hour, counting every way a user is created.
   signupMaxPerHour: 20
+  # Test and canary servers only: lets a person wipe their own account and
+  # everything they alone own (Account → Reset test account), and start
+  # onboarding over. Irreversible; leave off anywhere people keep real data.
+  allowTestAccountReset: false
   # Gateway OIDC login (bring-your-own IdP, e.g. Okta). Disabled by default;
   # set enabled=true and supply issuerUrl/clientId (plus
   # secrets.gatewayOidcClientSecret) to gate the gateway behind OIDC. Provider
@@ -495,6 +590,11 @@ switchCore:
     bedrockEnabled: false
     # DECISION_TIMEOUT_SECONDS; empty keeps switch-core's default.
     timeoutSeconds: ""
+    # DECISION_AUTO_ROUTE_DEFAULT_ON: auto-route is on in every room that has
+    # not turned it on or off itself (`!auto-route`, or the room's toggle in
+    # the dashboard), wherever the room's workspace has a decision service.
+    # false leaves it off until a room turns it on.
+    autoRouteDefaultOn: true
   # The agent controller release switch-core tells every controller to run
   # (CONTROLLER_RELEASE_VERSION / _URL / _SHA256), except Switch Console's own,
   # which updates with Console. A controller that runs
@@ -526,8 +626,13 @@ switchCore:
   # additional_messaging_platforms (WhatsApp, Google Chat, Zulip, Signal,
   # Matrix, Rocket.Chat, Webex), additional_agent_providers (DeepSeek
   # Harness, Pi, GitHub Copilot, Kiro, Mistral Vibe, Goose, Qwen Code, Factory
-  # Droid, Cline, Junie). gateway_v2, agent_chats, group_chats and
-  # agent_management are still accepted but always on.
+  # Droid, Cline, Junie), hosted_awake_budgets (hosted agents v2), gateway_chats
+  # (chats in the dashboard) and gateway_onboarding (getting started on Switch
+  # Cloud from the dashboard). gateway_v2, agent_chats, group_chats and
+  # agent_management are still accepted but always on. Some flags need others on
+  # too, or switch-core refuses to start: decision_routing needs
+  # follow_the_conversation, and gateway_onboarding needs gateway_chats,
+  # switch_buddy and hosted_agents.
   featureFlags:
     enabled: []
   # Catalog services turned off on this server, each with the reason people
@@ -881,6 +986,20 @@ gateway:
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""
+  # nginx as its own user (101), which the image runs as: the root filesystem
+  # is read-only, with emptyDirs for its cache and its pid file (/tmp).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
   replicaCount: 1
   service:
     type: ClusterIP
@@ -1041,7 +1160,7 @@ decision:
           memory: "28Gi"
           nvidia.com/gpu: 1
     llamacpp:
-      image: ghcr.io/ggml-org/llama.cpp:server-cuda
+      image: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:d68ec493c0ff9105ddfe2e909fff304117bc6e1fffbbd8d94182bd455983c264
       imagePullPolicy: IfNotPresent
       port: 8300
       # DECISION_MODEL unless `model` above is set.
@@ -1071,7 +1190,7 @@ decision:
         file: Qwen3.5-4B-Q4_K_M.gguf
         # Hex SHA-256 of the file. Empty skips the check (not recommended).
         sha256: 00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4
-        downloaderImage: curlimages/curl:8.11.1
+        downloaderImage: curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
       # llama.cpp's /health is 503 until the model is loaded (seconds).
       startupProbe:
         periodSeconds: 5
@@ -1300,8 +1419,26 @@ postgresql:
     database: switch
 
   # ── mode: managed ───────────────────────────────────────────────────────────
-  image: postgres:16-alpine
+  image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
   imagePullPolicy: IfNotPresent
+  # The image's postgres user (70 in the Alpine image; 999 in the Debian
+  # one), which owns the data directory: a volume first started by an older
+  # release, as root, was handed to it then. Also the create-runtime-role
+  # Job's. The root filesystem is read-only; the socket directory and /tmp
+  # are emptyDirs.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 70
+    runAsGroup: 70
+    fsGroup: 70
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
   database: switch
   persistence:
     size: 10Gi

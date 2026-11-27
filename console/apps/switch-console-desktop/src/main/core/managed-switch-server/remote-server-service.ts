@@ -40,6 +40,7 @@ import {
 import { coreStartedAt } from './compose';
 import { hostAccount, readRegister, writeRecord } from './console-register';
 import { readVersionStatus } from './deployed-version';
+import { followManagedServerAddress } from './follow-server-address';
 import { managedServerAddresses, type LocalServerPorts } from './free-port';
 import { createRemoteServerHost, type RemoteServerHost } from './host/remote-host';
 import { hostSlug, remoteSecretsKey } from './host/remote-identity';
@@ -733,7 +734,11 @@ export class RemoteServerService {
       from: record.url,
       to: addresses.url,
     });
-    await ensureManagedServer({ name: record.name, ...addresses }, { kind: 'remote', sshHost });
+    const server = await ensureManagedServer(
+      { name: record.name, ...addresses },
+      { kind: 'remote', sshHost }
+    );
+    await followManagedServerAddress(record.url, server);
     return true;
   }
 

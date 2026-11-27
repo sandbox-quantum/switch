@@ -60,6 +60,15 @@ def test_a_known_person_becomes_real_mention_markup() -> None:
     assert adapter.translate_outbound("hi @alice") == "hi <at>alice</at>"
 
 
+def test_inline_code_mentions_stay_literal() -> None:
+    adapter = _adapter(alice="aad-alice")
+
+    assert (
+        adapter.translate_outbound("hi @alice, try `@alice status`")
+        == "hi <at>alice</at>, try `@alice status`"
+    )
+
+
 def test_the_markup_is_matched_by_an_entity_or_it_highlights_nobody() -> None:
     adapter = _adapter(alice="aad-alice")
     body = adapter.translate_outbound("hi @alice")

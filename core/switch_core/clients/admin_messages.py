@@ -124,6 +124,8 @@ class AdminMessageType(StrEnum):
     TRUST_REDACTED = "trust_redacted"
     TRUST_ALERTED = "trust_alerted"
     TRUST_ERRORED = "trust_errored"
+    # A message Switch would not write: too long, or sent too fast.
+    MESSAGE_REFUSED = "message_refused"
     AGENT_LIFECYCLE = "agent_lifecycle"
     AUTO_ROUTE_UNAVAILABLE = "auto_route_unavailable"
     # A change an admin made to the room's settings, told in the room.

@@ -67,6 +67,7 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     # no workspace; each workspace is left in a `tenant_session` of its own.
     ("DELETE", "/auth/me"),
     ("POST", "/auth/me/reset-test-account"),
+    ("POST", "/auth/me/start-over"),
     # Reads the caller's `users` row, and asks each workspace in its own
     # `tenant_session`, as the deletion it checks for does.
     ("GET", "/auth/me/deletion"),
@@ -108,6 +109,8 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("GET", "/service-connections/{service}/flows/callback"),
     # No caller yet: the sign-in surface and what it hands back.
     ("GET", "/auth/config"),
+    # The license text, which sign-up links to before any account exists.
+    ("GET", "/license"),
     ("GET", "/auth/oidc/login"),
     ("GET", "/auth/oidc/callback"),
     ("POST", "/auth/oidc/exchange"),
@@ -127,13 +130,11 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # asking whether it would be refused.
     ("DELETE", "/auth/me"),
     ("POST", "/auth/me/reset-test-account"),
+    ("POST", "/auth/me/start-over"),
     ("GET", "/auth/me/deletion"),
     # What a signed-in caller's session resolves to — including that it
     # resolves to no workspace, which is the answer a caller with none needs.
     ("GET", "/auth/session"),
-    # A deployment-wide constant — the agent types this build knows about.
-    # Nothing tenant-specific to scope it to.
-    ("GET", "/known-types"),
     # A caller with several memberships and no selection cannot reach
     # `get_current_user` by construction, and these are the routes such a
     # caller needs: list the workspaces, make one, pick one.
@@ -178,6 +179,30 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # Feature flags belong to the deployment and come from its config, so
     # there is no workspace to scope them to and no session is opened.
     ("GET", "/feature-flags"),
+    # The box provisioner's two routes, on its own bearer
+    # (`provisioner_session`, refused everywhere else). A box belongs to a
+    # person, not a workspace, so a claim spans workspaces: it reads and writes
+    # only `server_audit_events` and `cloud_machines` (both global), and the
+    # gates' per-workspace reads each open their own `tenant_session`. Ids and
+    # codes only cross, and nothing per workspace is returned.
+    ("POST", "/hosted-provisioner/claim"),
+    ("POST", "/hosted-provisioner/actions/{action_id}/result"),
+    # The warm pool's re-check and write-ahead step, on the same bearer and
+    # the same global tables (`server_audit_events`, `hosted_pool_boxes`).
+    ("GET", "/hosted-provisioner/actions/{action_id}"),
+    ("POST", "/hosted-provisioner/actions/{action_id}/steps"),
+    # The warm pool's reaper, on its own bearer (`reaper_session`): pool
+    # boxes belong to no person or workspace, and only their ids, namespaces
+    # and states cross.
+    ("GET", "/hosted-provisioner/pool/retiring"),
+    ("POST", "/hosted-provisioner/pool/{pool_box_id}/gone"),
+    # Box removal: the provisioner's claim and confirmation, and the remover's
+    # check and list report, each on its own bearer and the global
+    # `cloud_machines` and `server_audit_events`; ids and namespaces only.
+    ("POST", "/hosted-provisioner/removals/claim"),
+    ("POST", "/hosted-provisioner/removals/{machine_id}/gone"),
+    ("GET", "/hosted-provisioner/removals/{machine_id}"),
+    ("POST", "/hosted-provisioner/removals/listed"),
 }
 
 
@@ -283,6 +308,13 @@ def test_controller_credential_is_confined_to_the_controller_routes() -> None:
         ("GET", "/hosted-controller/machines"),
         ("POST", "/hosted-controller/machines/{machine_id}/prepare"),
         ("POST", "/hosted-controller/machines/{machine_id}/observation"),
+        # The cluster report. Node names, zones, memory shares and the
+        # listed services' copies, nothing per tenant; the body is strict and
+        # capped at 64 KiB, and nothing in it is echoed back.
+        ("POST", "/hosted-controller/cluster"),
+        # The warm pool's boxes for the scaler: ids, namespaces, revisions and
+        # wanted states; no owner, nothing per tenant.
+        ("GET", "/hosted-controller/pool"),
     }
 
 

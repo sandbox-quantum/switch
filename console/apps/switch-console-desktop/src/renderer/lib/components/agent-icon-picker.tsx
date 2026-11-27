@@ -1,3 +1,14 @@
+import {
+  agentAvatarUrlForNewAgent,
+  isThirdPartyAvatarUrl,
+} from '@switch-console/chat-ui/model/agent-avatar';
+import { Input } from '@switch-console/chat-ui/primitives/input';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@switch-console/chat-ui/primitives/popover';
+import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
 import { useQuery } from '@tanstack/react-query';
 import { Pencil, RotateCw, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -5,11 +16,7 @@ import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useAvatarSettings } from '@renderer/lib/stores/use-avatar-settings';
-import { Input } from '@renderer/lib/ui/input';
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/lib/ui/popover';
-import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { cn } from '@renderer/utils/utils';
-import { agentAvatarUrlForNewAgent, isThirdPartyAvatarUrl } from '@shared/core/agents/agent-avatar';
 
 type PickerTab = 'generated' | 'url';
 
@@ -143,7 +150,13 @@ export function AgentIconPicker({
           !disabled && 'cursor-pointer hover:opacity-80'
         )}
       >
-        <AgentAvatar name={seedName} iconUrl={shownIconUrl} serverId={serverId} size={size} />
+        <AgentAvatar
+          agentId={null}
+          name={seedName}
+          iconUrl={shownIconUrl}
+          serverId={serverId}
+          size={size}
+        />
         {/* Shown at rest rather than on hover: that the picture is editable at
             all is not guessable, and a hover-only affordance answers the
             question only for someone who already suspected the answer. */}
@@ -184,7 +197,13 @@ export function AgentIconPicker({
                       selected ? 'ring-border-focus' : 'ring-transparent hover:ring-border'
                     )}
                   >
-                    <AgentAvatar name={seedName} iconUrl={choice} serverId={serverId} size={44} />
+                    <AgentAvatar
+                      agentId={null}
+                      name={seedName}
+                      iconUrl={choice}
+                      serverId={serverId}
+                      size={44}
+                    />
                   </button>
                 );
               })}
@@ -214,7 +233,13 @@ export function AgentIconPicker({
         ) : (
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2.5 rounded-md bg-background-tertiary p-2.5">
-              <AgentAvatar name={seedName} iconUrl={shownIconUrl} serverId={serverId} size={44} />
+              <AgentAvatar
+                agentId={null}
+                name={seedName}
+                iconUrl={shownIconUrl}
+                serverId={serverId}
+                size={44}
+              />
               <Input
                 value={urlDraft}
                 placeholder="https://example.com/avatar.png"

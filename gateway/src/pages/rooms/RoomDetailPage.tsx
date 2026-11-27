@@ -27,10 +27,11 @@ import {
   Typography,
 } from "@mui/material";
 import ConfirmDialog from "../../components/ConfirmDialog";
+import { agentPath } from "../../data/agentPaths";
 import SearchablePickerDialog, {
   type PickerOption,
 } from "../../components/SearchablePickerDialog";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import {
   type RoomDetail,
@@ -68,8 +69,8 @@ import RoomGraphView from "./RoomGraphView";
 import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
 import RoomResourcesSection from "./RoomResourcesSection";
 import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
-import type { RoomsNotice } from "./RoomsPage";
 import { RoomAccessChip } from "./RoomAccessChip";
+import { useRoomsListPath } from "./roomsListPath";
 import {
   ROOM_STANDING_LABELS,
   type RoomViewer,
@@ -91,10 +92,21 @@ import {
   retireChannelLabel,
 } from "./roomDeleteWording";
 
+/** A notice the room's page leaves for the room list it sends someone to,
+ * such as a room's platform channel that could not be cleaned up. */
+export interface RoomsNotice {
+  notice: string;
+}
+
+// Loaded apart from the page: it reads the chat stores, which only a server
+// with chats in the dashboard loads.
+const OpenChatButton = lazy(() => import("../chats/OpenChatButton"));
+
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const { canAdminTenant, capabilities, session } = useAuth();
+  const roomsList = useRoomsListPath();
   // Who is looking, to offer taking out their own agent and unlinking their
   // own resources: the server allows those by ownership alone.
   const viewerId = session?.user.id ?? null;
@@ -112,7 +124,7 @@ export default function RoomDetailPage() {
   if (error || !room) {
     return (
       <Box>
-        <Button startIcon={<ArrowBack />} onClick={() => navigate("/rooms")}>
+        <Button startIcon={<ArrowBack />} onClick={() => navigate(roomsList)}>
           Back to rooms
         </Button>
         <Alert severity="error" sx={{ mt: 2 }}>
@@ -133,7 +145,7 @@ export default function RoomDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back to rooms">
+        <IconButton onClick={() => navigate(roomsList)} size="small" aria-label="Back to rooms">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1, minWidth: 0, overflowWrap: "anywhere" }}>
@@ -148,6 +160,9 @@ export default function RoomDetailPage() {
         {room.bridge_display_name && (
           <Chip label={room.bridge_display_name} size="small" />
         )}
+        <Suspense fallback={null}>
+          <OpenChatButton roomId={room.id} />
+        </Suspense>
         <Button
           variant="outlined"
           size="small"
@@ -197,6 +212,7 @@ export default function RoomDetailPage() {
           room={room}
           canWrite={canWrite}
           viewerId={viewerId}
+          capabilities={capabilities}
           onChanged={refetch}
         />
         {showRoomAdmins(room) && (
@@ -248,7 +264,10 @@ export default function RoomDetailPage() {
             <DangerSection
               room={room}
               onDeleted={(notice) =>
-                navigate("/rooms", notice ? { state: { notice } satisfies RoomsNotice } : undefined)
+                navigate(
+                  roomsList,
+                  notice ? { state: { notice } satisfies RoomsNotice } : undefined,
+                )
               }
             />
           </>
@@ -804,11 +823,13 @@ function ParticipantsSection({
   room,
   canWrite,
   viewerId,
+  capabilities,
   onChanged,
 }: {
   room: RoomDetail;
   canWrite: boolean;
   viewerId: string | null;
+  capabilities: import("../../data/capabilities").Capabilities;
   onChanged: () => void;
 }) {
   const { data: allAgents, loading: agentsLoading, error: agentsError } = useAgents();
@@ -965,6 +986,7 @@ function ParticipantsSection({
               name={agentNameById.get(id) ?? id}
               status={room.agent_statuses[id]}
               receivesJoinEvents={room.join_event_listeners.includes(id)}
+              capabilities={capabilities}
               onToggleJoinEvents={
                 // Whoever may change the room, or the agent's own owner.
                 !(canWrite || ownAgentIds.has(id)) || working
@@ -1152,6 +1174,7 @@ function AgentRow({
   name,
   status,
   receivesJoinEvents,
+  capabilities,
   onToggleJoinEvents,
   onRemove,
 }: {
@@ -1159,6 +1182,7 @@ function AgentRow({
   name: string;
   status: string | undefined;
   receivesJoinEvents: boolean;
+  capabilities: import("../../data/capabilities").Capabilities;
   // Absent while the switch cannot be changed; it still shows the setting.
   onToggleJoinEvents?: (next: boolean) => void;
   onRemove?: () => void;
@@ -1174,7 +1198,7 @@ function AgentRow({
       direction="row"
       alignItems="center"
       spacing={1.5}
-      onClick={() => navigate(`/agents/${agentId}`)}
+      onClick={() => navigate(agentPath(agentId, capabilities))}
       sx={{
         px: 1.5,
         py: 0.75,

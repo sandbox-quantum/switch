@@ -10,7 +10,7 @@ import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -18,6 +18,7 @@ import telegram
 import uvicorn
 from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
@@ -96,12 +97,13 @@ from switch_core.bridges.collaboration.webhooks import (
     create_bridge_webhook_router,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.budgets import enforce_awake_budgets
 from switch_core.chats.service import ChatService
 from switch_core.chats.signals import ChatSignals
 from switch_core.chats.stream_reads import chat_stream_slots_for
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
 from switch_core.clients.admin_messages import AdminMessageType
-from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
+from switch_core.clients.agent_admin import AgentAdministration, AgentRequests
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.client_signals import ClientSignals
@@ -201,11 +203,16 @@ from switch_core.delivery.router import (
     MessageRouter,
     sweep_pending_decisions,
 )
+from switch_core.delivery.send_limits import SendLimits
 from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
+from switch_core.gateway.cloud_controllers import revoke_machine_controller
+from switch_core.gateway.hosted_sweep import start_hosted_sweep
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.gateway.ui import GatewayUi
+from switch_core.hosted_v2 import hosted_v2_on
+from switch_core.keys import Keyring
 from switch_core.logging_config import configure_logging
 from switch_core.management.signals import REVOKED_SIGNAL
 from switch_core.management.template_updates import TemplateUpdates
@@ -245,6 +252,7 @@ from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
     own_maintenance as own_session_activity_maintenance,
 )
+from switch_core.session_activity.maintenance import own_restart_sweep
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import AgentSessionActivityService
 from switch_core.signals import SignalBus
@@ -263,6 +271,7 @@ from switch_core.trust.setup import build_trust_client
 from switch_core.trust.signals import TrustSettingsSignals
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
+from switch_core.visibility.operators import OperatorList, warn_if_operators_hold_admin
 from switch_core.workos_directory import WorkOSDirectory
 from switch_core.workos_mirror import WorkOSMirror, own_workos_mirror
 from switch_core.workos_sign_in import WorkOSOrganizationSignIn
@@ -684,7 +693,10 @@ async def _prepare_database(config: SwitchConfig) -> None:
     if owner_url is None:
         return
     owner_engine = create_async_engine(
-        owner_url, poolclass=NullPool, connect_args=config.db_connect_args
+        owner_url,
+        poolclass=NullPool,
+        connect_args=config.db_connect_args,
+        hide_parameters=True,
     )
     try:
         async with owner_engine.begin() as connection:
@@ -881,6 +893,11 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     budget_store = BudgetStore()
     media_store = MediaStore()
     template_store = TemplateStore()
+    # Awake-time budgets stay unenforced until every hosted box is split.
+    # The v1/v2 switch: with hosted agents v2 off, none of v2's background
+    # work runs (awake budgets, alerts, sweeps), exactly as before v2.
+    v2 = hosted_v2_on(config)
+    enforce_awake_budgets(config.hosted_awake_budgets_enabled and v2)
 
     # ── Seed admin user + agent-registration bootstrap key ──────────────────
     # A second acquisition of the boot lock, distinct from the one around the
@@ -898,6 +915,11 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         )
         async with engine.begin() as connection:
             event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
+    # Nobody should be both a Switch operator and a deployment admin.
+    if v2:
+        await warn_if_operators_hold_admin(
+            session_factory, OperatorList(config.visibility_operators_path)
+        )
 
     # ── Event queue + request trackers ───────────────────────────────────────
     event_buffer = EventBuffer(
@@ -1019,6 +1041,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         ),
         decisions=decision_client if config.decision_routing_enabled else None,
         decision_max_age_seconds=config.decision_pending_max_age_seconds,
+        send_limits=SendLimits.from_config(config, clock=time.monotonic),
     )
 
     MembershipSignals(invites=invites, bus=signal_bus, router=router)
@@ -1168,7 +1191,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # The rename and delete commands reach AgentCore through this, bound once
     # AgentCore exists below.
     agent_admin = AgentAdministration()
-    deletion_requests = AgentDeletionRequests()
+    agent_requests = AgentRequests()
 
     # Registered after RoomService is built: the command consumer owns the
     # `!invite-agent` command, which reuses RoomService to add agents to the
@@ -1188,7 +1211,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         room_service=room_service,
         user_store=user_store,
         agent_admin=agent_admin,
-        deletion_requests=deletion_requests,
+        agent_requests=agent_requests,
         connections=connections,
         frontend_base_url=config.dashboard_base_url,
         follow_the_conversation_enabled=config.follow_the_conversation_enabled,
@@ -1256,7 +1279,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         ),
     )
     agent_admin.bind(protocol)
-    protocol.deletion_requests = deletion_requests
+    protocol.agent_requests = agent_requests
     # Every close reports, whichever of the five paths did it — and only for a
     # connection the handler saw start.
     connections.set_close_listener(protocol.sessions.on_close)
@@ -1496,6 +1519,9 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     )
     # What deleting an account needs of it: revoking the person's machines.
     gateway_app.state.controller_revoker = management.service
+    # A budget route that changes the daily AI cap nudges the
+    # workspace's hosted controllers, without importing management itself.
+    gateway_app.state.assignment_nudge = management.service.signals.assignment_changed
     # Before the bridge serves: until Core knows which agents a controller
     # runs, their own keys would be let in and their presence misread.
     await management.load_bindings()
@@ -1591,6 +1617,9 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         signals=purge_signals,
         controller_removed=controller_removal_publisher(purge_signals),
         admin_email=config.gateway_admin_email,
+        revoke_box_controller=(
+            revoke_machine_controller if management is not None else None
+        ),
         sign_in_issuer=config.gateway_oidc_issuer_url,
     )
     gateway_app.state.organization_apps = organization_apps
@@ -1670,6 +1699,19 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                 ],
                 db_server_engine=lambda: create_unpooled_engine(config),
             )
+            # `gateway_app`, not the lifespan's `app` (the outer agent bridge
+            # app): the keyed-id key is loaded onto the gateway's state, and
+            # with the wrong app both workers stayed off (boot smoke test).
+            alerts_task = (
+                _start_hosted_alerts(config, gateway_app, session_factory)
+                if v2
+                else None
+            )
+            bulk_alerts_task = (
+                _start_bulk_alert_sweep(config, gateway_app, session_factory)
+                if v2
+                else None
+            )
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             retention_task = asyncio.create_task(
                 _agent_event_retention_loop(session_factory, event_buffer)
@@ -1714,6 +1756,34 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                     switch_buddy=config.feature_flags[SWITCH_BUDDY],
                 ).run(tenant_ids)
             )
+            # Turns of a box that never came back: only where agents run on
+            # controllers at all.
+            # Owned work, as upstream's sweeps: one process runs it.
+            if management is not None and v2:
+                own_restart_sweep(ownership, session_factory, router.post_as_agent)
+            # Core's own run of the hosted sweep, so a box request that runs
+            # out is marked even when no controller service polls. v2 only:
+            # a v1 server starts no loop and takes no lease for it.
+            start_hosted_sweep(
+                v2,
+                ownership,
+                session_factory,
+                config,
+                lambda: getattr(gateway_app.state, "hosted_controller_settings", None),
+            )
+            # A pause or resume Core stopped part-way through is recorded
+            # failed at the step it reached. Once, at start.
+            # Held, so the loop keeps a reference until it ends (a bare
+            # `create_task` may be collected mid-run), and cancelled at shutdown.
+            hosted_actions_task = (
+                asyncio.create_task(
+                    _sweep_hosted_actions(
+                        gateway_app, session_factory, management, config.keyring
+                    )
+                )
+                if management is not None and v2
+                else None
+            )
             data_retention_task = asyncio.create_task(retention_loop(session_factory))
             erasure_task = asyncio.create_task(
                 erasure_loop(
@@ -1736,11 +1806,17 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             try:
                 yield
             finally:
+                if alerts_task is not None:
+                    alerts_task.cancel()
+                if bulk_alerts_task is not None:
+                    bulk_alerts_task.cancel()
                 sweep_task.cancel()
                 retention_task.cancel()
                 attachment_group_task.cancel()
                 if decision_task is not None:
                     decision_task.cancel()
+                if hosted_actions_task is not None:
+                    hosted_actions_task.cancel()
                 router.close()
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
@@ -2651,6 +2727,7 @@ async def _schema_ahead(config: SwitchConfig, alembic_cfg: AlembicConfig) -> boo
         config.owner_database_url or config.database_url,
         poolclass=NullPool,
         connect_args=config.db_connect_args,
+        hide_parameters=True,
     )
     try:
         return await schema_ahead_through_expand_only(engine, alembic_cfg)
@@ -2666,13 +2743,58 @@ async def _check_schema_at_head(config: SwitchConfig) -> None:
             "which never uses it. Remove it from this process's environment."
         )
     engine = create_async_engine(
-        config.database_url, poolclass=NullPool, connect_args=config.db_connect_args
+        config.database_url,
+        poolclass=NullPool,
+        connect_args=config.db_connect_args,
+        hide_parameters=True,
     )
     try:
         await require_schema_at_head(engine, _alembic_config())
     finally:
         await engine.dispose()
     logger.info("Database schema is servable; migrations were applied before boot")
+
+
+async def _sweep_hosted_actions(
+    gateway_app: FastAPI,
+    session_factory: async_sessionmaker[AsyncSession],
+    management: Management,
+    keyring: Keyring,
+) -> None:
+    from switch_core.visibility.alerts import action_alert
+    from switch_core.visibility.hosted_access import HostedAccess
+
+    key = gateway_app.state.keyed_id_key
+    if key is None:
+        # Pauses and operator actions need keyed ids: without a key their
+        # routes answer 503, and these sweeps wait until a key is set.
+        logger.warning(
+            "Skipping the hosted action sweeps: no keyed-id key is set, so "
+            "pauses and operator actions are unavailable"
+        )
+        return
+    try:
+        access = HostedAccess(
+            session_factory=session_factory,
+            revoker=management.service,
+            key=key,
+            keyring=keyring,
+            alert=action_alert(session_factory),
+        )
+        gateway_app.state.hosted_access = access
+        swept = await access.sweep_unfinished()
+        if swept:
+            logger.warning(
+                "Recorded %d unfinished hosted pause actions as failed", swept
+            )
+        # Operator actions (restarts) past their expiry are recorded as such.
+        from switch_core.visibility.operator_actions import OperatorActions
+
+        actions = OperatorActions(session_factory=session_factory, key=key)
+        gateway_app.state.operator_actions = actions
+        await actions.expire_due()
+    except Exception:
+        logger.exception("Sweeping unfinished hosted pause actions failed")
 
 
 def _alembic_config() -> AlembicConfig:
@@ -2749,6 +2871,74 @@ def main() -> None:
         # unnoticed. `STARTUP_FAILURE` (3) is what `uvicorn.run` exits with.
         logger.error("switch-core did not start; exiting %d", STARTUP_FAILURE)
         sys.exit(STARTUP_FAILURE)
+
+
+def _start_hosted_alerts(
+    config: SwitchConfig, app: object, session_factory: async_sessionmaker
+) -> asyncio.Task[None] | None:
+    """The hosted alerts evaluator: on with `hosted_agents`
+    and a keyed-id key, since a box alert names its box only by keyed id.
+    Without the key it stays off and says so once."""
+    if not config.hosted_agents_enabled:
+        return None
+    from switch_core.observability.metrics import metrics
+    from switch_core.visibility.alerts import AlertEvaluator
+    from switch_core.visibility.cluster_report import latest_cluster_report
+    from switch_core.visibility.keyed_id import KeyedIdKey
+
+    key = getattr(getattr(app, "state", None), "keyed_id_key", None)
+    if not isinstance(key, KeyedIdKey):
+        logger.warning(
+            "Hosted alerts are off: no keyed-id key is set "
+            "(VISIBILITY_KEYED_ID_KEY_PATH), and box alerts name boxes only by it."
+        )
+        return None
+    evaluator = AlertEvaluator(
+        lambda: create_unpooled_engine(config),
+        session_factory,
+        key,
+        latest_cluster_report,
+    )
+    metrics().register_observer(evaluator.readings)
+    return asyncio.create_task(evaluator.run_forever(), name="hosted-alerts")
+
+
+# How often the bulk-action alert (A11) is checked for operators gone quiet.
+BULK_ALERT_SWEEP_S = 60
+
+
+def _start_bulk_alert_sweep(
+    config: SwitchConfig, app: object, session_factory: async_sessionmaker
+) -> asyncio.Task[None] | None:
+    """Clears A11 once an operator has gone quiet (`operator_limits`). The
+    rate-limit code raises it on an action; without this, an operator who
+    stopped would keep it raised until their next action. Runs where the
+    alerts do, with `hosted_agents` and a keyed-id key."""
+    if not config.hosted_agents_enabled:
+        return None
+    from switch_core.visibility.keyed_id import KeyedIdKey
+    from switch_core.visibility.operator_limits import Limits, clear_quiet_bulk_alerts
+
+    key = getattr(getattr(app, "state", None), "keyed_id_key", None)
+    if not isinstance(key, KeyedIdKey):
+        # Without the sweep a raised bulk-action alert never clears, so say so.
+        logger.warning(
+            "The bulk operator alert sweep isn't running: there's no keyed-id key"
+        )
+        return None
+    limits = Limits.from_config(config)
+
+    async def sweep() -> None:
+        while True:
+            try:
+                await clear_quiet_bulk_alerts(
+                    session_factory, key, limits, datetime.now(UTC)
+                )
+            except Exception:
+                logger.exception("Clearing quiet bulk operator alerts failed")
+            await asyncio.sleep(BULK_ALERT_SWEEP_S)
+
+    return asyncio.create_task(sweep(), name="operator-bulk-alerts")
 
 
 if __name__ == "__main__":

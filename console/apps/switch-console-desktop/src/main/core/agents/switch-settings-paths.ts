@@ -28,9 +28,14 @@ export const SWITCH_SETTINGS_RELATIVE_PATH = '.claude/settings.local.json';
  */
 export const SWITCH_SUBAGENTS_DIR_RELATIVE = '.claude/switch-subagents';
 
+/** Relative path (from a location dir) to a subagent's legacy Switch credentials file. */
+export function subagentSettingsRelativePath(agentName: string): string {
+  return `${SWITCH_SUBAGENTS_DIR_RELATIVE}/${agentName}.settings.json`;
+}
+
 /** Absolute path to a subagent's Switch credentials file under `dir`. */
 export function subagentSettingsPath(dir: string, agentName: string): string {
-  return path.join(dir, SWITCH_SUBAGENTS_DIR_RELATIVE, `${agentName}.settings.json`);
+  return path.join(dir, subagentSettingsRelativePath(agentName));
 }
 
 /**
@@ -50,6 +55,9 @@ export const SWITCH_AGENTS_DIR_RELATIVE = '.switch/agents';
  * so the whole directory is ignored.
  */
 export const SWITCH_AGENTS_GITIGNORE_RELATIVE = `${SWITCH_AGENTS_DIR_RELATIVE}/.gitignore`;
+
+/** The content of that `.gitignore`: everything in the directory, itself included. */
+export const SWITCH_AGENTS_GITIGNORE_CONTENT = '*\n';
 
 /**
  * Relative path (from a location dir) to an agent's provider-neutral Switch

@@ -1,5 +1,6 @@
 import { Alert, Box, Button, CircularProgress } from "@mui/material";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router";
+import { useState } from "react";
+import { Navigate, Route, RouterProvider, Routes, createBrowserRouter } from "react-router";
 import { AuthProvider, useAuth } from "./data/AuthContext";
 import { appView, readPendingInvite } from "./data/sessionState";
 import { DevRoleCorner } from "./layout/DevRoleSlot";
@@ -11,6 +12,7 @@ import LoginPage from "./pages/auth/LoginPage";
 import AcceptInvitePage from "./pages/onboarding/AcceptInvitePage";
 import InviteCapture from "./pages/onboarding/InviteCapture";
 import OnboardingPage from "./pages/onboarding/OnboardingPage";
+import SetupGate from "./pages/onboarding/SetupGate";
 import WorkspacePickerPage from "./pages/onboarding/WorkspacePickerPage";
 
 function FullScreen({ children }: { children: React.ReactNode }) {
@@ -91,34 +93,40 @@ export function AppRoutes() {
   }
 
   return (
+    <SetupGate>
+      <Routes>
+        <Route element={<PageShell />}>
+          {renderRoutes()}
+          <Route path="*" element={<NotFoundPage />} />
+        </Route>
+        <Route path="/invite" element={<InviteCapture />} />
+        <Route path="/login" element={<Navigate to="/" replace />} />
+      </Routes>
+    </SetupGate>
+  );
+}
+
+function Root() {
+  // The sign-in link Switch Console opens stands outside the session and both
+  // layouts, beside the sign-in page: it reads its code off the address before
+  // anything else runs, and replaces whatever session this browser holds.
+  return (
     <Routes>
-      <Route element={<PageShell />}>
-        {renderRoutes()}
-        <Route path="*" element={<NotFoundPage />} />
-      </Route>
-      <Route path="/invite" element={<InviteCapture />} />
-      <Route path="/login" element={<Navigate to="/" replace />} />
+      <Route path="/auth/handoff" element={<BrowserHandoffPage />} />
+      <Route
+        path="*"
+        element={
+          <AuthProvider>
+            <AppRoutes />
+          </AuthProvider>
+        }
+      />
     </Routes>
   );
 }
 
 export default function App() {
-  // The sign-in link Switch Console opens stands outside the session and both
-  // layouts, beside the sign-in page: it reads its code off the address before
-  // anything else runs, and replaces whatever session this browser holds.
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/auth/handoff" element={<BrowserHandoffPage />} />
-        <Route
-          path="*"
-          element={
-            <AuthProvider>
-              <AppRoutes />
-            </AuthProvider>
-          }
-        />
-      </Routes>
-    </BrowserRouter>
-  );
+  // A data router, so a page with unsaved changes can ask before it is left.
+  const [router] = useState(() => createBrowserRouter([{ path: "*", Component: Root }]));
+  return <RouterProvider router={router} />;
 }

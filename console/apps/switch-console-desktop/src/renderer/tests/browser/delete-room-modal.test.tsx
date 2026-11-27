@@ -32,8 +32,8 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   },
 }));
 
+import { Dialog, DialogContent } from '@switch-console/chat-ui/primitives/dialog';
 import { DeleteRoomModal } from '@renderer/features/switch-rooms/DeleteRoomModal';
-import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;

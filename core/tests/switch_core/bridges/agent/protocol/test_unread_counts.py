@@ -10,10 +10,13 @@ itself an answer.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.bridges.agent.protocol.event_buffer import (
@@ -626,6 +629,72 @@ async def _history_for_a_catch_up(
         room: list(range(1, await _head(buffer, room) + 1))
         for room in (ROOM_A, ROOM_B, ROOM_C)
     }
+
+
+# Planner settings that make Postgres read the room's messages in each way it
+# may: by the `sent_at` index, or by scanning them and sorting.
+_PLANS = {
+    "index": ("enable_seqscan", "enable_bitmapscan"),
+    "scan": ("enable_indexscan", "enable_bitmapscan"),
+}
+
+
+@contextlib.asynccontextmanager
+async def _planned(session_factory: SessionFactory, plan: str) -> AsyncIterator[None]:
+    """Every connection `session_factory` opens from here on plans its reads
+    the way `plan` names, until the block ends."""
+    engine: AsyncEngine = session_factory.kw["bind"]
+    database = f'"{engine.url.database}"'
+
+    async def alter(action: str) -> None:
+        async with engine.begin() as conn:
+            for setting in _PLANS[plan]:
+                await conn.execute(
+                    text(
+                        f"ALTER ROLE CURRENT_USER IN DATABASE {database} {action.format(setting)}"
+                    )
+                )
+        # The settings reach connections opened after them.
+        await engine.dispose()
+
+    await alter("SET {} = off")
+    try:
+        yield
+    finally:
+        await alter("RESET {}")
+
+
+async def _sent_at_once(session_factory: SessionFactory, room: str) -> int:
+    """Four messages sent before the window in one instant, then two after
+    it. The room position of the last of the four."""
+    long_ago = datetime.now(UTC) - timedelta(hours=2)
+    seq = 0
+    for index in range(4):
+        seq = (
+            await say(session_factory, room, f"old chatter {index}", sent_at=long_ago)
+        ).seq
+    await _chatter(session_factory, room, times=2)
+    return seq
+
+
+@pytest.mark.parametrize("plan", sorted(_PLANS))
+async def test_the_window_starts_at_the_newest_of_messages_sent_at_once(
+    db_buffer: EventBuffer, session_factory: SessionFactory, plan: str
+) -> None:
+    """Messages written in one transaction share their `sent_at`. The window
+    starts after the last of those sent before it, whichever way Postgres
+    reads them: picking any other would count the rest as unread."""
+    buffer = db_buffer
+    await buffer.ensure_counting(TENANT_ZERO_ID, AGENT, READER, ROOM_A)
+    last_old = await _sent_at_once(session_factory, ROOM_A)
+
+    async with _planned(session_factory, plan):
+        assert await _unread(buffer, ROOM_A) == Unread(
+            count=2, reason=COUNTED_FROM_WINDOW
+        )
+        assert await buffer.room_window_starts(TENANT_ZERO_ID, {ROOM_A}) == {
+            ROOM_A: last_old
+        }
 
 
 async def test_a_batch_counts_what_counting_each_event_alone_counts(

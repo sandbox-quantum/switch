@@ -1,6 +1,9 @@
+import {
+  agentAvatarUrlForName,
+  agentAvatarUrlForNewAgent,
+} from '@switch-console/chat-ui/model/agent-avatar';
 import type { PluginFs } from '@switch-console/core/agents/plugins';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { agentAvatarUrlForName, agentAvatarUrlForNewAgent } from '@shared/core/agents/agent-avatar';
 import { agentSettingsRelativePath } from './switch-settings-paths';
 
 const inspectRemoteDir = vi.hoisted(() => vi.fn());
@@ -55,6 +58,7 @@ const h = vi.hoisted(() => {
     repoAgents,
     writeDefinition,
     agentNameTaken: vi.fn(async () => state.nameTaken),
+    ignored: vi.fn(async (_relPath: string) => 'outside-git'),
     registerAgentIdentity: vi.fn(async () => ({
       kind: 'created' as const,
       id: 'sw-1',
@@ -73,6 +77,7 @@ vi.mock('./createAgent', () => ({ createAgent: h.createAgent }));
 vi.mock('./agent-workdir-fs', () => ({
   resolveWorkdirFsFor: vi.fn(async () => ({
     fs: h.state.workdir as PluginFs,
+    ignored: h.ignored,
     close: vi.fn(),
   })),
 }));
@@ -96,7 +101,10 @@ vi.mock('@main/core/locations/location-manager', () => ({
 }));
 vi.mock('./agent-events', () => ({ agentEvents: { _emit: vi.fn() } }));
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: vi.fn() }));
-vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+vi.mock('@main/lib/logger', () => {
+  const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => log };
+  return { log };
+});
 vi.mock('@main/db/client', () => ({
   db: {
     select: () => ({
@@ -155,6 +163,7 @@ describe('addAgent', () => {
     // `clearAllMocks` resets call records but not implementations: without a
     // default, whichever test last set one decides the answer for the rest.
     inspectRemoteDir.mockResolvedValue({ dir: '/repo', status: 'directory' });
+    h.ignored.mockResolvedValue('outside-git');
   });
 
   it('refuses a remote directory whose parent is missing, before minting (CHOO-1416)', async () => {
@@ -250,6 +259,23 @@ describe('addAgent', () => {
     const fs = h.state.workdir as PluginFs;
     await addAgent(params());
     expect(await fs.read('.switch/agents/.gitignore')).toBe('*\n');
+  });
+
+  it('refuses, before minting, a directory whose repository tracks the credentials file', async () => {
+    h.state.workdir = fakeFs({ '.switch/agents/.gitignore': '# keep\n' });
+    h.ignored.mockResolvedValue('not-ignored');
+
+    const result = await addAgent(params());
+
+    expect(result).toEqual({
+      kind: 'error',
+      message: expect.stringContaining('git rm --cached .switch/agents/codex-agent.json'),
+    });
+    expect(h.ignored).toHaveBeenCalledWith('.switch/agents/codex-agent.json');
+    expect(h.registerAgentIdentity).not.toHaveBeenCalled();
+    expect(await h.state.workdir.read('.switch/agents/codex-agent.json')).toBeNull();
+    // Console's own gitignore went in ahead of asking, as it would for the token.
+    expect(await h.state.workdir.read('.switch/agents/.gitignore')).toBe('*\n');
   });
 
   it('registers under the gateway known-agent type derived from the provider', async () => {

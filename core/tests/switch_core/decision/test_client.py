@@ -171,6 +171,7 @@ def _client(
                 endpoint_url=url, api_key=api_key, bedrock_enabled=bedrock
             ),
             store=DecisionSettingsStore(),
+            rooms_on_by_default=False,
         ),
         keyring=keyring,
         client=http,

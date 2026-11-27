@@ -56,7 +56,11 @@ function bridgeOptionLabel(displayName: string, bridgeType: string): string {
   return displayName === platform ? platform : `${displayName} (${platform})`;
 }
 
-export default function RoomCreateFormBody() {
+export default function RoomCreateFormBody({
+  preselectedAgentId,
+}: {
+  preselectedAgentId: string | null;
+}) {
   const navigate = useNavigate();
   const { data: agents, error: agentsError } = useAgents();
   // Only the agents the server's invite rule lets the viewer put in a new room.
@@ -78,7 +82,9 @@ export default function RoomCreateFormBody() {
   // Whether the person picked the channel type on this connection themselves.
   const [channelTypeChosen, setChannelTypeChosen] = useState(false);
   const { data: myIdentities } = useMyIdentities();
-  const [agentIds, setAgentIds] = useState<string[]>([]);
+  const [agentIds, setAgentIds] = useState<string[]>(
+    preselectedAgentId !== null ? [preselectedAgentId] : [],
+  );
   // Per-agent opt-in: ids of selected agents whose subagents to also add.
   const [includeSubagentsFor, setIncludeSubagentsFor] = useState<string[]>([]);
   // Per-agent opt-in: ids of selected agents that should receive room_join and room_leave

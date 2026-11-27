@@ -570,28 +570,45 @@ class TestSetRoomArchived:
 
 
 class _ChannelAdapter:
-    def __init__(self, url: str | None) -> None:
+    def __init__(self, url: str | None, web_url: str | None = None) -> None:
         self.url = url
+        self._web_url = web_url
 
     async def channel_deeplink(self, external_channel_id: str) -> str | None:
         return self.url
 
+    async def channel_web_url(self, external_channel_id: str) -> str | None:
+        if self._web_url is not None:
+            return self._web_url
+        return (
+            self.url
+            if self.url is not None and self.url.startswith("https://")
+            else None
+        )
+
 
 @pytest.mark.parametrize(
-    ("url", "expected"),
+    ("url", "web_url", "expected"),
     [
-        ("https://discord.com/channels/1/2", "https://discord.com/channels/1/2"),
-        ("slack://channel?team=T&id=C", None),
-        (None, None),
+        ("https://discord.com/channels/1/2", None, "https://discord.com/channels/1/2"),
+        ("slack://channel?team=T&id=C", None, None),
+        (
+            "slack://channel?team=T&id=C",
+            "https://app.slack.com/client/T/C",
+            "https://app.slack.com/client/T/C",
+        ),
+        (None, None, None),
     ],
 )
 async def test_a_channel_link_is_given_only_as_a_web_address(
-    url: str | None, expected: str | None
+    url: str | None, web_url: str | None, expected: str | None
 ) -> None:
     """Buddy ends a setup with this link, so only one a chat message can open."""
     room = _room(bridge_id="bridge-1", external_channel_id="C1")
     svc = _build_service(
-        room=room, agent_ids=["agent-1"], channel_adapter=_ChannelAdapter(url)
+        room=room,
+        agent_ids=["agent-1"],
+        channel_adapter=_ChannelAdapter(url, web_url=web_url),
     )
 
     detail = await svc.get_room_detail("agent-1", "room-1")

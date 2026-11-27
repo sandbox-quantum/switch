@@ -12,6 +12,20 @@ export function isHttpsOrLoopback(url: URL): boolean {
   );
 }
 
+/**
+ * Whether `url` is plain http to somewhere other than this computer: a
+ * password, a session and agents' tokens sent there cross the network
+ * unencrypted, readable by anyone on the way.
+ */
+export function isUnencryptedRemoteUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' && !isHttpsOrLoopback(parsed);
+  } catch {
+    return false;
+  }
+}
+
 /** Whether `url` names this computer itself, so only programs on it can reach it there. */
 export function isLoopbackUrl(url: string): boolean {
   try {

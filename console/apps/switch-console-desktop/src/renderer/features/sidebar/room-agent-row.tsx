@@ -1,3 +1,13 @@
+import {
+  SidebarItemMiniButton,
+  SidebarMenuAction,
+  SidebarMenuRow,
+} from '@switch-console/chat-ui/primitives/sidebar';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { Bot, ChevronRight, DoorOpen, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
@@ -21,13 +31,11 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@renderer/lib/ui/context-menu';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { Agent } from '@shared/core/agents/agents';
 import { AgentStatusSlot } from './agent-status-slot';
 import { DiscoveryFailureIndicator } from './discovery-failure-indicator';
 import { MigrationProblemIndicator } from './migration-problem-indicator';
-import { SidebarItemMiniButton, SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
 import { mayChangeRoomMembers } from './sidebar-room-grouping';
 import { depthIndent, roomAgentGroupKey } from './sidebar-store';
 
@@ -118,6 +126,7 @@ export const RoomAgentRow = observer(function RoomAgentRow({
           <div className="flex min-w-0 flex-1 items-center gap-[9px]" style={depthIndent(depth)}>
             <span className="flex size-[18px] shrink-0 items-center justify-center">
               <AgentAvatar
+                agentId={agent.switchAgentId}
                 name={label}
                 iconUrl={iconUrl}
                 serverId={agent.serverId}

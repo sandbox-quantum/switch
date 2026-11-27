@@ -248,15 +248,22 @@ async def test_applying_the_chain_records_the_expand_only_revisions(
     assert table is None
 
 
+# Main's head before it was merged with the hosted-agents v2 chain.
+_MAIN_HEAD = "f3a9c1d7e2b4"
+
+
 async def test_subagent_expand_only_upgrade_is_accepted_by_the_previous_pod(
     scratch_engine: AsyncEngine, alembic_cfg: AlembicConfig, tmp_path: Path
 ) -> None:
     script = ScriptDirectory.from_config(alembic_cfg)
     revision = script.get_revision("ab802e19c401")
     assert isinstance(revision.down_revision, str)
-    # The previous build lacks this revision and everything chained after it.
+    # On main's line: the previous build has every revision up to this one's
+    # parent and nothing after. The merges with the hosted-agents v2 chain join
+    # two lines, which no previous build of either can serve on, so they are
+    # not part of this upgrade.
     newer = list(
-        reversed(list(script.iterate_revisions("heads", revision.down_revision)))
+        reversed(list(script.iterate_revisions(_MAIN_HEAD, revision.down_revision)))
     )
     # It serves on this revision and the expand-only ones right after it; a later
     # revision that is not expand-only is refused, as it should be.
@@ -264,13 +271,16 @@ async def test_subagent_expand_only_upgrade_is_accepted_by_the_previous_pod(
         takewhile(lambda r: getattr(r.module, "expand_only", False) is True, newer)
     )
     assert accepted[0].revision == revision.revision
-    newer_files = {Path(r.path).name for r in newer}
+    older_files = {
+        Path(r.path).name
+        for r in script.iterate_revisions(revision.down_revision, "base")
+    }
 
     old_scripts = tmp_path / "previous-build"
     old_versions = old_scripts / "versions"
     old_versions.mkdir(parents=True)
     for source in (Path(script.dir) / "versions").glob("*.py"):
-        if source.name not in newer_files:
+        if source.name in older_files:
             copyfile(source, old_versions / source.name)
     old_config = AlembicConfig()
     old_config.set_main_option("script_location", str(old_scripts))

@@ -1,6 +1,11 @@
+import {
+  kindOf,
+  matchesFilter,
+  scopeCounts,
+  toggleKind,
+} from '@switch-console/chat-ui/model/template-filters';
 import { describe, expect, it } from 'vitest';
 import type { StoredTemplateSummary } from '@main/core/switch-servers/gateway-client';
-import { kindOf, matchesFilter, scopeCounts, toggleKind } from './template-filters';
 
 function template(overrides: Partial<StoredTemplateSummary>): StoredTemplateSummary {
   return {

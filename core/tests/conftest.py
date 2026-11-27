@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import threading
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
 
+import asyncpg
 import pytest
 import pytest_asyncio
 import requests
@@ -22,6 +25,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
+from testcontainers.core.config import testcontainers_config
 from testcontainers.postgres import PostgresContainer
 
 # Importing the models module registers every table on Base.metadata so
@@ -58,6 +62,29 @@ encrypted_json.configure(TEST_KEYRING)
 # same platforms to exist.
 for _platform in PLATFORMS:
     messaging_platforms.register(_platform.adapter.describe(_platform.key))
+
+
+@pytest.fixture(autouse=True)
+def _hosted_v2_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The v1/v2 switch's process-wide copy, for code with no config to hand.
+    On by default, so the v2 tests read as they were written; a run with
+    SWITCH_TEST_HOSTED_V2=0 takes the whole suite with v2 off, as v1 servers
+    run it (the switch's flag-off parity run). A test that needs one state
+    sets it itself."""
+    from switch_core import hosted_v2
+
+    monkeypatch.setattr(
+        hosted_v2, "_process_on", os.environ.get("SWITCH_TEST_HOSTED_V2", "1") != "0"
+    )
+
+
+@pytest.fixture
+def hosted_v2_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pins hosted agents v2 on for a test written for it, so it reads the same
+    in the whole-suite off run (SWITCH_TEST_HOSTED_V2=0) as by default."""
+    from switch_core import hosted_v2
+
+    monkeypatch.setattr(hosted_v2, "_process_on", True)
 
 
 @pytest.fixture(autouse=True)
@@ -111,21 +138,30 @@ async def _seed_tenant_zero(conn: AsyncConnection) -> None:
     )
 
 
-# Every table, emptied in one statement. `CASCADE` is what lets a single
-# TRUNCATE cover tables that reference each other, and `RESTART IDENTITY`
-# keeps sequence-backed columns (`messages.seq`) starting where a test that
-# hard-codes an expected value needs them to.
-_TRUNCATE_ALL = (
-    "TRUNCATE "
-    + ", ".join(f'"{table.name}"' for table in Base.metadata.sorted_tables)
-    + " RESTART IDENTITY CASCADE"
+# Every table emptied, and every sequence a column owns restarted, in one
+# round trip. `DELETE` rather than `TRUNCATE`: a `TRUNCATE` gives every table
+# and index a new file whether or not it held a row, about 70 ms over this
+# schema, where deleting from tables a test mostly left empty takes a tenth of
+# that, and the reset runs before every test. `session_replication_role =
+# replica` switches off the foreign keys' triggers and every other trigger,
+# so the tables can go in any order and nothing a trigger does on a delete
+# runs; it needs the superuser the test container gives. Restarting the owned
+# sequences is what `RESTART IDENTITY` did, so a sequence-backed column
+# (`messages.seq`) starts where a test that hard-codes an expected value
+# needs it to.
+_EMPTY_ALL = (
+    "DO $$ DECLARE sequence regclass; BEGIN "
+    "SET LOCAL session_replication_role = replica; "
+    + " ".join(f'DELETE FROM "{table.name}";' for table in Base.metadata.sorted_tables)
+    + " FOR sequence IN SELECT s.oid::regclass FROM pg_class s "
+    "JOIN pg_depend d ON d.objid = s.oid AND d.deptype IN ('a', 'i') "
+    "WHERE s.relkind = 'S' LOOP "
+    "EXECUTE format('ALTER SEQUENCE %s RESTART', sequence); END LOOP; END $$"
 )
 
 
-# How long the reset waits for its locks before ending what an earlier test
-# left holding them, and then how long it waits before giving up.
-_TRUNCATE_LOCK_TIMEOUT = "10s"
-_TRUNCATE_LOCK_TIMEOUT_AFTER_CLEARING = "60s"
+# How long the reset waits for a row lock before giving up.
+_EMPTY_LOCK_TIMEOUT = "60s"
 
 _LOCK_NOT_AVAILABLE = "55P03"
 
@@ -144,13 +180,15 @@ _END_LEFT_IN_TRANSACTION = text(
 )
 
 
-async def _truncate(engine: AsyncEngine, lock_timeout: str) -> bool:
-    """Empty the database, waiting at most `lock_timeout` for the locks.
-    Returns whether it got them."""
+async def _empty(engine: AsyncEngine) -> bool:
+    """Empty the database, waiting at most `_EMPTY_LOCK_TIMEOUT` for a row
+    lock. Returns whether it got them."""
     try:
         async with engine.begin() as conn:
-            await conn.execute(text(f"SET LOCAL lock_timeout = '{lock_timeout}'"))
-            await conn.execute(text(_TRUNCATE_ALL))
+            await conn.execute(
+                text(f"SET LOCAL lock_timeout = '{_EMPTY_LOCK_TIMEOUT}'")
+            )
+            await conn.execute(text(_EMPTY_ALL))
             await _seed_tenant_zero(conn)
     except DBAPIError as exc:
         if getattr(exc.orig, "sqlstate", None) != _LOCK_NOT_AVAILABLE:
@@ -167,18 +205,17 @@ async def empty_the_database(engine: AsyncEngine) -> None:
     instead is the same starting point for a fraction of the DDL, and it is
     what every per-test fixture here uses.
 
-    TRUNCATE takes every table's exclusive lock, so a connection left in a
-    transaction would make it wait forever. One is left when a test's client
+    A connection is sometimes left in a transaction: when a test's client
     loop (a `TestClient`'s thread, say) stops while a query of its stream is
-    in flight: the task is abandoned rather than cancelled, and its
-    transaction never ends. Each test worker has a database of its own and
-    runs one test at a time, so a session idle in a transaction while a test
-    is still being set up belongs to a test that has finished. The reset ends
-    those, with a warning naming them, and carries on; and fails, naming every
-    session still connected, if it then still cannot take its locks.
+    in flight, the task is abandoned rather than cancelled, and its
+    transaction never ends. Rows it wrote and never committed would hold
+    their keys against the next test's, and rows it locked would keep the
+    reset waiting. Each test worker has a database of its own and runs one
+    test at a time, so a session idle in a transaction while a test is being
+    set up belongs to a test that has finished. The reset ends those first,
+    with a warning naming them, and fails, naming every session still
+    connected, if it then cannot take its locks.
     """
-    if await _truncate(engine, _TRUNCATE_LOCK_TIMEOUT):
-        return
     async with engine.connect() as conn:
         ended = (await conn.execute(_END_LEFT_IN_TRANSACTION)).mappings().all()
     if ended:
@@ -187,7 +224,7 @@ async def empty_the_database(engine: AsyncEngine) -> None:
             "transaction:\n" + "\n".join(str(dict(session)) for session in ended),
             stacklevel=2,
         )
-    if await _truncate(engine, _TRUNCATE_LOCK_TIMEOUT_AFTER_CLEARING):
+    if await _empty(engine):
         return
     async with engine.connect() as conn:
         sessions = (await conn.execute(text(_OTHER_SESSIONS))).mappings().all()
@@ -195,6 +232,117 @@ async def empty_the_database(engine: AsyncEngine) -> None:
         "emptying the database could not take its locks. Still connected:\n"
         + "\n".join(str(dict(session)) for session in sessions)
     )
+
+
+THROWAWAY_DATABASE = "switch_test_throwaway"
+
+
+def external_test_database(url_text: str, environ: Mapping[str, str]) -> None:
+    """Refuses a test database that could be someone's real one."""
+    url = make_url(url_text)
+    if (
+        environ.get("SWITCH_TEST_POSTGRES_THROWAWAY") != "1"
+        or url.get_backend_name() != "postgresql"
+        or url.host not in {"127.0.0.1", "localhost"}
+        or url.database != THROWAWAY_DATABASE
+    ):
+        raise RuntimeError(
+            "SWITCH_TEST_POSTGRES_URL is used only with SWITCH_TEST_POSTGRES_THROWAWAY=1, "
+            f"a localhost postgresql URL and the database {THROWAWAY_DATABASE}."
+        )
+
+
+# The advisory lock a run holds on the external throwaway database ("SWTEST").
+SOLE_RUN_LOCK = 0x5357_5445_5354
+
+
+def busy_database(url_text: str) -> str:
+    """The database a refusal names: its name, host and port, never the password."""
+    url = make_url(url_text)
+    return f"{url.database} on {url.host}:{url.port or 5432}"
+
+
+@contextlib.contextmanager
+def sole_run_on(
+    url_text: str, environ: Mapping[str, str], key: int = SOLE_RUN_LOCK
+) -> Iterator[None]:
+    """One test run at a time on the external throwaway database.
+
+    Each test empties the database on the way in, so a second run on the same
+    one (another pytest, from any folder or pod, or `-n` workers) wipes the
+    first's rows mid-test and collides on its fixed emails: a row a test just
+    made is gone, and later tests fail setup with duplicate keys. So a run
+    holds a session-level advisory lock there, on a connection of its own,
+    for as long as it uses it, and a second run is refused at once, naming
+    the database. The lock goes when the run ends or dies, with its
+    connection. Only for `SWITCH_TEST_POSTGRES_URL`: CI's workers each get a
+    container of their own and never come here.
+    """
+    if environ.get("PYTEST_XDIST_WORKER"):
+        raise RuntimeError(
+            f"SWITCH_TEST_POSTGRES_URL is one shared database ({busy_database(url_text)}), "
+            "so run without -n."
+        )
+    dsn = (
+        make_url(url_text)
+        .set(drivername="postgresql")
+        .render_as_string(hide_password=False)
+    )
+    held = threading.Event()
+    done = threading.Event()
+    outcome: dict[str, object] = {}
+
+    async def hold() -> None:
+        conn = await asyncpg.connect(dsn, timeout=10)
+        try:
+            outcome["locked"] = await conn.fetchval(
+                "SELECT pg_try_advisory_lock($1)", key
+            )
+            held.set()
+            if outcome["locked"]:
+                await asyncio.to_thread(done.wait)
+        finally:
+            await conn.close()
+
+    def run() -> None:
+        try:
+            asyncio.run(hold())
+        except BaseException as exc:  # noqa: BLE001 -- handed to the caller
+            outcome["error"] = exc
+            held.set()
+
+    # Its own thread and loop: the lock has to outlive every per-test loop.
+    thread = threading.Thread(target=run, name="sole-test-run", daemon=True)
+    thread.start()
+    held.wait()
+    try:
+        if "error" in outcome:
+            # Only the error's kind: a driver's message could carry the URL.
+            raise RuntimeError(
+                f"Couldn't lock {busy_database(url_text)} for this run "
+                f"({type(outcome['error']).__name__})."
+            ) from None
+        if not outcome.get("locked"):
+            raise RuntimeError(
+                f"Another test run is using {busy_database(url_text)}. Runs on "
+                "SWITCH_TEST_POSTGRES_URL share one database, so run them one at a time."
+            )
+        yield
+    finally:
+        done.set()
+        thread.join(timeout=10)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """`-n` on the shared test database is refused before any worker starts:
+    the workers would all use one database (see `sole_run_on`). CI's `-n`
+    runs set no URL, and each worker there gets a container of its own."""
+    external = os.environ.get("SWITCH_TEST_POSTGRES_URL")
+    if external and getattr(config.option, "numprocesses", None):
+        raise pytest.UsageError(
+            f"SWITCH_TEST_POSTGRES_URL is one shared database ({busy_database(external)}), "
+            "so run without -n."
+        )
 
 
 @pytest.fixture(scope="session")
@@ -210,6 +358,23 @@ def postgres_url() -> Iterator[str]:
     entirely write traffic. Nothing about the behaviour under test changes:
     these settings govern what survives a crash, not what a transaction sees.
     """
+    # A runner with no Docker socket (the gVisor integration box) points this at
+    # its own throwaway Postgres instead. Every test truncates and reseeds it, so
+    # it is refused unless all three hold: the explicit throwaway flag, a local
+    # host, and the fixed throwaway database name. Refused before connecting.
+    external = os.environ.get("SWITCH_TEST_POSTGRES_URL")
+    if external:
+        external_test_database(external, os.environ)
+        with contextlib.ExitStack() as held:
+            try:
+                held.enter_context(sole_run_on(external, os.environ))
+            except RuntimeError as refused:
+                # The whole run stops here, once, with only the message: a
+                # raised error would be reported per test, with the URL's
+                # password among the arguments pytest prints.
+                pytest.exit(str(refused), returncode=3)
+            yield external
+        return
     container = PostgresContainer("postgres:16-alpine").with_command(
         "postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off"
     )
@@ -230,19 +395,22 @@ def postgres_url() -> Iterator[str]:
 def _remove(container: PostgresContainer) -> None:
     """Delete the session's container, without failing a run over it.
 
-    Every test has run by now. After a whole shard the container's data is
-    large, and a busy CI runner's Docker has taken longer than its client's
-    60 s to delete it: the shard then failed though every test passed. The
-    reaper testcontainers starts with the session (Ryuk) removes the container
-    once the session ends anyway, so a removal that doesn't answer in time is
-    only a warning.
+    Every test has run by now. Where the reaper testcontainers starts with
+    the session (Ryuk) runs, it removes the container once the session ends,
+    so it is left to it: with every worker removing its own at once, Docker
+    has taken longer than its client's 60 s to answer, and each worker waited
+    that long after its last test. Without the reaper (Podman) the container
+    is removed here; after a whole shard its data is large, and a removal
+    that doesn't answer in time is only a warning, not a failed run.
     """
+    if not testcontainers_config.ryuk_disabled:
+        return
     try:
         container.stop()
     except (DockerException, requests.exceptions.RequestException) as exc:
         warnings.warn(
-            f"the test database's container was not removed ({exc!r}); "
-            "the testcontainers reaper removes it when the session ends",
+            f"the test database's container {container.get_wrapped_container().short_id} "
+            f"was not removed ({exc!r}); remove it with `docker rm -f`",
             stacklevel=2,
         )
 

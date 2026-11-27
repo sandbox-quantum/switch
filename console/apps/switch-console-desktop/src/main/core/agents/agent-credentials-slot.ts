@@ -1,6 +1,11 @@
 import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { agentSettingsRelativePath } from './switch-settings-paths';
-import { existingAgentIdInSlot, foreignCredentialsOwnerFs } from './write-switch-settings';
+import {
+  existingAgentIdInSlot,
+  foreignCredentialsOwnerFs,
+  prepareAgentCredentialsFile,
+  UnignoredAgentCredentialsError,
+} from './write-switch-settings';
 
 /**
  * The Switch deployment that already owns `.switch/agents/<slug>.json` in a
@@ -50,6 +55,31 @@ export async function sameEndpointAgentId(
   try {
     const existingRaw = await workdir.fs.read(agentSettingsRelativePath(slug));
     return existingAgentIdInSlot(existingRaw, apiEndpoint);
+  } finally {
+    workdir.close();
+  }
+}
+
+/**
+ * Why `slug`'s credentials file in a working directory cannot be given a
+ * token, or null when it can. Puts Console's `.gitignore` in place and asks
+ * git ({@link prepareAgentCredentialsFile}), so a create path calling this
+ * before minting turns a file the repository tracks into a refusal with
+ * nothing left behind on the server, as {@link foreignCredentialsOwner} does
+ * for another deployment's file.
+ */
+export async function credentialsFileRefusal(
+  sshHost: string | null,
+  dir: string,
+  slug: string
+): Promise<string | null> {
+  const workdir = await resolveWorkdirFsFor(sshHost, dir);
+  try {
+    await prepareAgentCredentialsFile(workdir, slug);
+    return null;
+  } catch (error) {
+    if (error instanceof UnignoredAgentCredentialsError) return error.message;
+    throw error;
   } finally {
     workdir.close();
   }

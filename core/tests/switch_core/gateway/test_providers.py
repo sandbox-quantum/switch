@@ -35,3 +35,12 @@ async def test_they_are_served_without_agent_management() -> None:
     assert advanced.status_code == 200, advanced.text
     assert advanced.json() == advanced_config_schema()
     assert agents.status_code == 404
+
+
+async def test_providers_include_supports_auto_mode() -> None:
+    """Each provider reports whether it supports auto mode (automatic review)."""
+    flags = {ADDITIONAL_AGENT_PROVIDERS: False}
+    schema = providers_schema(flags)
+    for provider in schema["providers"]:
+        assert "supports_auto_mode" in provider
+        assert isinstance(provider["supports_auto_mode"], bool)

@@ -47,6 +47,11 @@ export const sharedConfigSchema = z.strictObject({
    * Absent from every other session, and from configurations written before it.
    */
   importHistory: z.boolean().optional(),
+  /**
+   * Written only by a controller in box mode. The host takes box mode from the box image's marker alone; this can
+   * only make a host refuse to start where the marker is missing (`hostBoxMode`), never turn box mode off.
+   */
+  box: z.literal(true).optional(),
   execution: z
     .strictObject({
       credentialsPath: z.string().min(1),
@@ -135,6 +140,16 @@ export function servicesUnavailableNotice(reason: string): string {
  * `connectorMcpServers`, so their tools follow the session's runtime mode
  * where Switch's own are always allowed.
  */
+/**
+ * What a box's session host adds to a provider's start (`box/owner-marker-env`):
+ * its host's owner marker, and no marker an agent planted in a configured MCP
+ * server's environment. Given only in box mode.
+ */
+export type SharedConfigBox = {
+  withOwnerMarker: (env: Record<string, string>, host: NodeJS.ProcessEnv) => Record<string, string>;
+  withoutPlantedMarkers: <T extends object>(servers: Record<string, T>) => Record<string, T>;
+};
+
 export async function prepareSharedConfig(
   root: string,
   config: SharedHostConfig,
@@ -142,7 +157,8 @@ export async function prepareSharedConfig(
   services: SessionServices,
   helpers: ServiceHelpers | null,
   vendors: Record<string, HttpMcpServerSpec>,
-  redact: (secret: string) => void
+  redact: (secret: string) => void,
+  box?: SharedConfigBox
 ) {
   if (config.session.provider !== config.start.provider)
     throw new Error('Shared SDK host provider mismatch.');
@@ -237,6 +253,10 @@ export async function prepareSharedConfig(
     input.mcpServers[name] = spec;
   }
   input.mcpServers.switch = runtime;
+  if (box) {
+    input.env = box.withOwnerMarker(input.env, process.env);
+    input.mcpServers = box.withoutPlantedMarkers(input.mcpServers);
+  }
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
   // Read from the grants as the session starts, never from the saved
@@ -312,18 +332,20 @@ export async function readSharedCredentials(config: SharedHostConfig) {
   return credentials;
 }
 
-export async function executionEnvironment(
-  cwd: string,
-  configured: Record<string, string>,
-  setup: string | undefined,
+/**
+ * The variables of `source` that `inheritEnv` names, never Switch's or
+ * Electron's own. Matched without regard to case on Windows.
+ */
+function inheritable(
+  source: Record<string, string | undefined>,
   inheritEnv: string[]
-): Promise<Record<string, string>> {
+): Record<string, string> {
   const env: Record<string, string> = {};
   const inherited =
     process.platform === 'win32'
       ? new Set(inheritEnv.map((key) => key.toUpperCase()))
       : new Set(inheritEnv);
-  for (const [key, value] of Object.entries(process.env))
+  for (const [key, value] of Object.entries(source))
     if (
       value !== undefined &&
       inherited.has(process.platform === 'win32' ? key.toUpperCase() : key) &&
@@ -331,7 +353,23 @@ export async function executionEnvironment(
       !key.startsWith('ELECTRON_')
     )
       env[key] = value;
-  Object.assign(env, configured);
+  return env;
+}
+
+/**
+ * A session's environment: the host's variables `inheritEnv` names, then the
+ * agent's `configured` ones. A `setup` snippet runs in a login shell with
+ * that environment, and may change those variables (prepend to `PATH`, say);
+ * anything else it or the user's profile exports is left behind, so set an
+ * agent's other variables in its environment, not in its shell setup.
+ */
+export async function executionEnvironment(
+  cwd: string,
+  configured: Record<string, string>,
+  setup: string | undefined,
+  inheritEnv: string[]
+): Promise<Record<string, string>> {
+  const env = { ...inheritable(process.env, inheritEnv), ...configured };
   if (!setup) return env;
   if (process.platform === 'win32')
     throw new Error(
@@ -352,5 +390,11 @@ export async function executionEnvironment(
   );
   const offset = stdout.lastIndexOf(marker);
   if (offset < 0) throw new Error('Shell setup did not return the execution environment.');
-  return z.record(z.string(), z.string()).parse(JSON.parse(stdout.slice(offset + marker.length)));
+  const produced = z
+    .record(z.string(), z.string())
+    .parse(JSON.parse(stdout.slice(offset + marker.length)));
+  const kept = inheritable(produced, inheritEnv);
+  for (const [key, value] of Object.entries(produced))
+    if (Object.hasOwn(configured, key)) kept[key] = value;
+  return kept;
 }

@@ -1,3 +1,11 @@
+import {
+  CreateRoomOptions,
+  RoomChannelField,
+} from '@switch-console/chat-ui/components/create-room-options';
+import {
+  DEFAULT_ROOM_OPTIONS,
+  type RoomCreateOptions,
+} from '@switch-console/chat-ui/model/room-creation';
 /**
  * The New room dialog for a room on a messaging app: the channel choice, always
  * shown as cards, and More options for what is easy to change later — shut at
@@ -6,30 +14,15 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 
-vi.hoisted(() => {
-  window.electronAPI ??= {
-    invoke: () => Promise.resolve(undefined),
-    eventOn: () => () => {},
-    eventSend: () => {},
-  } as unknown as typeof window.electronAPI;
-});
-
-vi.mock('@renderer/lib/ipc', () => ({
-  events: { on: vi.fn() },
-  rpc: { workspaces: { listRoomGroups: vi.fn(async () => [{ id: 'g1', name: 'Design' }]) } },
-}));
-
-import {
-  CreateRoomOptions,
-  RoomChannelField,
-} from '@renderer/features/switch-servers/create-room-options';
-import {
-  DEFAULT_ROOM_OPTIONS,
-  type RoomCreateOptions,
-} from '@renderer/features/switch-servers/room-create-request';
+const GROUPS = {
+  data: [{ id: 'g1', name: 'Design' }],
+  isLoading: false,
+  isError: false,
+  error: null,
+};
 
 const BRIDGE = {
   id: 'b1',
@@ -61,9 +54,11 @@ function Harness({ bridge, admin }: { bridge: RemoteBridge | null; admin: boolea
   };
   return (
     <>
-      {bridge && <RoomChannelField bridge={bridge} value={value} onChange={onChange} />}
+      {bridge && (
+        <RoomChannelField bridge={bridge} value={value} onChange={onChange} appName="Console" />
+      )}
       <CreateRoomOptions
-        workspaceId="ws-1"
+        groups={GROUPS}
         value={value}
         onChange={onChange}
         administersWorkspace={admin}

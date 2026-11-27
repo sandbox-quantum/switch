@@ -1,3 +1,4 @@
+import { Button } from '@switch-console/chat-ui/primitives/button';
 import { motion } from 'motion/react';
 import {
   Component,
@@ -11,7 +12,6 @@ import {
   useState,
 } from 'react';
 import { useTheme } from '@renderer/lib/hooks/useTheme';
-import { Button } from '@renderer/lib/ui/button';
 import { log } from '@renderer/utils/logger';
 import aurora from './intro/assets/aurora.svg';
 import './intro/fonts/intro-fonts.css';

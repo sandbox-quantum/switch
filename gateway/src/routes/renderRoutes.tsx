@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Route } from "react-router";
 import type { SettingsArea } from "../data/settingsLanding";
-import { Guarded, RedirectTo } from "./Guarded";
+import { Guarded, RedirectTo, RedirectWhere } from "./Guarded";
 import { type AppRoute, ROUTES } from "./routeTable";
 import { SettingsIndex, SettingsLayout } from "./SettingsLayout";
 
@@ -29,7 +29,21 @@ function routeElement(route: AppRoute): ReactNode {
         />
       );
     case "redirect":
-      return <Route key={key} {...routePath(route.path)} element={<RedirectTo to={route.to} />} />;
+      return (
+        <Route
+          key={key}
+          {...routePath(route.path)}
+          element={
+            route.only ? (
+              <RedirectWhere to={route.to} when={route.only.when}>
+                {route.only.otherwise}
+              </RedirectWhere>
+            ) : (
+              <RedirectTo to={route.to} />
+            )
+          }
+        />
+      );
   }
 }
 

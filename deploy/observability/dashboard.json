@@ -1,5 +1,5 @@
 {
-  "title": "Switch — core service health",
+  "title": "Switch \u2014 core service health",
   "description": "What switch-core reports about itself. Metric definitions live in core/switch_core/observability/catalogue.py; this dashboard is checked into deploy/observability/ in the switch repository, so edit it there rather than here.",
   "layout_type": "ordered",
   "reflow_type": "fixed",
@@ -270,7 +270,7 @@
     },
     {
       "definition": {
-        "title": "5xx % — $version.value vs $baseline.value",
+        "title": "5xx % \u2014 $version.value vs $baseline.value",
         "show_legend": true,
         "legend_layout": "horizontal",
         "type": "timeseries",
@@ -322,7 +322,7 @@
     },
     {
       "definition": {
-        "title": "Request p95 (ms) — $version.value vs $baseline.value",
+        "title": "Request p95 (ms) \u2014 $version.value vs $baseline.value",
         "show_legend": true,
         "legend_layout": "horizontal",
         "type": "timeseries",
@@ -376,7 +376,7 @@
     },
     {
       "definition": {
-        "title": "Delivery lag p95 (ms) — $version.value vs $baseline.value",
+        "title": "Delivery lag p95 (ms) \u2014 $version.value vs $baseline.value",
         "show_legend": true,
         "legend_layout": "horizontal",
         "type": "timeseries",
@@ -430,7 +430,7 @@
     },
     {
       "definition": {
-        "title": "Event-loop lag, worst (ms) — $version.value vs $baseline.value",
+        "title": "Event-loop lag, worst (ms) \u2014 $version.value vs $baseline.value",
         "show_legend": true,
         "legend_layout": "horizontal",
         "type": "timeseries",
@@ -484,7 +484,7 @@
     },
     {
       "definition": {
-        "title": "Memory RSS — $version.value vs $baseline.value",
+        "title": "Memory RSS \u2014 $version.value vs $baseline.value",
         "show_legend": true,
         "legend_layout": "horizontal",
         "type": "timeseries",
@@ -538,7 +538,7 @@
     },
     {
       "definition": {
-        "title": "Collaboration bridge errors/s — $version.value vs $baseline.value",
+        "title": "Collaboration bridge errors/s \u2014 $version.value vs $baseline.value",
         "show_legend": true,
         "legend_layout": "horizontal",
         "type": "timeseries",
@@ -954,7 +954,7 @@
     },
     {
       "definition": {
-        "title": "Bridge connect failure % — $version.value vs $baseline.value",
+        "title": "Bridge connect failure % \u2014 $version.value vs $baseline.value",
         "show_legend": true,
         "legend_layout": "horizontal",
         "type": "timeseries",
@@ -1038,7 +1038,7 @@
     },
     {
       "definition": {
-        "title": "Bridge connect p95 (ms) — $version.value vs $baseline.value",
+        "title": "Bridge connect p95 (ms) \u2014 $version.value vs $baseline.value",
         "show_legend": true,
         "legend_layout": "horizontal",
         "type": "timeseries",
@@ -1110,7 +1110,7 @@
     },
     {
       "definition": {
-        "title": "Agent sessions ended in error % — $version.value vs $baseline.value",
+        "title": "Agent sessions ended in error % \u2014 $version.value vs $baseline.value",
         "show_legend": true,
         "legend_layout": "horizontal",
         "type": "timeseries",
@@ -1341,7 +1341,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "**HTTP.** Routes are templates, never resolved paths — a path carries an id per request and would be a new series each time. Anything the router could not place is folded into `unmatched`.",
+        "content": "**HTTP.** Routes are templates, never resolved paths \u2014 a path carries an id per request and would be a new series each time. Anything the router could not place is folded into `unmatched`.",
         "background_color": "gray",
         "font_size": "14",
         "text_align": "left",
@@ -1402,7 +1402,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Request duration p95 by route (ms) — needs distribution mapping, see README",
+        "title": "Request duration p95 by route (ms) \u2014 needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -1421,7 +1421,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "**Rooms.** Delivery lag is the age of a message when it reached a recipient, measured per delivery. Delivery failures are the exceptions the delivery loop swallows on purpose so one bad room cannot stop the others — which is also what makes them invisible without this.\n\n**Sent and delivered are not the same unit.** A send is one write; a delivery is one recipient, so a room with five clients delivers five times per send. Delivered sitting above sent is normal. What matters is the shape of each line, not the gap between them.",
+        "content": "**Rooms.** Delivery lag is the age of a message when it reached a recipient, measured per delivery. Delivery failures are the exceptions the delivery loop swallows on purpose so one bad room cannot stop the others \u2014 which is also what makes them invisible without this.\n\n**Sent and delivered are not the same unit.** A send is one write; a delivery is one recipient, so a room with five clients delivers five times per send. Delivered sitting above sent is normal. What matters is the shape of each line, not the gap between them.",
         "background_color": "gray",
         "font_size": "14",
         "text_align": "left",
@@ -1507,7 +1507,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Delivery lag p95 / p99 (ms) — needs distribution mapping, see README",
+        "title": "Delivery lag p95 / p99 (ms) \u2014 needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -1610,7 +1610,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "**Resources.** Reported by the process about itself — there is no infrastructure agent in this cluster. Event-loop lag is the one no agent could produce: the server is single-threaded, so one blocking call stalls every room and bridge at once, and from outside that looks like an unrelated timeout somewhere else.\n\nPool overflow is zero until the pool is full, then counts the connections opened beyond it — saturation shows as in-use approaching size.",
+        "content": "**Resources.** Reported by the process about itself \u2014 there is no infrastructure agent in this cluster. Event-loop lag is the one no agent could produce: the server is single-threaded, so one blocking call stalls every room and bridge at once, and from outside that looks like an unrelated timeout somewhere else.\n\nPool overflow is zero until the pool is full, then counts the connections opened beyond it \u2014 saturation shows as in-use approaching size.",
         "background_color": "gray",
         "font_size": "14",
         "text_align": "left",
@@ -1844,7 +1844,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Database query duration p95 / p99 (ms) by operation — needs distribution mapping, see README",
+        "title": "Database query duration p95 / p99 (ms) by operation \u2014 needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -1867,7 +1867,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Bridge call duration p95 (ms) by bridge and platform — needs distribution mapping, see README",
+        "title": "Bridge call duration p95 (ms) by bridge and platform \u2014 needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -1886,7 +1886,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Publications held back by a rate limit p95 (s) by platform and delivery — needs distribution mapping, see README",
+        "title": "Publications held back by a rate limit p95 (s) by platform and delivery \u2014 needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -2801,7 +2801,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Decision duration p50 / p95 / p99 / max (ms) by model; a timeout counts as unknown at the timeout — needs distribution mapping, see README",
+        "title": "Decision duration p50 / p95 / p99 / max (ms) by model; a timeout counts as unknown at the timeout \u2014 needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -2844,7 +2844,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Model time p50 / p95 (ms) by model, the gap to duration is network and queue — needs distribution mapping, see README",
+        "title": "Model time p50 / p95 (ms) by model, the gap to duration is network and queue \u2014 needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -2867,7 +2867,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Confidence of answered decisions by model: lowest, p50 and p90 (0 to 1; on nonprod a decision delivers at ≥ 0.80) — needs distribution mapping, see README",
+        "title": "Confidence of answered decisions by model: lowest, p50 and p90 (0 to 1; on nonprod a decision delivers at \u2265 0.80) \u2014 needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -2924,7 +2924,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Wait from message to settled p95 (ms) by outcome — needs distribution mapping, see README",
+        "title": "Wait from message to settled p95 (ms) by outcome \u2014 needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -3048,7 +3048,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "**Hosted agents (cloud machines).** Read from the machines' status reports and the hosted controller service's calls: no ids, only counts and fixed words. Gauges come from one Core process (the hosted metrics lock holder) and leave out reports older than 3 minutes. A machine gone silent shows as reporting below expected; a machine stopped by its owner or for idleness isn't expected. `backend` is the kind of machine (`vm` today). Filter by `$service`, and by `$flint_env` for the deployment's environment.",
+        "content": "**Hosted agents (cloud machines).** Read from the machines' status reports and the hosted controller service's calls: no ids, only counts and fixed words. Gauges come from one Core process (the hosted metrics lock holder) and leave out reports older than 3 minutes. A machine gone silent shows as reporting below expected; a machine stopped by its owner or for idleness isn't expected. `backend` is the kind of machine: `vm` for a v1 machine, `box` for a hosted agents v2 box. The box panels at the end fill only with hosted agents v2 on. Filter by `$service`, and by `$flint_env` for the deployment's environment.",
         "background_color": "gray",
         "font_size": "14",
         "text_align": "left",
@@ -3190,11 +3190,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Cloud machine changes, by event and reason",
+        "title": "Cloud machine changes, by event, reason and kind",
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.machine_events{$service,$flint_env,$version,!version:0.27.0} by {event,reason}.as_count()",
+            "q": "sum:switch.hosted.machine_events{$service,$flint_env,$version,!version:0.27.0} by {event,reason,backend}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -3247,15 +3247,15 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "New cloud machines: seconds from request to first report, p95 / max",
+        "title": "New cloud machines: seconds from request to first report, p95 / max, by kind",
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.hosted.provision_seconds{$service,$flint_env,$version,!version:0.27.0}",
+            "q": "p95:switch.hosted.provision_seconds{$service,$flint_env,$version,!version:0.27.0} by {backend}",
             "display_type": "line"
           },
           {
-            "q": "max:switch.hosted.provision_seconds{$service,$flint_env,$version,!version:0.27.0}",
+            "q": "max:switch.hosted.provision_seconds{$service,$flint_env,$version,!version:0.27.0} by {backend}",
             "display_type": "line"
           }
         ]
@@ -3537,6 +3537,389 @@
         "x": 0,
         "y": 137,
         "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Hosted agents v2 (boxes).** Empty unless `HOSTED_BOX_PROVISIONING` is on. What only a box reports, beside the v1 panels above, which cover boxes too under `backend:box`: the operator's open alerts, sessions waiting for room, restarts, out-of-memory kills and evictions, the memory guard and valve, the provider gateway, and box memory. Counts and fixed words only.",
+        "background_color": "gray",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 214,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Operator alerts open, by condition (the box, machine or service is on the operator's Alerts tab)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.alerts_open{$service,$flint_env,$version,!version:0.27.0} by {condition}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 216,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted boxes: sessions waiting for room to start",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.waiting_for_room{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 216,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted agent restarts (last 10 min), OOM kills, and box evictions",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.agent_restarts_10m{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.agent_oom_kills{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:switch.hosted.box_evictions{$service,$flint_env,$version,!version:0.27.0}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 220,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted boxes: agents the memory guard stopped, and sessions the valve parked",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.guard_stops{$service,$flint_env,$version,!version:0.27.0}.as_count()",
+            "display_type": "bars"
+          },
+          {
+            "q": "sum:switch.hosted.valve_parks{$service,$flint_env,$version,!version:0.27.0}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 220,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Provider gateway on hosted boxes, by kind; boxes with a valve memory problem, by state",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.gateway{$service,$flint_env,$version,!version:0.27.0} by {kind}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.boxes_valve_memory{$service,$flint_env,$version,!version:0.27.0} by {state}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 224,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted box anonymous memory (bytes), p95 / max. Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.hosted.box_anon_memory{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.box_anon_memory{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 224,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted box starts: seconds to ready from the person's first request, p50 / p90, by case (first_start target 20 / 30 s, wake 10 / 20 s). Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p50:switch.hosted.start_seconds{$service,$flint_env,$version,!version:0.27.0,stage:total} by {case}",
+            "display_type": "line"
+          },
+          {
+            "q": "p90:switch.hosted.start_seconds{$service,$flint_env,$version,!version:0.27.0,stage:total} by {case}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 228,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted box start stages: p50 seconds each, by case and stage (they add up to the total). Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p50:switch.hosted.start_seconds{$service,$flint_env,$version,!version:0.27.0,stage IN (box_requested,box_claimed,box_provisioned,box_running,controller_reported,ready)} by {case,stage}",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 228,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud machine claims refused at a limit, by reason (workspace_full: the per-workspace cap, hosted agents v2)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.claim_refused{$service,$flint_env,$version,!version:0.27.0} by {reason}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 232,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Warm pool: boxes by state against the pool's size (hosted agents v2)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.pool.boxes{$service,$flint_env,$version,!version:0.27.0} by {state}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.pool.size{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 236,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Warm pool: new boxes by path (pool: a waiting box taken; fallback: made from scratch)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.pool.claims{$service,$flint_env,$version,!version:0.27.0} by {path}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 236,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Warm pool: boxes retired by reason, and reaper reports refused (should be 0)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.pool.retired{$service,$flint_env,$version,!version:0.27.0} by {reason}.as_count()",
+            "display_type": "bars"
+          },
+          {
+            "q": "sum:switch.hosted.pool.reap_refused{$service,$flint_env,$version,!version:0.27.0}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 240,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Warm pool: time to make a pool box (p50, p90)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p50:switch.hosted.pool.refill_seconds{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          },
+          {
+            "q": "p90:switch.hosted.pool.refill_seconds{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 240,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Box removals by outcome (refused and unjustified should be 0)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.box_removals{$service,$flint_env,$version,!version:0.27.0} by {outcome}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 244,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Box operator: live boxes against its ceiling (alerts at 80% and 95%)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.hosted.operator_boxes_live{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.operator_ceiling{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 244,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Messages refused before they were written, by reason (too_long, rate_limited) and sender",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.messages.refused{$service,$flint_env,$version,!version:0.27.0} by {reason,actor}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 248,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Switch Trust checks that did not complete, by reason (each let a message or file through unchecked)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.trust.check_failures{$service,$flint_env,$version,!version:0.27.0} by {reason}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 252,
+        "width": 12,
         "height": 4
       }
     }

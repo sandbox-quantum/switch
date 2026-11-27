@@ -38,6 +38,9 @@ class _HumanActor:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str | None]] = []
 
+    def admit_message(self, authored: str | None) -> None:
+        return None
+
     async def send_message(
         self, room_id: str, content: str, *, thread_root_id: str | None, **_kw: Any
     ) -> str:
@@ -105,6 +108,7 @@ def _bridge(
         _channel_locks={},
         _trust_client=NullTrustClient(),
         _room_tenant=AsyncMock(return_value="tenant-1"),
+        _already_handed_in=AsyncMock(return_value=False),
         _event_for_external_post=_event_for_external_post,
         _handle_text_answer=_handle_text_answer,
         _ensure_human_in_room=_ensure_human_in_room,

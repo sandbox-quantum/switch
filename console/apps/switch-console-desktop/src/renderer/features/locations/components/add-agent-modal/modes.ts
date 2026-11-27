@@ -1,14 +1,18 @@
-import { useCallback, useEffect, useState } from 'react';
+import {
+  NO_PROVIDER_PERMISSIONS,
+  useNewAgentForm,
+} from '@switch-console/chat-ui/model/new-agent-form';
+import { useState } from 'react';
 import { useThirdPartyAvatarsEnabled } from '@renderer/lib/stores/use-avatar-settings';
-import { isThirdPartyAvatarUrl, randomAgentAvatarUrl } from '@shared/core/agents/agent-avatar';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
 import { newAgentPermissions } from '@shared/core/agents/agents';
 import {
   type AgentProviderId,
+  autoModeIsUnreviewed,
+  providerDisplayName,
   providerSupportsAutoMode,
 } from '@shared/core/providers/agent-provider-registry';
 import { defaultAgentPolicy } from '@shared/core/switch-servers/owner-policy';
-import type { AddressingPolicy } from '@shared/core/switch-servers/switch-servers';
 
 export function usePickMode() {
   const [path, setPath] = useState('');
@@ -27,191 +31,30 @@ export function usePickMode() {
 
 export type PickModeState = ReturnType<typeof usePickMode>;
 
-/** A permission switch the user set, and the provider it was set for. */
-type ProviderChoice = { providerId: AgentProviderId | null; value: boolean };
-
-function chosenFor(choice: ProviderChoice | null, providerId: AgentProviderId | null) {
-  return choice !== null && choice.providerId === providerId ? choice.value : null;
-}
-
 /**
- * The display name a name suggests, for a display name the form filled in
- * rather than the user: an identifier written out ("mo-second-helper" reads
- * "Mo Second Helper"), or text the identifier cannot hold yet, as typed.
- */
-export function displayNameFromName(value: string): string {
-  const trimmed = value.trim();
-  if (!AGENT_NAME_PATTERN.test(trimmed)) return trimmed;
-  return trimmed
-    .split(/[._-]+/)
-    .filter((word) => word.length > 0)
-    .map((word) => word[0]!.toUpperCase() + word.slice(1))
-    .join(' ');
-}
-
-/**
- * Form state for creating a brand-new Switch agent in a directory. Collects the
- * Switch agent name and description (advanced definition attributes are gathered
- * separately in the Advanced section). Switch Console always registers the agent
- * as a managed, session-addressable identity — there is no run-mode or
- * notify-handle choice (CHOO-1440).
- *
- * Neither field is derived from the working directory. The name is how the
- * agent is addressed in rooms and the description is what other people read to
- * know what it is for; a directory basename answers neither question, and
- * rewriting both when the directory changed moved text the user had already
- * looked at and accepted.
- *
- * One instance serves both run locations. There used to be two — one for a
- * local agent, one for a remote one — and switching between them swapped which
- * was on screen, so the name and description the user had typed vanished.
+ * The new-agent form state, with Switch's name rules, the chosen provider's
+ * permission defaults and the server's avatar setting as Console knows them.
+ * Switch Console always registers the agent as a managed, session-addressable
+ * identity — there is no run-mode or notify-handle choice (CHOO-1440).
  */
 export function useConfigureAgentForm(serverId: string | null, providerId: AgentProviderId | null) {
-  const [agentName, setAgentNameFolded] = useState('');
-  // What was typed, before the identifier folded it to lowercase. The slug
-  // offer hands this back as the display name, so the capitals in a typed
-  // "Switch Dev" outlive an identifier that cannot hold them.
-  const [typedName, setTypedName] = useState('');
-  // The label chat platforms render the agent under. Optional: an agent with
-  // none is shown under its identifier.
-  const [displayName, setDisplayNameRaw] = useState('');
-  const [displayNameTouched, setDisplayNameTouched] = useState(false);
-  // The display name is one the slug offer filled in, not one the user wrote:
-  // it follows the name from then on, so renaming the agent before creating it
-  // does not leave it labelled as the name it no longer has.
-  const [displayNameSuggested, setDisplayNameSuggested] = useState(false);
-  const [description, setDescription] = useState('');
-  // What the agent is for, in its own words (CHOO-2228). Optional: an agent
-  // with none runs on its provider's defaults, and the description stands in
-  // where a provider needs a prompt.
-  const [instructions, setInstructions] = useState('');
-  // The permission switches start on the chosen provider's defaults, and a
-  // choice is kept only for the provider it was made for: switching from Claude
-  // Code with auto mode on to OpenCode must not carry over an auto mode that
-  // nothing reviews there. Before a provider is chosen both read off; the
-  // switches are not on screen then.
-  const defaults =
-    providerId === null ? { autoApprove: false, autoMode: false } : newAgentPermissions(providerId);
-  const [autoApproveChoice, setAutoApproveChoice] = useState<ProviderChoice | null>(null);
-  const [autoModeChoice, setAutoModeChoice] = useState<ProviderChoice | null>(null);
-  const autoApprove = chosenFor(autoApproveChoice, providerId) ?? defaults.autoApprove;
-  const autoMode = chosenFor(autoModeChoice, providerId) ?? defaults.autoMode;
-  const setAutoApprove = useCallback(
-    (value: boolean) => setAutoApproveChoice({ providerId, value }),
-    [providerId]
-  );
-  const setAutoMode = useCallback(
-    (value: boolean) => setAutoModeChoice({ providerId, value }),
-    [providerId]
-  );
-  // Scoped addressing policy (CHOO-1585). null = open; a new agent starts on
-  // the default, its owner and the owner's agents. Applied via a follow-up PUT
-  // after creation.
-  const [addressingPolicy, setAddressingPolicy] = useState<AddressingPolicy | null>(() =>
-    defaultAgentPolicy()
-  );
-  // The agent's icon (CHOO-2171). A new agent opens on a random bot rather than
-  // one drawn from its name: the name is empty at that point, so a name-derived
-  // seed is the same constant for everybody, and two agents that end up sharing
-  // a name have no reason to share a face. Null still means "whatever the name
-  // generates" — that is what the ✕ in the picker returns to.
-  const [initialIconUrl] = useState(randomAgentAvatarUrl);
-  const [iconUrl, setIconUrl] = useState<string | null>(initialIconUrl);
-  const thirdPartyAvatarsEnabled = useThirdPartyAvatarsEnabled(serverId);
-
-  // The random bot above is drawn before anything is known about where the
-  // agent will land, so a server that turns out to disable third-party
-  // avatars has to lose it retroactively — sent as-is, it would be the one
-  // DiceBear URL this form ever created without the server's permission.
-  // Nothing else changes here while the server is still unknown or allows
-  // them: this only fires once the answer is a confirmed no.
-  useEffect(() => {
-    if (thirdPartyAvatarsEnabled === false && iconUrl !== null && isThirdPartyAvatarUrl(iconUrl)) {
-      setIconUrl(null);
-    }
-  }, [thirdPartyAvatarsEnabled, iconUrl]);
-
-  const setDisplayName = useCallback((value: string) => {
-    setDisplayNameRaw(value);
-    setDisplayNameTouched(true);
-    setDisplayNameSuggested(false);
-  }, []);
-
-  /**
-   * Uppercase is the one thing the charset rejects that the reader never means
-   * — nobody wants a capital in a routing handle they did not know was one —
-   * so it is folded as they type rather than held against them. Everything
-   * else the charset refuses is left alone for the rejection banner and its
-   * slug offer to answer, because rewriting text under the cursor is worse
-   * than an error.
-   */
-  const setAgentName = useCallback(
-    (value: string) => {
-      setTypedName(value);
-      setAgentNameFolded(value.replace(/[A-Z]/g, (c) => c.toLowerCase()));
-      if (displayNameSuggested) setDisplayNameRaw(displayNameFromName(value));
-    },
-    [displayNameSuggested]
-  );
-
-  const nameIsValid = AGENT_NAME_PATTERN.test(agentName);
-  const nameIsRejected = agentName.length > 0 && !nameIsValid;
-  // A rejected name the app can repair itself is an offer, not a dead end. Only
-  // an offer: rewriting as the user types moves text out from under them. Empty
-  // when nothing of the name survives slugging, and there is nothing to offer.
-  const suggestedName = nameIsRejected ? slugifyAgentNamePart(agentName) : '';
-  const isValid = nameIsValid && description.trim().length > 0;
-
-  /**
-   * Take the offered slug as the name, keeping the text it was slugged from as
-   * the display name. "Switch Dev" is both the label someone wants and the
-   * thing the charset rejects, so the slug must not be all that survives it.
-   * A display name the user wrote themselves is an answer, not a guess, and
-   * stands. One filled in here is a guess, and follows later changes of the
-   * name (`displayNameFromName`).
-   */
-  const acceptSuggestedName = useCallback(() => {
-    if (suggestedName === '') return;
-    if (!displayNameTouched) {
-      setDisplayNameRaw(typedName);
-      setDisplayNameSuggested(true);
-    }
-    setTypedName(suggestedName);
-    setAgentNameFolded(suggestedName);
-  }, [typedName, displayNameTouched, suggestedName]);
-
-  return {
-    agentName,
-    setAgentName,
-    nameIsValid,
-    nameIsRejected,
-    suggestedName,
-    acceptSuggestedName,
-    displayName,
-    setDisplayName,
-    description,
-    setDescription,
-    instructions,
-    setInstructions,
-    /** The provider the permission switches are for, null before one is chosen. */
+  return useNewAgentForm({
+    namePattern: AGENT_NAME_PATTERN,
+    slugify: slugifyAgentNamePart,
     providerId,
-    /** Whether the chosen provider has an auto mode to offer (Cursor has none). */
-    supportsAutoMode: providerId !== null && providerSupportsAutoMode(providerId),
-    autoApprove,
-    setAutoApprove,
-    autoMode,
-    setAutoMode,
-    addressingPolicy,
-    setAddressingPolicy,
-    iconUrl,
-    setIconUrl,
-    /** Whether the icon on screen is still one this app drew, as opposed to one
-     * the user went and chose. Only the caption cares; the value sent to the
-     * server is `iconUrl` either way. */
-    iconIsGenerated: iconUrl === null || iconUrl === initialIconUrl,
-    thirdPartyAvatarsEnabled,
-    isValid,
-  };
+    permissions:
+      providerId === null
+        ? NO_PROVIDER_PERMISSIONS
+        : {
+            ...newAgentPermissions(providerId),
+            supportsAutoMode: providerSupportsAutoMode(providerId),
+            unreviewedAutoMode: autoModeIsUnreviewed(providerId)
+              ? providerDisplayName(providerId)
+              : null,
+          },
+    initialPolicy: defaultAgentPolicy,
+    thirdPartyAvatarsEnabled: useThirdPartyAvatarsEnabled(serverId),
+  });
 }
 
 export type ConfigureAgentFormState = ReturnType<typeof useConfigureAgentForm>;

@@ -1,13 +1,17 @@
+import { byLatestDirectChat } from '@switch-console/chat-ui/model/agent-conversations';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@switch-console/chat-ui/primitives/tooltip';
 import { Cloud, CloudOff, Server, ServerOff } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { byLatestDirectChat } from '@renderer/features/chats/agent-conversations';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { getProvider, isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import { type AgentPresence, SidebarAgentRow } from '../sidebar/agent-row';
@@ -78,6 +82,7 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
   const providerName = isValidProviderId(provider) ? getProvider(provider)?.name : null;
   return (
     <SidebarAgentRow
+      agentId={agent.agentId}
       label={label}
       iconUrl={agent.iconUrl}
       serverId={agent.serverId}

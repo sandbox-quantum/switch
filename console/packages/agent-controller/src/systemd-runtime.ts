@@ -413,7 +413,12 @@ export class SystemdRuntime implements AgentRuntime {
     await this.deps.systemctl(['start', unit]);
   }
 
-  async stop(agentId: string, options: { wait: boolean }): Promise<void> {
+  /**
+   * `asked` (box mode: whether anyone in the agent's rooms asked for the
+   * stop) changes nothing here, as in the detached runtime: the unit's worker
+   * closes its sessions itself.
+   */
+  async stop(agentId: string, options: { wait: boolean; asked?: boolean }): Promise<void> {
     const slot = this.deps.store.agentUser(agentId);
     if (slot === null) return;
     const watcher = join(agentRoot(this.deps.config, slot), 'watcher');

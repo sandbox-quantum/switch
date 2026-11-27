@@ -5,8 +5,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -26,11 +28,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { dataLayout } from './paths';
 import {
+  clearLeftLoginChecks,
+  type InProcessBox,
   InProcessRuntime,
   isInside,
   LaunchedBundle,
   loginProbeEnvironment,
   observeOnDisk,
+  parseRelayCredentials,
+  probeProvider,
+  relayCredentialsBody,
 } from './runtime';
 import { buildWatcherTemplate } from './template';
 
@@ -60,6 +67,7 @@ let dir: string;
 let bundle: string;
 let runtime: InProcessRuntime;
 let home: string | undefined;
+let userProfile: string | undefined;
 let opened: { agentId: string; scope: string; filter: string; signal: AbortSignal }[];
 let attempts: number;
 let failOpens: number;
@@ -95,7 +103,9 @@ async function waitFor(condition: () => boolean, what: string): Promise<void> {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'controller-runtime-'));
   home = process.env.HOME;
+  userProfile = process.env.USERPROFILE;
   process.env.HOME = join(dir, 'home');
+  process.env.USERPROFILE = join(dir, 'home');
   bundle = join(dir, 'fake-bundle.cjs');
   writeFileSync(bundle, FAKE_BUNDLE);
   opened = [];
@@ -108,6 +118,7 @@ beforeEach(() => {
     openStream,
     log: silentLogger,
     crashBackoffMs: 5,
+    box: null,
   });
 });
 
@@ -116,6 +127,8 @@ afterEach(async () => {
   for (const child of children) child.kill('SIGKILL');
   children.length = 0;
   process.env.HOME = home;
+  if (userProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = userProfile;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -192,7 +205,7 @@ describe('InProcessRuntime', () => {
       () => existsSync(join(dir, 'data', 'watchers', 'agent-1', 'health.json')),
       'the health file'
     );
-    expect(await observeOnDisk(dataLayout(join(dir, 'data')), 'agent-1')).toMatchObject({
+    expect(await observeOnDisk(dataLayout(join(dir, 'data')), 'agent-1', null)).toMatchObject({
       alive: true,
       health: { pid: process.pid, current: true },
     });
@@ -323,6 +336,7 @@ describe('InProcessRuntime', () => {
       openStream,
       log: silentLogger,
       crashBackoffMs: 5,
+      box: null,
     });
     const readiness = await checking.probe('codex', '/usr/bin/codex', '/tmp', {
       status: 'connected',
@@ -389,6 +403,84 @@ describe('InProcessRuntime', () => {
       runtime.workingDirectory('agent-1', 'scout', join(dir, 'data', 'workspaces'))
     ).resolves.toBe(join(dir, 'data', 'workspaces'));
   });
+
+  it('refuses the data directory and everything in it but its old workspaces folder', async () => {
+    mkdirSync(join(dir, 'data', 'secrets'), { recursive: true });
+    mkdirSync(join(dir, 'data', 'agents', 'agent-1'), { recursive: true });
+    for (const directory of [
+      join(dir, 'data'),
+      join(dir, 'data', 'secrets'),
+      join(dir, 'data', 'agents', 'agent-1'),
+      join(dir, 'data', 'workspaces', '..', 'secrets'),
+    ])
+      await expect(runtime.workingDirectory('agent-1', 'scout', directory)).rejects.toMatchObject({
+        reason: 'definition_invalid',
+        message: expect.stringContaining('data directory'),
+      });
+    const legacy = join(dir, 'data', 'workspaces', 'scout');
+    expect(await runtime.workingDirectory('agent-1', 'scout', legacy)).toBe(legacy);
+  });
+
+  it('refuses the data directory named from the home directory, as a server can name it', async () => {
+    const root = join(dir, 'home', '.local', 'state', 'switch', 'agent-controller');
+    mkdirSync(join(root, 'secrets'), { recursive: true });
+    const inHome = new InProcessRuntime({
+      layout: dataLayout(root),
+      workspaces: join(dir, 'home', '.switch', 'agents', 'switch.example.com'),
+      bundlePath: bundle,
+      openStream,
+      log: silentLogger,
+      crashBackoffMs: 5,
+      box: null,
+    });
+    await expect(
+      inHome.workingDirectory('agent-1', 'scout', '~/.local/state/switch/agent-controller/secrets')
+    ).rejects.toMatchObject({ reason: 'definition_invalid' });
+    expect(await inHome.workingDirectory('agent-1', 'scout', '~')).toBe(join(dir, 'home'));
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a link that leads into the data directory, wherever it is',
+    async () => {
+      const secrets = join(dir, 'data', 'secrets');
+      mkdirSync(secrets, { recursive: true });
+      mkdirSync(join(dir, 'data', 'workspaces'), { recursive: true });
+      const outside = join(dir, 'looks-harmless');
+      symlinkSync(secrets, outside);
+      await expect(runtime.workingDirectory('agent-1', 'scout', outside)).rejects.toMatchObject({
+        reason: 'definition_invalid',
+        message: expect.stringContaining(`leads to ${realpathSync(secrets)}`),
+      });
+      symlinkSync(secrets, join(dir, 'data', 'workspaces', 'linked'));
+      await expect(
+        runtime.workingDirectory('agent-1', 'scout', join(dir, 'data', 'workspaces', 'linked'))
+      ).rejects.toMatchObject({ reason: 'definition_invalid' });
+      symlinkSync(secrets, join(dir, 'data', 'workspaces', 'scout'));
+      await expect(runtime.workingDirectory('agent-1', 'scout', null)).rejects.toMatchObject({
+        reason: 'definition_invalid',
+      });
+    }
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses the data directory when the controller reaches it through a link',
+    async () => {
+      mkdirSync(join(dir, 'data', 'secrets'), { recursive: true });
+      symlinkSync(join(dir, 'data'), join(dir, 'data-link'));
+      const linked = new InProcessRuntime({
+        layout: dataLayout(join(dir, 'data-link')),
+        workspaces: join(dir, 'workspaces'),
+        bundlePath: bundle,
+        openStream,
+        log: silentLogger,
+        crashBackoffMs: 5,
+        box: null,
+      });
+      await expect(
+        linked.workingDirectory('agent-1', 'scout', join(dir, 'data', 'secrets'))
+      ).rejects.toMatchObject({ reason: 'definition_invalid' });
+    }
+  );
 });
 
 describe('LaunchedBundle', () => {
@@ -421,6 +513,159 @@ describe('LaunchedBundle', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('box mode (InProcessBox)', () => {
+  function fakeBox(overrides: Partial<InProcessBox> = {}): InProcessBox & {
+    watchers: string[];
+    supervised: string[];
+  } {
+    const watchers: string[] = [];
+    const supervised: string[] = [];
+    return {
+      watchers,
+      supervised,
+      watcher: (agentId) => {
+        watchers.push(agentId);
+        return undefined;
+      },
+      supervision: (agentId) => {
+        supervised.push(agentId);
+        return {
+          judge: async () => ({ kind: 'alive' as const }),
+          ticketJudge: async () => ({ kind: 'alive' as const }),
+          selfRestart: true,
+          recordFolder: (path: string) => path,
+          commandLine: async () => null,
+          markStopAsked: async () => {},
+          extraEnv: { SWITCH_TEST_OWNER: agentId },
+        } as unknown as ReturnType<InProcessBox['supervision']>;
+      },
+      recordedOwnerAlive: async () => true,
+      judgeOwnerRecord: async () => ({ kind: 'alive' }),
+      ...overrides,
+    };
+  }
+
+  function boxRuntime(box: InProcessBox): InProcessRuntime {
+    return new InProcessRuntime({
+      layout: dataLayout(join(dir, 'data')),
+      workspaces: join(dir, 'data', 'workspaces'),
+      bundlePath: bundle,
+      openStream,
+      log: silentLogger,
+      crashBackoffMs: 5,
+      box,
+    });
+  }
+
+  it("gives each agent host the box's watcher and supervision halves", async () => {
+    const box = fakeBox();
+    const inBox = boxRuntime(box);
+    await inBox.writeCredentials('agent-1', RELAY);
+    await inBox.launch('agent-1', template(), LAUNCH);
+    await waitFor(() => opened.length === 1, 'the watcher');
+    expect(box.watchers).toEqual(['agent-1']);
+    expect(box.supervised).toEqual(['agent-1']);
+    await inBox.close();
+  });
+
+  it("leaves running an earlier controller's watcher whose record isn't judged alive", async () => {
+    const root = join(dir, 'data', 'watchers', 'agent-1');
+    mkdirSync(join(root, 'supervisor'), { recursive: true });
+    const detached = await fakeWatcher(root);
+    writeFileSync(join(root, 'supervisor', 'owner.json'), JSON.stringify({ pid: detached.pid }));
+    const inBox = boxRuntime(fakeBox({ judgeOwnerRecord: async () => ({ kind: 'reused' }) }));
+    await inBox.writeCredentials('agent-1', RELAY);
+    await inBox.launch('agent-1', template(), LAUNCH);
+    expect(detached.exitCode).toBeNull();
+    expect(detached.signalCode).toBeNull();
+    await inBox.close();
+  });
+
+  it('reads a recorded owner as alive only as the box judges it', async () => {
+    const root = join(dir, 'data', 'watchers', 'agent-1');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'shared-owner.lock'), JSON.stringify({ pid: process.pid }));
+    const layout = dataLayout(join(dir, 'data'));
+    expect((await observeOnDisk(layout, 'agent-1', null)).alive).toBe(true);
+    const stale = fakeBox({ recordedOwnerAlive: async () => false });
+    expect((await observeOnDisk(layout, 'agent-1', stale)).alive).toBe(false);
+  });
+
+  it("round-trips the box's gateway record, and reads a file without one exactly as before", async () => {
+    const gateway = {
+      token: 'swpg_placeholder',
+      provider: 'claude',
+      kind: 'api-key',
+      revision: '3',
+    };
+    const withGateway = relayCredentialsBody('agent-1', { ...RELAY, gateway });
+    expect(parseRelayCredentials(withGateway, 'agent-1')).toEqual({ ...RELAY, gateway });
+    const plain = relayCredentialsBody('agent-1', RELAY);
+    expect(JSON.parse(plain)).not.toHaveProperty('gateway');
+    expect(parseRelayCredentials(plain, 'agent-1')).toEqual(RELAY);
+    const forged = JSON.stringify({
+      ...JSON.parse(plain),
+      gateway: { ...gateway, token: 'not-a-gateway-token' },
+    });
+    expect(parseRelayCredentials(forged, 'agent-1')).toEqual(RELAY);
+  });
+
+  it('answers a provider check the same way, in its own process group', async () => {
+    expect(
+      await probeProvider(bundle, 'claude', '/usr/bin/claude', '/tmp', process.env, { box: true })
+    ).toEqual({
+      status: 'authenticated',
+      message: '--probe claude /tmp /usr/bin/claude',
+      models: [],
+    });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'ends the whole process group of a provider check that runs too long',
+    async () => {
+      const beat = join(dir, 'beat');
+      const cli = join(dir, 'busy-cli.cjs');
+      const slow = join(dir, 'slow-bundle.cjs');
+      writeFileSync(
+        cli,
+        `setInterval(() => require('node:fs').appendFileSync(${JSON.stringify(beat)}, 'x'), 20);`
+      );
+      // A check that starts a CLI of its own, which keeps writing, then never answers.
+      writeFileSync(
+        slow,
+        `require('node:child_process').spawn(process.execPath, [${JSON.stringify(cli)}], { stdio: 'ignore' });
+         setInterval(() => {}, 1000);`
+      );
+      await expect(
+        probeProvider(slow, 'claude', '/usr/bin/claude', '/tmp', process.env, {
+          box: true,
+          timeoutMs: 500,
+        })
+      ).rejects.toThrow('did not finish within 0.5 s');
+      // On a loaded machine the CLI may not have written yet when the check
+      // is ended; a CLI that was missed would still start writing below.
+      const written = () => (existsSync(beat) ? statSync(beat).size : 0);
+      await delay(100);
+      const size = written();
+      await delay(300);
+      expect(written()).toBe(size);
+    }
+  );
+});
+
+describe('clearLeftLoginChecks', () => {
+  it('clears a login check left by a controller stopped in the middle of one', async () => {
+    const left = join(dir, 'data', 'login-check', 'claude', 'provider-home');
+    mkdirSync(left, { recursive: true });
+    writeFileSync(join(left, 'google-credentials.json'), '{}');
+    writeFileSync(join(dir, 'data', 'kept.txt'), 'kept');
+    await clearLeftLoginChecks(join(dir, 'data'));
+    expect(existsSync(join(dir, 'data', 'login-check'))).toBe(false);
+    expect(existsSync(join(dir, 'data', 'kept.txt'))).toBe(true);
+    await clearLeftLoginChecks(join(dir, 'data'));
   });
 });
 

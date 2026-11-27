@@ -528,16 +528,74 @@ describe('SelfUpdater', () => {
     expect(idle.restarts()).toBe(0);
   });
 
-  it('installs another version while idle, older included, and restarts into it', async () => {
+  it('installs a newer version while idle, and restarts into it', async () => {
     const { installer, calls } = recordingInstaller();
     const { self, downloads } = updater({ installer });
     const idle = host();
-    await self.offer({ ...named, version: '0.29.0' }, idle.lent);
-    expect(downloads).toEqual(['0.29.0']);
-    expect(calls).toEqual(['prepare 0.29.0', 'activate 0.29.0']);
+    await self.offer(named, idle.lent);
+    expect(downloads).toEqual(['0.31.0']);
+    expect(calls).toEqual(['prepare 0.31.0', 'activate 0.31.0']);
     expect(idle.restarts()).toBe(1);
     expect(self.status()).toBeNull();
-    expect(existsSync(join(dir, 'download-0.29.0.tgz'))).toBe(false);
+    expect(existsSync(join(dir, 'download-0.31.0.tgz'))).toBe(false);
+  });
+
+  it('refuses an older version, saying why, and downloads nothing', async () => {
+    const { installer, calls } = recordingInstaller();
+    const { self, downloads, attempt } = updater({ installer });
+    const idle = host();
+    await self.offer({ ...named, version: '0.29.0' }, idle.lent);
+    expect(downloads).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(attempt()).toBeNull();
+    expect(idle.restarts()).toBe(0);
+    expect(self.status()).toEqual({
+      target: '0.29.0',
+      state: 'failed',
+      problem: expect.stringContaining('older than the 0.30.0 this controller runs'),
+    });
+  });
+
+  it('orders prereleases by semver: a dev build of the next release is newer, one of this is older', async () => {
+    const { installer } = recordingInstaller();
+    const released = updater({ installer, version: '0.31.0' });
+    await released.self.offer({ ...named, version: '0.31.0-dev.12.gabc1234' }, host().lent);
+    expect(released.downloads).toEqual([]);
+    expect(released.self.status()).toMatchObject({ state: 'failed' });
+    await released.self.offer({ ...named, version: '0.31.1-dev.3.gabc1234' }, host().lent);
+    expect(released.downloads).toEqual(['0.31.1-dev.3.gabc1234']);
+
+    const dev = updater({ installer, version: '0.31.0-dev.12.gabc1234' });
+    await dev.self.offer({ ...named, version: '0.31.0-dev.3.gabc1234' }, host().lent);
+    expect(dev.downloads).toEqual([]);
+    await dev.self.offer({ ...named, version: '0.31.0' }, host().lent);
+    expect(dev.downloads).toEqual(['0.31.0']);
+  });
+
+  it('follows one canary build to the next', async () => {
+    const { installer, calls } = recordingInstaller();
+    const canary = updater({ installer, version: '0.32.0-canary.9' });
+    await canary.self.offer({ ...named, version: '0.32.0-canary.10' }, host().lent);
+    expect(canary.downloads).toEqual(['0.32.0-canary.10']);
+    expect(calls).toEqual(['prepare 0.32.0-canary.10', 'activate 0.32.0-canary.10']);
+    expect(canary.self.status()).toBeNull();
+  });
+
+  it('refuses to rank against a version of its own it cannot read, saying so rather than calling the release older', async () => {
+    const { installer, calls } = recordingInstaller();
+    const { self, downloads, attempt } = updater({ installer, version: '0.30.0+local.1' });
+    const idle = host();
+    await self.offer(named, idle.lent);
+    expect(downloads).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(attempt()).toBeNull();
+    expect(idle.restarts()).toBe(0);
+    const report = self.status();
+    expect(report).toMatchObject({ target: '0.31.0', state: 'failed' });
+    expect(report!.problem).toContain(
+      "This controller's own version, '0.30.0+local.1', cannot be compared with 0.31.0"
+    );
+    expect(report!.problem).not.toContain('older');
   });
 
   it('waits while a session runs, and goes ahead at a later report once none does', async () => {

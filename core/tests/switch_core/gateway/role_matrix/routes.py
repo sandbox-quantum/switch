@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tests.switch_core.gateway.role_matrix.access import (
+    OK,
     Expected,
     admin_by_membership,
     admins,
@@ -91,6 +92,7 @@ ONLY_ORGANIZATION = (
 ROUTES: dict[str, Case] = {
     # ── Agents ───────────────────────────────────────────────────────────
     "GET /gateway/agents": get(f"{G}/agents", anyone()),
+    "GET /gateway/agents/known-types": get(f"{G}/agents/known-types", anyone()),
     "GET /gateway/agents/avatar-settings": get(f"{G}/agents/avatar-settings", anyone()),
     "GET /gateway/agents/icon-choices": get(
         f"{G}/agents/icon-choices", anyone(), name="matrix"
@@ -223,6 +225,20 @@ ROUTES: dict[str, Case] = {
         json={"current_password": "wrong-password", "new_password": "a-new-password-1"},
         why="Your own: refused, the current password being wrong.",
     ),
+    "GET /gateway/auth/me/team-survey": get(f"{G}/auth/me/team-survey", SELF),
+    "PUT /gateway/auth/me/team-survey": put(
+        f"{G}/auth/me/team-survey",
+        anyone(ok=422),
+        json={"company_size": "not a choice"},
+        why="Your own: refused, the answers not being among the choices.",
+    ),
+    "GET /gateway/auth/me/license": get(f"{G}/auth/me/license", SELF),
+    "PUT /gateway/auth/me/license": put(
+        f"{G}/auth/me/license",
+        anyone(ok=409),
+        json={"version": "not-the-current-one"},
+        why="Your own: refused, the version not being the current license's.",
+    ),
     "GET /gateway/auth/me/deletion": get(f"{G}/auth/me/deletion", SELF),
     "DELETE /gateway/auth/me": Case(
         Ask("DELETE", f"{G}/auth/me"),
@@ -231,6 +247,11 @@ ROUTES: dict[str, Case] = {
     ),
     "POST /gateway/auth/me/reset-test-account": Case(
         Ask("POST", f"{G}/auth/me/reset-test-account"),
+        anyone(ok=422),
+        why="Your own: refused without the account's e-mail typed to confirm it.",
+    ),
+    "POST /gateway/auth/me/start-over": Case(
+        Ask("POST", f"{G}/auth/me/start-over"),
         anyone(ok=422),
         why="Your own: refused without the account's e-mail typed to confirm it.",
     ),
@@ -1448,6 +1469,91 @@ ROUTES.update(
     }
 )
 
+# Hosted agents v2's routes. v2 is on only where HOSTED_BOX_PROVISIONING is
+# true, and the matrix's server is a v1 one, so here each answers as if absent:
+# 404 to everyone (`hosted_v2.require_hosted_v2`, mounted on each v2 router
+# in `gateway/app.py`). Who may use each with v2 on is
+# `HOSTED_V2_ROUTES`, which `test_role_matrix_hosted_v2.py` asks of this same
+# gateway with v2 switched on and one persona, the organization admin, on the
+# server's operator list: not a deployment admin, since only the list makes a
+# Switch operator.
+K = "k1-0123456789abcdef"
+REASON = {"reason": "role matrix"}
+V2_OFF = "Hosted agents v2 is off on this server, so the route is as if absent."
+LISTED_OPERATOR = Persona.ORG_ADMIN
+
+
+def listed_operator(ok: Expected = OK) -> dict[Persona, Expected]:
+    """Whoever is on the server's operator list (`require_operator`); everyone
+    else, the deployment admin included, is refused."""
+    return {persona: ok if persona is LISTED_OPERATOR else 403 for persona in Persona}
+
+
+HOSTED_V2_ROUTES: dict[str, Case] = {
+    # Gate: `visibility/guards.py: require_workspace_admin`, an owner or admin
+    # of the bound workspace by their own membership; the organization's admin
+    # and the deployment admin are not. Another workspace's path is refused
+    # too (`test_a_workspace_admin_is_refused_another_workspace`).
+    "PUT /gateway/tenants/{tenant_id}/hosted-people/{user_id}": put(
+        f"{W}/hosted-people/{{member}}",
+        admin_by_membership(),
+        json={"enabled": False, **REASON},
+        why="Workspace admins by membership only (`require_workspace_admin`).",
+    ),
+    # Gate: `visibility/guards.py: require_operator`, the server's operator
+    # list, never an admin role (the deployment admin is refused).
+    "GET /gateway/shared-cloud/overview": get(
+        f"{G}/shared-cloud/overview", listed_operator()
+    ),
+    "GET /gateway/shared-cloud/operators": get(
+        f"{G}/shared-cloud/operators", listed_operator()
+    ),
+    "GET /gateway/shared-cloud/audit-events": get(
+        f"{G}/shared-cloud/audit-events", listed_operator()
+    ),
+    # The same gate; past it, an unknown keyed id is 404, audited first
+    # (`read_views.operator_reveal`, `hosted_access_routes._operator_action`,
+    # `operator_action_routes.restart_box`, `operator_action_routes.drain_machine`).
+    "POST /gateway/shared-cloud/reveal": post(
+        f"{G}/shared-cloud/reveal",
+        listed_operator(ok=404),
+        json={"kind": "user", "keyed_id": K, **REASON},
+        why="Operators only; past that check this keyed id names nobody.",
+    ),
+    "POST /gateway/shared-cloud/users/{user_keyed_id}/pause": post(
+        f"{G}/shared-cloud/users/{K}/pause",
+        listed_operator(ok=404),
+        json=REASON,
+        why="Operators only; past that check this keyed id names nobody.",
+    ),
+    "POST /gateway/shared-cloud/users/{user_keyed_id}/resume": post(
+        f"{G}/shared-cloud/users/{K}/resume",
+        listed_operator(ok=404),
+        json=REASON,
+        why="Operators only; past that check this keyed id names nobody.",
+    ),
+    "POST /gateway/shared-cloud/boxes/{box_keyed_id}/restart": post(
+        f"{G}/shared-cloud/boxes/{K}/restart",
+        listed_operator(ok=404),
+        json=REASON,
+        why="Operators only; past that check this keyed id names no box.",
+    ),
+    "POST /gateway/shared-cloud/machines/{machine_keyed_id}/drain": post(
+        f"{G}/shared-cloud/machines/{K}/drain",
+        listed_operator(ok=409),
+        json=REASON,
+        why=(
+            "Operators only; past that check, a drain first needs a current "
+            "machine list, and with no cluster report it is 409 `report_stale`, "
+            "writing nothing."
+        ),
+    ),
+}
+
+ROUTES.update(
+    {key: Case(case.ask, anyone(404), V2_OFF) for key, case in HOSTED_V2_ROUTES.items()}
+)
+
 # Routes whose answers stream, asked by `test_streams_answer_whom_they_should`.
 STREAMS: dict[str, Case] = {
     "GET /gateway/chats/events": get(f"{G}/chats/events", SELF),
@@ -1461,8 +1567,8 @@ STREAMS: dict[str, Case] = {
 # Routes that take no session, or the hosted controller's token: no persona
 # changes their answer, so each is asked once and must answer the same to all.
 UNAUTHENTICATED: dict[str, str] = {
-    "GET /gateway/agents/known-types": "The agent types any client may register.",
     "GET /gateway/auth/config": "How to sign in, read before anyone has.",
+    "GET /gateway/license": "The license, which sign-up links to before any account exists.",
     "GET /gateway/auth/oidc/callback": "A sign-in coming back from the identity provider.",
     "GET /gateway/auth/oidc/login": "Starting a sign-in.",
     "POST /gateway/auth/oidc/exchange": "Finishing a sign-in with its one-time code.",
@@ -1499,5 +1605,48 @@ UNAUTHENTICATED: dict[str, str] = {
     ),
     "POST /gateway/hosted-controller/machines/{machine_id}/prepare": (
         "The hosted controller's, with its operator token; no session reaches it."
+    ),
+    # Hosted agents v2's machine-to-machine routes, each with its own token.
+    "GET /gateway/hosted-controller/actions": (
+        "The hosted controller's, with its operator token; no session reaches it."
+    ),
+    "POST /gateway/hosted-controller/actions/{action_id}/steps": (
+        "The hosted controller's, with its operator token; no session reaches it."
+    ),
+    "POST /gateway/hosted-controller/cluster": (
+        "The hosted controller's, with its operator token; no session reaches it."
+    ),
+    "POST /gateway/hosted-provisioner/claim": (
+        "The box provisioner's, with its own token; no session reaches it."
+    ),
+    "POST /gateway/hosted-provisioner/actions/{action_id}/result": (
+        "The box provisioner's, with its own token; no session reaches it."
+    ),
+    "GET /gateway/hosted-provisioner/actions/{action_id}": (
+        "The box provisioner's, with its own token; no session reaches it."
+    ),
+    "POST /gateway/hosted-provisioner/actions/{action_id}/steps": (
+        "The box provisioner's, with its own token; no session reaches it."
+    ),
+    "GET /gateway/hosted-provisioner/pool/retiring": (
+        "The warm pool reaper's, with its own token; no session reaches it."
+    ),
+    "POST /gateway/hosted-provisioner/pool/{pool_box_id}/gone": (
+        "The warm pool reaper's, with its own token; no session reaches it."
+    ),
+    "GET /gateway/hosted-controller/pool": (
+        "The hosted controller's, with its own token; no session reaches it."
+    ),
+    "POST /gateway/hosted-provisioner/removals/claim": (
+        "The box provisioner's, with its own token; no session reaches it."
+    ),
+    "POST /gateway/hosted-provisioner/removals/{machine_id}/gone": (
+        "The box provisioner's, with its own token; no session reaches it."
+    ),
+    "GET /gateway/hosted-provisioner/removals/{machine_id}": (
+        "Box removal's remover's, with its own token; no session reaches it."
+    ),
+    "POST /gateway/hosted-provisioner/removals/listed": (
+        "Box removal's remover's, with its own token; no session reaches it."
     ),
 }

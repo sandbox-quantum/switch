@@ -366,7 +366,7 @@ describe("a write refused as invalid", () => {
     ["registerOtherAgent", () => registerOtherAgent("n", "d")],
     ["createApiKey", () => createApiKey("l", 90)],
     ["revealApiKey", () => revealApiKey("k")],
-    ["createBridge", () => createBridge("slack", "n", {})],
+    ["createBridge", () => createBridge("slack", "n", {}, true, false)],
     ["detachLinkedRoom", () => detachLinkedRoom("r1", "r2")],
   ])("%s says what was wrong, not [object Object]", async (_name, send) => {
     respond(422, invalid);

@@ -41,6 +41,7 @@ def _no_ambient_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         "DECISION_TIMEOUT_SECONDS",
         "DECISION_BEDROCK_ENABLED",
         "DECISION_PENDING_MAX_AGE_SECONDS",
+        "DECISION_AUTO_ROUTE_DEFAULT_ON",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -59,9 +60,20 @@ def test_off_by_default_with_nothing_configured() -> None:
     assert config.decision_bedrock_enabled is False
     assert config.decision_pending_max_age_seconds == 120
     assert config.decision_sweep_concurrency == 4
+    assert config.decision_auto_route_default_on is True
     client = build_decision_client(config, _NO_DB, None)
     assert client.availability.enabled is False
+    assert client.availability.rooms_on_by_default is True
     assert client.server.configured is False
+
+
+def test_rooms_can_start_with_auto_route_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DECISION_AUTO_ROUTE_DEFAULT_ON", "false")
+    config = _config(feature_flags_enabled=_BOTH)
+
+    assert config.decision_auto_route_default_on is False
+    client = build_decision_client(config, _NO_DB, None)
+    assert client.availability.rooms_on_by_default is False
 
 
 def test_the_flag_needs_follow_the_conversation() -> None:

@@ -1,3 +1,5 @@
+import { chmod, mkdir, stat } from 'node:fs/promises';
+
 /**
  * Modes for the files and directories an agent host writes into its state.
  *
@@ -37,4 +39,22 @@ export function fileMode(privateMode: number): number {
 export function dirMode(privateMode: number): number {
   if (!sharedGroupEnabled()) return privateMode;
   return privateMode | ((privateMode & 0o700) >> 3);
+}
+
+/**
+ * Creates `directory` private to this user (`dirMode(0o700)`), parents
+ * included, and tightens one an earlier build left open, saying so: a mode
+ * given to `mkdir` does not change a directory that exists. Windows has no
+ * mode bits to tighten.
+ */
+export async function ensurePrivateDirectory(directory: string): Promise<void> {
+  const mode = dirMode(0o700);
+  await mkdir(directory, { recursive: true, mode });
+  if (process.platform === 'win32') return;
+  const current = (await stat(directory)).mode & 0o777;
+  if ((current & ~mode) === 0) return;
+  await chmod(directory, mode);
+  console.warn(
+    `${directory} was readable by other users (mode ${current.toString(8)}); made it ${mode.toString(8)}.`
+  );
 }
