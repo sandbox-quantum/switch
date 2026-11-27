@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.tenant_context import tenant_scope
+
+
+@pytest.fixture(autouse=True)
+def _bound_workspace() -> Iterator[None]:
+    """A workspace bound, as agent authentication binds one before any call."""
+    with tenant_scope("tenant-a"):
+        yield
 
 
 class _FakeSession:
@@ -35,7 +46,7 @@ class _FakeClientLifecycle:
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    def get_by_agent_id(self, _agent_id: str) -> Any:
+    def get_tenant_agent(self, _agent_id: str, _tenant_id: str) -> Any:
         return self._client
 
 
@@ -104,6 +115,7 @@ class _FakeRoomRoleStore:
 
 _ROOM = SimpleNamespace(
     id="room-1",
+    tenant_id="tenant-a",
     name="This Room",
     description="desc",
     transport_room_id="!mx:switch.local",

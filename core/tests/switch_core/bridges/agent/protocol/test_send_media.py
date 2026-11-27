@@ -79,7 +79,7 @@ def _build_service(client: _FakeClient, *, max_bytes: int = 100) -> AgentCore:
     svc.connections = AgentConnectionRegistry()
     svc.require_room_poster = _require  # type: ignore[assignment]
     svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
-        get_by_agent_id=lambda agent_id: client
+        get_tenant_agent=lambda agent_id, tenant_id: client
     )
     svc.config = SimpleNamespace(agent_media_max_bytes=max_bytes)  # type: ignore[assignment]
     svc._resolve_thread_root = _resolve_thread_root  # type: ignore[assignment]

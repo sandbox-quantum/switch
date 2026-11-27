@@ -354,7 +354,7 @@ class Harness:
         """Start every registered agent's client and await readiness.
 
         `start_all` connects each client's actor as a background task; the actor
-        only loads its Agent (so `get_by_agent_id` resolves) once that task has
+        only loads its Agent (so `get_tenant_agent` resolves) once that task has
         run. Poll until each is present and ready before returning.
         """
         await self.client_lifecycle.start_all()
@@ -366,14 +366,14 @@ class Harness:
     async def _await_client(self, agent_id: str, timeout: float) -> AgentActor:
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
-            client = self.client_lifecycle.get_by_agent_id(agent_id)
+            client = self.client_lifecycle.get_tenant_agent(agent_id, TENANT_ZERO_ID)
             if client is not None:
                 return client  # type: ignore[return-value]
             await asyncio.sleep(0.1)
         raise AssertionError(f"No running client for agent {agent_id} after {timeout}s")
 
     def client_for(self, agent_id: str) -> AgentActor:
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
+        client = self.client_lifecycle.get_tenant_agent(agent_id, TENANT_ZERO_ID)
         if client is None:
             raise AssertionError(f"No running client for agent {agent_id}")
         return client  # type: ignore[return-value]

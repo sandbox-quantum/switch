@@ -1793,15 +1793,16 @@ class FakeAgentClient:
 class FakeLifecycle:
     def __init__(self, admin: SystemActor | None) -> None:
         self.admin = admin
-        self.agent_clients: dict[str, FakeAgentClient] = {}
+        # By (tenant, agent): the real registry answers only for the tenant asked.
+        self.agent_clients: dict[tuple[str, str], FakeAgentClient] = {}
 
     def get_by_type(self, client_type: str, tenant_id: str) -> list:
         if self.admin is not None and client_type == "admin":
             return [self.admin]
         return []
 
-    def get_by_agent_id(self, agent_id: str):
-        return self.agent_clients.get(agent_id)
+    def get_tenant_agent(self, agent_id: str, tenant_id: str):
+        return self.agent_clients.get((tenant_id, agent_id))
 
 
 def _with_kickoff(
@@ -1899,7 +1900,7 @@ async def test_provision_kickoff_waits_for_agents_and_reports_the_late(env):
     svc, lifecycle = _with_kickoff(env, admin)
     async with env["session_factory"]() as session:
         agent = await AgentStore().get_by_name(session, "claude-code.alice")
-    lifecycle.agent_clients[agent.id] = FakeAgentClient(joined=False)
+    lifecycle.agent_clients[(agent.tenant_id, agent.id)] = FakeAgentClient(joined=False)
     spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
     result = await svc.provision(
         spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False
@@ -1907,6 +1908,25 @@ async def test_provision_kickoff_waits_for_agents_and_reports_the_late(env):
     assert [f["error"] for f in result.failed_attachments] == [
         "did not join the room in time to see the kickoff: claude-code.alice"
     ]
+    assert len(admin.sent) == 2
+
+
+@pytest.mark.asyncio
+async def test_provision_kickoff_does_not_wait_on_another_tenants_client(env):
+    """A running client of the same agent id under another tenant is not the
+    room's agent, so it is neither waited for nor reported late."""
+    admin = FakeSystemActor()
+    svc, lifecycle = _with_kickoff(env, admin)
+    async with env["session_factory"]() as session:
+        agent = await AgentStore().get_by_name(session, "claude-code.alice")
+    lifecycle.agent_clients[("another-tenant", agent.id)] = FakeAgentClient(
+        joined=False
+    )
+    spec, kickoff = svc.parse(KICKOFF_TEMPLATE, inputs={"coder": "claude-code.alice"})
+    result = await svc.provision(
+        spec, kickoff=kickoff, user_id=env["user_id"], is_admin=False
+    )
+    assert result.failed_attachments == []
     assert len(admin.sent) == 2
 
 

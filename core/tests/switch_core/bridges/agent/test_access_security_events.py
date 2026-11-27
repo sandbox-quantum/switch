@@ -21,7 +21,7 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.logging_context import structured_fields
 from switch_core.security_events import LOGGER_NAME
-from switch_core.tenant_context import bind_tenant_id, unbind_tenant_id
+from switch_core.tenant_context import bind_tenant_id, tenant_scope, unbind_tenant_id
 from switch_core.transport.types import DownloadResult
 
 AGENT = "agent-1"
@@ -83,15 +83,20 @@ async def test_a_file_an_agent_fetches_is_logged_and_a_refused_one_is_not(
     member = AsyncMock()
     core = SimpleNamespace(
         require_room_member=member,
-        client_lifecycle=SimpleNamespace(get_by_agent_id=lambda _agent_id: client),
+        client_lifecycle=SimpleNamespace(
+            get_tenant_agent=lambda _agent_id, _tenant_id: client
+        ),
     )
 
-    await AgentCore.download_media(cast(Any, core), AGENT, "room-1", "switch-media://a")
-    member.side_effect = PermissionError("not a member")
-    with pytest.raises(PermissionError):
+    with tenant_scope(TENANT_ZERO_ID):
         await AgentCore.download_media(
-            cast(Any, core), AGENT, "room-2", "switch-media://b"
+            cast(Any, core), AGENT, "room-1", "switch-media://a"
         )
+        member.side_effect = PermissionError("not a member")
+        with pytest.raises(PermissionError):
+            await AgentCore.download_media(
+                cast(Any, core), AGENT, "room-2", "switch-media://b"
+            )
 
     [event] = _events(caplog, "security.attachment.downloaded")
     assert event["switch"]["agent_id"] == AGENT
