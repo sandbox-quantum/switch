@@ -5273,6 +5273,10 @@ version of their own to them without also giving them a release of their own.
 
 #### Security
 
+- **"Open in" fills a folder's name into the app's command once.** A folder
+  whose name contained placeholder text such as `{{path_raw}}` had its path
+  substituted a second time, unquoted, into the shell command that opens it.
+
 - **A new OpenCode agent asks before it acts.** OpenCode's auto mode has no
   review of its own: it answers every permission request itself, so with it
   on, anyone who can post in the agent's rooms could have commands run on its

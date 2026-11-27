@@ -55,6 +55,25 @@ const OPEN_IN_URL_PROTOCOLS: ReadonlySet<string> = new Set(
  */
 const CMD_METACHARACTERS = /["&|<>^%!]/;
 
+const OPEN_IN_PLACEHOLDER = /\{\{(path|path_raw|path_url)\}\}/g;
+
+/**
+ * Fill every placeholder of an "Open in" template in one pass, so text the
+ * folder name brings with it (a literal `{{path_raw}}`, say) is never itself
+ * read as a placeholder. A template naming a placeholder it is not given
+ * fails rather than running with the text left in.
+ */
+export function fillOpenInTemplate(
+  template: string,
+  values: Partial<Record<'path' | 'path_raw' | 'path_url', string>>
+): string {
+  return template.replace(OPEN_IN_PLACEHOLDER, (placeholder, name: keyof typeof values) => {
+    const value = values[name];
+    if (value === undefined) throw new Error(`"Open in" template has no value for ${placeholder}.`);
+    return value;
+  });
+}
+
 const AUDIO_MIME_TYPES: Record<string, string> = {
   '.aac': 'audio/aac',
   '.flac': 'audio/flac',
@@ -271,7 +290,7 @@ class AppService implements IInitializable, IDisposable {
       // `?` or `#` in a folder name would end the query and change the action.
       const encoded = encodeURIComponent(target);
       for (const urlTemplate of platformConfig.openUrls) {
-        const url = urlTemplate.replace('{{path_url}}', encoded).replace('{{path}}', encoded);
+        const url = fillOpenInTemplate(urlTemplate, { path_url: encoded, path: encoded });
         if (!OPEN_IN_URL_PROTOCOLS.has(new URL(url).protocol)) {
           throw new Error(`Refusing to open ${url}: not a scheme "Open in" uses.`);
         }
@@ -300,7 +319,7 @@ class AppService implements IInitializable, IDisposable {
       );
     }
     const command = commands
-      .map((cmd) => cmd.replace('{{path}}', quoted(target)).replace('{{path_raw}}', target))
+      .map((cmd) => fillOpenInTemplate(cmd, { path: quoted(target), path_raw: target }))
       .join(' || ');
 
     if (!command) throw new Error('Unsupported platform or app');

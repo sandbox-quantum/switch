@@ -69,7 +69,7 @@ vi.mock('@main/utils/childProcessEnv', () => ({
   buildExternalToolEnv: () => ({}),
 }));
 
-const { appService } = await import('./service');
+const { appService, fillOpenInTemplate } = await import('./service');
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 
@@ -188,6 +188,44 @@ describe('AppService.openIn', () => {
 
     expect(mocks.openExternal).toHaveBeenCalledExactlyOnceWith(
       `warp://action/new_window?path=${encodeURIComponent(odd)}`
+    );
+  });
+
+  it('fills a folder name that itself spells a placeholder only once, still quoted', async () => {
+    setPlatform('linux');
+    const tricky = join(home, "a{{path_raw}}'; touch pwned; '{{path}}$(id)");
+    mkdirSync(tricky);
+
+    await appService.openIn({ app: 'vscode', path: tricky });
+
+    const quoted = `'${tricky.replace(/'/g, "'\\''")}'`;
+    expect(mocks.exec).toHaveBeenCalledOnce();
+    expect(mocks.exec.mock.calls[0][0]).toBe(`code ${quoted} || code-insiders ${quoted}`);
+  });
+
+  it('puts a raw Windows path in once, leaving placeholder text in it alone', async () => {
+    const tricky = join(home, 'b{{path}} {{path_url}}');
+    mkdirSync(tricky);
+
+    await appService.openIn({ app: 'athas', path: tricky });
+
+    expect(mocks.exec.mock.calls[0][0]).toBe(`athas "${tricky}"`);
+  });
+});
+
+describe('fillOpenInTemplate', () => {
+  it('replaces every placeholder in one pass, never re-reading what it inserted', () => {
+    expect(
+      fillOpenInTemplate('x {{path}} {{path_raw}} {{path}}', {
+        path: "'{{path_raw}}'",
+        path_raw: '{{path}};rm',
+      })
+    ).toBe("x '{{path_raw}}' {{path}};rm '{{path_raw}}'");
+  });
+
+  it('refuses a template naming a placeholder it was not given', () => {
+    expect(() => fillOpenInTemplate('open {{path_url}}', { path: 'p' })).toThrow(
+      'no value for {{path_url}}'
     );
   });
 });
