@@ -405,6 +405,44 @@ export function sanitiseName(name: string): string {
 
 const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024; // 100 MiB
 
+// The media handles the agent bridge hands out: `switch-media://<id>`, and the
+// `mxc://<server>/<media id>` form older room history still carries. Nothing
+// else is sent on to the bridge, and the id names the local file.
+const MEDIA_URI_RE =
+  /^(?:switch-media:\/\/([A-Za-z0-9_-]{1,128})|mxc:\/\/[A-Za-z0-9.-]{1,255}(?::\d{1,5})?\/([A-Za-z0-9_-]{1,255}))$/;
+
+/** The media id in an attachment handle, or throw if it is not one. */
+export function mediaIdOf(uri: string): string {
+  const match = MEDIA_URI_RE.exec(uri);
+  const id = match?.[1] ?? match?.[2];
+  if (!id) throw new Error(`Not an attachment media URI: ${JSON.stringify(uri.slice(0, 200))}`);
+  return id;
+}
+
+/** The response body, refusing it once it passes `limit` bytes. */
+async function readCapped(resp: Response, limit: number): Promise<Buffer> {
+  const declared = Number(resp.headers.get('content-length') ?? '0');
+  if (declared > limit) {
+    await resp.body?.cancel();
+    throw new Error(`Attachment too large: ${declared} bytes exceeds ${limit}`);
+  }
+  if (!resp.body) return Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const reader = resp.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      throw new Error(`Attachment too large: more than ${limit} bytes`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, total);
+}
+
 /**
  * Fetch an attachment's bytes from the agent bridge (which proxies the Matrix
  * media repo) and write them to a file under `mediaDir`. Throws on error.
@@ -422,6 +460,10 @@ export async function fetchMediaToFile(
   mxc: string,
   destName: string
 ): Promise<string> {
+  mediaIdOf(mxc);
+  if (!destName || destName !== path.basename(destName) || destName === '.' || destName === '..') {
+    throw new Error(`Destination escapes media directory: ${destName}`);
+  }
   const url =
     `${identity.endpoint}/agents/${identity.agentId}/rooms/${encodeURIComponent(roomId)}/media` +
     `?mxc=${encodeURIComponent(mxc)}`;
@@ -431,22 +473,11 @@ export async function fetchMediaToFile(
   if (!resp.ok) {
     throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
   }
-  const lengthHeader = resp.headers.get('content-length');
-  if (lengthHeader && Number(lengthHeader) > MAX_ATTACHMENT_BYTES) {
-    throw new Error(`Attachment too large: ${lengthHeader} bytes exceeds ${MAX_ATTACHMENT_BYTES}`);
-  }
-  const bytes = Buffer.from(await resp.arrayBuffer());
-  if (bytes.length > MAX_ATTACHMENT_BYTES) {
-    throw new Error(`Attachment too large: ${bytes.length} bytes exceeds ${MAX_ATTACHMENT_BYTES}`);
-  }
+  const bytes = await readCapped(resp, MAX_ATTACHMENT_BYTES);
   fs.mkdirSync(mediaDir, { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32' && (fs.statSync(mediaDir).mode & 0o077) !== 0)
     fs.chmodSync(mediaDir, 0o700);
-  const resolvedMedia = path.resolve(mediaDir);
-  const dest = path.join(resolvedMedia, destName);
-  if (!dest.startsWith(resolvedMedia + path.sep) && dest !== resolvedMedia) {
-    throw new Error(`Destination escapes media directory: ${destName}`);
-  }
+  const dest = path.join(mediaDir, destName);
   const partial = `${dest}.${randomUUID()}.partial`;
   const fd = fs.openSync(partial, 'wx', 0o600);
   let written: fs.Stats;
@@ -509,9 +540,8 @@ async function downloadAttachmentTool(
   }
   const roomId = args.room_id ?? ctx.room;
   if (!roomId) return NOT_CONNECTED;
-  const mediaId = mxc.split('/').pop() || 'attachment';
-  const destName = `${sanitiseName(mediaId)}-${sanitiseName(args.filename ?? '')}`;
   try {
+    const destName = `${mediaIdOf(mxc)}-${sanitiseName(args.filename ?? '')}`;
     const written = await fetchMediaToFile(ctx.identity, ctx.mediaDir, roomId, mxc, destName);
     return { content: [{ type: 'text', text: written }] };
   } catch (err) {

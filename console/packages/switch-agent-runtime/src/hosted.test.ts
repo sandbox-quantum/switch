@@ -20,6 +20,7 @@ import {
   callOperation,
   callOperationOutcome,
   fetchMediaToFile,
+  mediaIdOf,
   serveMcpOverHttp,
   SwitchToolCatalog,
   type ToolDefinition,
@@ -421,16 +422,26 @@ describe('the tool catalog', () => {
     ).rejects.toThrow('Destination escapes media directory');
   });
 
-  it('rejects an attachment whose body exceeds the size limit', async () => {
-    const huge = Buffer.alloc(101 * 1024 * 1024);
+  it('stops reading an attachment once it passes the size limit', async () => {
+    const chunk = new Uint8Array(1024 * 1024);
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        sent += 1;
+        controller.enqueue(chunk);
+        if (sent > 200) controller.close();
+      },
+    });
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(huge))
+      vi.fn(async () => new Response(body))
     );
     const ctx = context();
     await expect(
       fetchMediaToFile(ctx.identity, ctx.mediaDir, 'room', 'mxc://s/id', 'big.bin')
     ).rejects.toThrow('Attachment too large');
+    expect(sent).toBeLessThanOrEqual(102);
+    expect(existsSync(join(ctx.mediaDir, 'big.bin'))).toBe(false);
   });
 
   it('rejects an attachment whose Content-Length exceeds the size limit', async () => {
@@ -464,6 +475,73 @@ describe('the tool catalog', () => {
       'https://switch.test/agents/agent/rooms/..%2F..%2Finternal%2Fadmin%2Fcredentials%3F/media'
     );
   });
+});
+
+describe('an attachment handle', () => {
+  it('names its media id', () => {
+    expect(mediaIdOf('switch-media://0123abcd')).toBe('0123abcd');
+    expect(mediaIdOf('mxc://example.org/AbC_d-9')).toBe('AbC_d-9');
+    expect(mediaIdOf('mxc://example.org:8448/media')).toBe('media');
+  });
+
+  it.each([
+    '',
+    'https://internal.example/secret',
+    'mxc://example.org/../../admin',
+    'mxc://example.org/a/b',
+    'mxc://example.org/',
+    'mxc://ex ample.org/id',
+    'mxc://example.org/id?x=1',
+    'switch-media://a/b',
+    'switch-media://../x',
+    'switch-media://',
+    'mxc://example.org/id\n',
+  ])('refuses %j', (uri) => {
+    expect(() => mediaIdOf(uri)).toThrow('Not an attachment media URI');
+  });
+});
+
+describe('fetching an attachment', () => {
+  it('asks nothing of the bridge for a malformed media URI', async () => {
+    const fetchMock = vi.fn(async () => new Response('bytes'));
+    vi.stubGlobal('fetch', fetchMock);
+    const ctx = context();
+    const result = await new SwitchToolCatalog([]).call(ctx, 'download_attachment', {
+      mxc: 'mxc://server/../../agents/other/rooms/x/media',
+      filename: 'a.txt',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain('Not an attachment media URI');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('names the file after the media id and stays in the media directory', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('bytes'))
+    );
+    const ctx = context();
+    const result = await new SwitchToolCatalog([]).call(ctx, 'download_attachment', {
+      mxc: 'switch-media://0123abcd',
+      filename: '../../escape.txt',
+    });
+    const written = result.content[0]!.text;
+    expect(dirname(written)).toBe(ctx.mediaDir);
+    expect(written).toBe(join(ctx.mediaDir, '0123abcd-.._.._escape.txt'));
+  });
+
+  it.each(['sub/name', '..', '.', ''])(
+    'refuses the destination %j before fetching',
+    async (destName) => {
+      const fetchMock = vi.fn(async () => new Response('bytes'));
+      vi.stubGlobal('fetch', fetchMock);
+      const ctx = context();
+      await expect(
+        fetchMediaToFile(ctx.identity, ctx.mediaDir, 'room', 'mxc://s/id', destName)
+      ).rejects.toThrow('Destination escapes media directory');
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe('the loopback MCP server', () => {

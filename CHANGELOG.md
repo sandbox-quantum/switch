@@ -8460,6 +8460,11 @@ The Switch protocol client and MCP runtime
 - **Requires the MCP TypeScript SDK 1.32.2 or later**, past its advisories for
   the Streamable HTTP server transport the session's Switch tools are served
   over.
+- **`download_attachment` takes only a media handle Switch issued**
+  (`switch-media://<id>`, or `mxc://<server>/<id>` from older history) and
+  refuses anything else before asking the server. The room id is escaped in
+  the request path, the file is always written directly inside the media
+  directory, and a download stops at 100 MiB.
 
 ### [0.8.0] - 2026-09-25
 
