@@ -156,6 +156,7 @@ export {
   openHubStream,
 } from './host/hub-stream';
 export { clearTakenOver, readTakenOver, type TakenOver } from './host/taken-over';
+export { parseUntrustedJson, readUntrusted } from './host/untrusted-file';
 export {
   bundleIdentity,
   recordWatcherHealth,

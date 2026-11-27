@@ -7,16 +7,16 @@ import {
   CONTROL_FILE,
   clearTakenOver,
   isSafeId,
+  parseUntrustedJson,
   PROVIDER_ENV_VARS,
+  readUntrusted,
   type ProviderReadiness,
   safeId,
   type SharedHostConfig,
   sessionsBaseIn,
   sharedConfigSchema,
   WATCH_FLAGS_FILE,
-  WATCHER_HEALTH_FILE,
   type WatchFlags,
-  watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
 import { warmOverControlPort } from './control-port';
@@ -35,6 +35,7 @@ import {
   probeProvider,
   probeWithLogin,
   readOptional,
+  readHealth,
   readRoot,
   type RelayCredentials,
   relayCredentialsBody,
@@ -83,6 +84,9 @@ const AGENT_DIR_MODE = 0o770;
 const SHARED_FILE_MODE = 0o640;
 /** In each agent's directory: which agent it holds, so a reused agent user never runs in another's. */
 const AGENT_MARKER = '.switch-agent-id';
+const MAX_MARKER_BYTES = 1024;
+/** The agent host saves its session identity in its configuration, so it is the agent's to write. */
+const MAX_CONFIG_BYTES = 1024 * 1024;
 /** Under the agents' directory: the directories of agents this controller no longer runs. */
 const RELEASED = 'released';
 /** Provider settings naming a path in the controller user's home, which an agent could not reach. */
@@ -343,16 +347,14 @@ export class SystemdRuntime implements AgentRuntime {
     if (!(await isDirectory(root))) return { ...emptyObservation(), alive };
     const onDisk = await readRoot(root);
     let health: AgentObservation['health'] = null;
-    const healthText = await readOptional(join(root, WATCHER_HEALTH_FILE));
-    if (healthText !== null) {
-      const parsed = watcherHealthFileSchema.safeParse(parseJson(healthText));
-      if (parsed.success)
-        health = { ...parsed.data, current: alive && parsed.data.pid === state.mainPid };
-      else
-        this.deps.log.warn('An agent’s health file is not one; ignoring it', {
-          agentId,
-          error: parsed.error.message,
-        });
+    try {
+      const record = await readHealth(root);
+      if (record !== null) health = { ...record, current: alive && record.pid === state.mainPid };
+    } catch (error) {
+      this.deps.log.warn('An agent’s health file cannot be read; ignoring it', {
+        agentId,
+        error: errorMessage(error),
+      });
     }
     const failure =
       onDisk.failure ??
@@ -443,7 +445,11 @@ export class SystemdRuntime implements AgentRuntime {
     const slot = this.claim(agentId);
     const root = agentRoot(this.deps.config, slot);
     if (await isDirectory(root)) {
-      const holder = (await readOptional(join(root, AGENT_MARKER)))?.trim() ?? '';
+      const marker = await readUntrusted(join(root, AGENT_MARKER), {
+        maxBytes: MAX_MARKER_BYTES,
+        within: root,
+      });
+      const holder = marker?.trim() ?? '';
       if (holder !== agentId) {
         if (holder && !isSafeId(holder))
           this.deps.log.warn('An agent directory’s marker names no agent id; setting it aside', {
@@ -526,10 +532,10 @@ export class SystemdRuntime implements AgentRuntime {
    */
   private async writeConfig(watcher: string, template: SharedHostConfig): Promise<void> {
     const path = join(watcher, 'config.json');
-    const text = await readOptional(path);
+    const text = await readUntrusted(path, { maxBytes: MAX_CONFIG_BYTES, within: watcher });
     let config: SharedHostConfig = template;
     if (text !== null) {
-      const saved = sharedConfigSchema.parse(JSON.parse(text));
+      const saved = parseUntrustedJson(text, sharedConfigSchema, path);
       if (
         saved.session.agentId !== template.session.agentId ||
         saved.start.provider !== template.start.provider ||
@@ -608,14 +614,6 @@ async function isDirectory(path: string): Promise<boolean> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
-  }
-}
-
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
   }
 }
 

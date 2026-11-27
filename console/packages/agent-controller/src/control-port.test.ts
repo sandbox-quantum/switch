@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -50,6 +51,33 @@ it('refuses a control file that is a symlink or names more than a port and a tok
   await expect(warmOverControlPort(real, 'room-a')).rejects.toThrow();
   const link = join(dir, 'linked.json');
   symlinkSync(controlFile({ port, token: TOKEN }), link);
-  await expect(warmOverControlPort(link, 'room-a')).rejects.toThrow('not a regular file');
+  await expect(warmOverControlPort(link, 'room-a')).rejects.toThrow('is a link');
+  expect(received).toEqual([]);
+});
+
+it('reports a control file it cannot read without repeating any of it', async () => {
+  const secret = 'SECRET-FROM-ANOTHER-FILE';
+  const garbage = join(dir, 'control.json');
+  writeFileSync(garbage, `not json ${secret}`);
+  const error = await warmOverControlPort(garbage, 'room-a').catch((e: Error) => e);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toContain('is not JSON');
+  expect((error as Error).message).not.toContain(secret);
+
+  writeFileSync(garbage, JSON.stringify({ port: secret, token: secret }));
+  const shaped = await warmOverControlPort(garbage, 'room-a').catch((e: Error) => e);
+  expect((shaped as Error).message).toContain('(at port)');
+  expect((shaped as Error).message).not.toContain(secret);
+});
+
+it('refuses an oversized control file, and a FIFO without waiting on it', async () => {
+  const big = join(dir, 'big.json');
+  writeFileSync(big, ' '.repeat(5000));
+  await expect(warmOverControlPort(big, 'room-a')).rejects.toThrow('larger than');
+  if (process.platform !== 'win32') {
+    const fifo = join(dir, 'fifo.json');
+    execFileSync('mkfifo', [fifo]);
+    await expect(warmOverControlPort(fifo, 'room-a')).rejects.toThrow('not a regular file');
+  }
   expect(received).toEqual([]);
 });

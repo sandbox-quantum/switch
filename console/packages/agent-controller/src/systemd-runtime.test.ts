@@ -6,6 +6,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -269,6 +270,32 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     writeFileSync(health, JSON.stringify({ ...body, pid: 1 }));
     expect((await runtime.observe('agent-1')).health).toMatchObject({ current: false });
     expect(await runtime.observe('agent-never-started')).toMatchObject({ alive: false });
+  });
+
+  it('reads the agent’s records through no link and never repeats one it cannot read', async () => {
+    await start('agent-1');
+    const watcher = join(config.agentsDir, '01', 'watcher');
+    const secret = join(dir, 'controller-secret.json');
+    writeFileSync(secret, JSON.stringify({ message: 'SECRET' }));
+
+    symlinkSync(secret, join(watcher, 'health.json'));
+    rmSync(join(watcher, 'supervisor'), { recursive: true, force: true });
+    symlinkSync(dir, join(watcher, 'supervisor'));
+    writeFileSync(join(dir, 'failure.json'), JSON.stringify({ message: 'SECRET' }));
+    const linked = await runtime.observe('agent-1');
+    expect(linked.health).toBeNull();
+    expect(linked.failure).toContain('could not be read');
+    expect(linked.failure).not.toContain('SECRET');
+
+    rmSync(join(watcher, 'supervisor'));
+    mkdirSync(join(watcher, 'supervisor'));
+    writeFileSync(join(watcher, 'supervisor', 'failure.json'), 'SECRET is not JSON');
+    const garbled = await runtime.observe('agent-1');
+    expect(garbled.failure).toContain('is not JSON');
+    expect(garbled.failure).not.toContain('SECRET');
+
+    writeFileSync(join(watcher, 'supervisor', 'failure.json'), JSON.stringify({ message: 'boom' }));
+    expect((await runtime.observe('agent-1')).failure).toBe('boom');
   });
 
   it('sets a removed agent’s directory aside, frees its user, and gives it back later', async () => {

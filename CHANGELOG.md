@@ -8234,6 +8234,12 @@ tags; see RELEASING.md.
   separator is now refused, and a marker that holds one is set aside as an
   unknown agent's.
 - **Cancelling an attachment upload checks the id**, as on the sidecar.
+- **Reads what an agent can write without following links, and never repeats
+  it.** An agent's health, failure and taken-over records, its configuration
+  and its control file are opened only as small regular files, not through a
+  link at their name or in a folder above them inside the agent's directory.
+  One that cannot be read is reported by why, not by its content, which
+  could otherwise have shown another file's text in the agent's status.
 - **A managed Codex agent keeps the host's own Codex sandbox.** The
   controller used to give every Codex session a sandbox of its own,
   `danger-full-access` under Bypass permissions and `workspace-write`
