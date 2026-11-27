@@ -58,6 +58,7 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     RetireOutcome,
 )
+from switch_core.outbound import OutboundPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +193,10 @@ class GoogleChatAdapter(PlatformAdapter):
         self._tenant_id: str | None = None
         self._bridge_id: str | None = None
 
+    def set_outbound_policy(self, policy: OutboundPolicy) -> None:
+        super().set_outbound_policy(policy)
+        self.auth_manager.set_outbound_policy(policy)
+
     def set_session_factory(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -217,7 +222,12 @@ class GoogleChatAdapter(PlatformAdapter):
             await self.workspace_events_mgr.ensure_space_subscription(space_name)
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         """Verify Service Account parsing, token minting, Pub/Sub subscription access, and Chat API reachability."""
         config = GoogleChatConnectionConfig.model_validate(connection_config)
         auth = GoogleAuthManager(
@@ -226,6 +236,7 @@ class GoogleChatAdapter(PlatformAdapter):
             user_client_secret=config.user_client_secret,
             user_refresh_token=config.user_refresh_token,
         )
+        auth.set_outbound_policy(outbound_policy)
         auth.validate_service_account_structure()
 
         client_kwargs: dict[str, Any] = {}

@@ -61,6 +61,7 @@ from switch_core.bridges.collaboration.whatsapp.formatting import (
     to_markdown,
     to_whatsapp,
 )
+from switch_core.outbound import OutboundPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -282,7 +283,12 @@ class WhatsAppAdapter(PlatformAdapter):
         return f"WhatsApp Meta app {config.app_id}"
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         """Check the token belongs to the app and reaches the phone number.
 
         `app_id` is what an app is claimed by, so it has to be the token's

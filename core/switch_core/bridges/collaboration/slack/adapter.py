@@ -94,6 +94,7 @@ from switch_core.bridges.collaboration.slack.mrkdwn import (
 from switch_core.bridges.collaboration.slack.ui_blocks import ui_spec_to_blocks
 from switch_core.chat_account_links import ACCOUNT_COMMANDS
 from switch_core.clients.mentions import sub_outside_inline_code
+from switch_core.outbound import OutboundPolicy
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
     defuse_mass_mention_words_in_prose,
@@ -783,7 +784,12 @@ class SlackAdapter(PlatformAdapter):
         return f"Slack workspace {connection_config['workspace_id']}"
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         """Check the bot token works and belongs to the configured workspace.
 
         `workspace_id` is what a workspace is claimed by, so it has to be the

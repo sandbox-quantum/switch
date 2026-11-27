@@ -61,7 +61,11 @@ from switch_core.bridges.collaboration.models import (
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import request_summary
-from switch_core.outbound import OutboundPolicy, guarded_async_client
+from switch_core.outbound import (
+    OutboundPolicy,
+    OutboundURLRefused,
+    guarded_async_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -213,16 +217,26 @@ class ZulipAdapter(PlatformAdapter):
     # ── Who we are ───────────────────────────────────────────────────────────
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         config = ZulipConnectionConfig.model_validate(connection_config)
-        # `server_url` has passed the outbound policy just before this is
-        # called; a running bridge connects through the guarded client.
-        async with _verify_client(config) as http:
+        # Through the guarded client, as a running bridge connects: checking
+        # `server_url` once and then letting a plain client resolve it again
+        # would let the name point somewhere else before the API key is sent.
+        async with _client(config, outbound_policy) as http:
             try:
                 me = await _call(http, "GET", "/api/v1/users/me")
             except ZulipError as exc:
                 raise BridgeCredentialError(
                     f"Zulip refused the bot: {exc.msg}"
+                ) from exc
+            except OutboundURLRefused as exc:
+                raise BridgeCredentialError(
+                    f"Switch may not connect to Zulip at {config.server_url}: {exc}"
                 ) from exc
             except httpx.HTTPError as exc:
                 raise BridgeCredentialError(
@@ -1041,15 +1055,6 @@ def _client(config: ZulipConnectionConfig, policy: OutboundPolicy) -> httpx.Asyn
         base_url=config.server_url,
         auth=(config.bot_email, config.api_key),
         timeout=httpx.Timeout(30.0),
-    )
-
-
-def _verify_client(config: ZulipConnectionConfig) -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        base_url=config.server_url,
-        auth=(config.bot_email, config.api_key),
-        timeout=httpx.Timeout(30.0),
-        trust_env=False,
     )
 
 

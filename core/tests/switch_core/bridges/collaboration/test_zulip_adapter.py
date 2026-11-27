@@ -95,7 +95,7 @@ def server(monkeypatch: pytest.MonkeyPatch) -> Zulip:
     fake = Zulip()
 
     def client(
-        config: ZulipConnectionConfig, policy: OutboundPolicy | None = None
+        config: ZulipConnectionConfig, policy: OutboundPolicy
     ) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=config.server_url,
@@ -109,7 +109,6 @@ def server(monkeypatch: pytest.MonkeyPatch) -> Zulip:
         )
 
     monkeypatch.setattr(zulip, "_client", client)
-    monkeypatch.setattr(zulip, "_verify_client", client)
     monkeypatch.setattr(zulip, "_download_client", download_client)
     fake.on(
         "GET",
@@ -217,7 +216,9 @@ def test_the_server_url_is_what_the_outbound_policy_checks() -> None:
 
 
 async def test_a_bots_credentials_are_accepted(server: Zulip) -> None:
-    await ZulipAdapter.verify_credentials(CONFIG)
+    await ZulipAdapter.verify_credentials(
+        CONFIG, outbound_policy=OutboundPolicy.parse("")
+    )
     assert len(server.sent("GET", "/api/v1/users/me")) == 1
 
 
@@ -235,7 +236,9 @@ async def test_a_wrong_key_is_refused_in_zulips_own_words(server: Zulip) -> None
         ),
     )
     with pytest.raises(BridgeCredentialError, match="Malformed API key"):
-        await ZulipAdapter.verify_credentials(CONFIG)
+        await ZulipAdapter.verify_credentials(
+            CONFIG, outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_a_persons_credentials_are_refused_with_how_to_make_a_bot(
@@ -247,7 +250,9 @@ async def test_a_persons_credentials_are_refused_with_how_to_make_a_bot(
         lambda r: _ok(user_id=PERSON_ID, full_name="Test Person", is_bot=False),
     )
     with pytest.raises(BridgeCredentialError, match="generic bot"):
-        await ZulipAdapter.verify_credentials(CONFIG)
+        await ZulipAdapter.verify_credentials(
+            CONFIG, outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 def test_failures_are_classified_from_their_types() -> None:
@@ -526,6 +531,34 @@ async def test_a_start_that_fails_closes_its_client(server: Zulip) -> None:
         await adapter.start(ignore, ignore, ignore, ignore, ignore)
     assert adapter._http is not None
     assert adapter._http.is_closed
+
+
+async def test_verification_connects_through_the_policy_it_is_given(
+    server: Zulip, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = zulip._client
+    policies: list[OutboundPolicy] = []
+
+    def recording(
+        config: ZulipConnectionConfig, policy: OutboundPolicy
+    ) -> httpx.AsyncClient:
+        policies.append(policy)
+        return built(config, policy)
+
+    monkeypatch.setattr(zulip, "_client", recording)
+    policy = OutboundPolicy.parse("10.0.0.0/8")
+    await ZulipAdapter.verify_credentials(CONFIG, outbound_policy=policy)
+    assert policies == [policy]
+
+
+async def test_verification_refuses_a_server_the_policy_does_not_allow() -> None:
+    """Not monkeypatched: the real guarded client refuses the address before
+    connecting, so the API key never leaves."""
+    with pytest.raises(BridgeCredentialError, match="Switch may not connect"):
+        await ZulipAdapter.verify_credentials(
+            {**CONFIG, "server_url": "https://169.254.169.254"},
+            outbound_policy=OutboundPolicy.parse(""),
+        )
 
 
 def test_the_api_client_is_held_to_the_outbound_policy() -> None:

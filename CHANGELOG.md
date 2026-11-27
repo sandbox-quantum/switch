@@ -78,12 +78,13 @@ version of their own to them without also giving them a release of their own.
   `https://oauth2.googleapis.com/token`, or
   `https://accounts.google.com/o/oauth2/token` in older keys.** Any other value in the uploaded
   JSON is refused when the bridge is saved, instead of Switch posting a signed
-  assertion to it. The token request goes through the outbound address guard,
-  and a refusal names only the status and Google's error code, not the
-  response body.
-- **A running Zulip bridge reaches its server only through the outbound
-  address guard**, as its file downloads already did, so the server's name
-  cannot be pointed at an internal or metadata address after it was checked.
+  assertion to it. The token request goes through the outbound address guard
+  under the deployment's `OUTBOUND_ALLOWED_PRIVATE_HOSTS`, and a refusal names
+  only the status and Google's error code, not the response body.
+- **A Zulip bridge reaches its server only through the outbound address
+  guard**, when its credentials are checked as well as while it runs, as its
+  file downloads already did, so the server's name cannot be pointed at an
+  internal or metadata address after it was checked.
   A message's file link is fetched only when it has the shape of a Zulip
   upload (`/user_uploads/<realm>/…/<name>`); any other is reported as a file
   that could not be relayed.

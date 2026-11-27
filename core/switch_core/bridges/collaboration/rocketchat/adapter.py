@@ -54,7 +54,7 @@ from switch_core.bridges.collaboration.rocketchat.rest import (
     RocketChatApiError,
     RocketChatRest,
 )
-from switch_core.outbound import guarded_async_client
+from switch_core.outbound import OutboundPolicy, guarded_async_client
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +241,12 @@ class RocketChatAdapter(PlatformAdapter):
     activity_reactions_per_agent: ClassVar[bool] = False
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         """Ask Rocket.Chat who the token belongs to (`me`), as `start` will.
 
         `server_url` has been through the outbound policy before this is

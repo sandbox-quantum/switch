@@ -49,14 +49,6 @@ def validate_token_uri(token_uri: str) -> None:
         )
 
 
-def _token_http_client() -> GuardedAsyncClient:
-    # The token endpoint is a fixed public host, so no operator-listed private
-    # address is ever needed: an empty policy allows public addresses only.
-    return guarded_async_client(
-        OutboundPolicy.parse(""), timeout=_TOKEN_REQUEST_TIMEOUT_SECONDS
-    )
-
-
 def _oauth_rejection(resp: httpx.Response, what: str) -> BridgeCredentialError:
     """The error for a refused token request, naming Google's error code but
     never echoing the response body."""
@@ -94,6 +86,7 @@ class GoogleAuthManager:
         self._user_refresh_token = user_refresh_token
         self._scopes = scopes
         self._http_client = http_client
+        self._outbound_policy: OutboundPolicy | None = None
 
         self._client_email: str = str(service_account_info.get("client_email") or "")
         self._private_key_raw: str = str(service_account_info.get("private_key") or "")
@@ -107,6 +100,20 @@ class GoogleAuthManager:
         self._user_token: str | None = None
         self._user_token_expiry: float = 0.0
         self._lock = asyncio.Lock()
+
+    def set_outbound_policy(self, policy: OutboundPolicy) -> None:
+        """The deployment's outbound policy, which the token requests are held
+        to. Set before the first token is asked for."""
+        self._outbound_policy = policy
+
+    def _token_http_client(self) -> GuardedAsyncClient:
+        if self._outbound_policy is None:
+            raise RuntimeError(
+                "Google OAuth token requested before the outbound policy was set"
+            )
+        return guarded_async_client(
+            self._outbound_policy, timeout=_TOKEN_REQUEST_TIMEOUT_SECONDS
+        )
 
     @property
     def client_email(self) -> str:
@@ -194,7 +201,7 @@ class GoogleAuthManager:
             close_client = False
             client = self._http_client
             if client is None:
-                client = _token_http_client()
+                client = self._token_http_client()
                 close_client = True
 
             try:
@@ -254,7 +261,7 @@ class GoogleAuthManager:
             close_client = False
             client = self._http_client
             if client is None:
-                client = _token_http_client()
+                client = self._token_http_client()
                 close_client = True
 
             try:

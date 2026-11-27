@@ -39,7 +39,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     OutboundAttachment,
 )
-from switch_core.outbound import GuardedAsyncClient
+from switch_core.outbound import GuardedAsyncClient, OutboundPolicy
 from switch_core.sessions.contract import (
     ApprovalContent,
     ApprovalOption,
@@ -193,6 +193,8 @@ class TestGoogleChatConfigurationAndCredentials:
     async def test_token_request_goes_through_the_guarded_client(self) -> None:
         sa_info = {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
         auth = GoogleAuthManager(sa_info)
+        policy = OutboundPolicy.parse("10.0.0.0/8")
+        auth.set_outbound_policy(policy)
         seen: list[httpx.AsyncClient] = []
 
         async def fake_post(
@@ -205,6 +207,44 @@ class TestGoogleChatConfigurationAndCredentials:
             assert await auth.get_service_account_token() == "tok"
         assert len(seen) == 1
         assert isinstance(seen[0], GuardedAsyncClient)
+        assert seen[0].policy is policy
+
+    @pytest.mark.asyncio
+    async def test_no_token_is_requested_before_the_policy_is_set(self) -> None:
+        sa_info = {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
+        auth = GoogleAuthManager(sa_info)
+        with pytest.raises(RuntimeError, match="outbound policy"):
+            await auth.get_service_account_token()
+
+    def test_the_adapter_hands_its_policy_to_the_auth_manager(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        policy = OutboundPolicy.parse("10.0.0.0/8")
+        adapter.set_outbound_policy(policy)
+        assert adapter.outbound_policy is policy
+        client = adapter.auth_manager._token_http_client()
+        assert client.policy is policy
+
+    @pytest.mark.asyncio
+    async def test_verification_requests_its_token_under_the_policy_given(
+        self,
+    ) -> None:
+        policy = OutboundPolicy.parse("10.0.0.0/8")
+        seen: list[httpx.AsyncClient] = []
+
+        async def fake_post(
+            self: httpx.AsyncClient, url: str, **_: Any
+        ) -> httpx.Response:
+            seen.append(self)
+            return httpx.Response(401, json={"error": "invalid_grant"})
+
+        with (
+            patch.object(GuardedAsyncClient, "post", fake_post),
+            pytest.raises(BridgeCredentialError, match="invalid_grant"),
+        ):
+            await GoogleChatAdapter.verify_credentials(
+                _make_config().model_dump(), outbound_policy=policy
+            )
+        assert [client.policy for client in seen] == [policy]  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_oauth_rejection_does_not_echo_the_body(self) -> None:
@@ -288,7 +328,9 @@ class TestGoogleChatConfigurationAndCredentials:
             ),
         ):
             # Should succeed with no exception
-            await GoogleChatAdapter.verify_credentials(cfg.model_dump())
+            await GoogleChatAdapter.verify_credentials(
+                cfg.model_dump(), outbound_policy=OutboundPolicy.parse("")
+            )
 
     @pytest.mark.asyncio
     async def test_verify_credentials_fails_on_missing_subscription(self) -> None:
@@ -310,7 +352,9 @@ class TestGoogleChatConfigurationAndCredentials:
             with pytest.raises(
                 BridgeCredentialError, match="Pub/Sub subscription not found"
             ):
-                await GoogleChatAdapter.verify_credentials(cfg.model_dump())
+                await GoogleChatAdapter.verify_credentials(
+                    cfg.model_dump(), outbound_policy=OutboundPolicy.parse("")
+                )
 
     @pytest.mark.asyncio
     async def test_verify_credentials_fails_on_disabled_chat_api(self) -> None:
@@ -336,7 +380,9 @@ class TestGoogleChatConfigurationAndCredentials:
             with pytest.raises(
                 BridgeCredentialError, match="Google Chat API check failed"
             ):
-                await GoogleChatAdapter.verify_credentials(cfg.model_dump())
+                await GoogleChatAdapter.verify_credentials(
+                    cfg.model_dump(), outbound_policy=OutboundPolicy.parse("")
+                )
 
     def test_classify_failure(self) -> None:
         assert (

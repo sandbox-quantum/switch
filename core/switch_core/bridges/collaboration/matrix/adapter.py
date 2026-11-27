@@ -108,7 +108,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     turn_status,
 )
 from switch_core.clients.mentions import mention_regex
-from switch_core.outbound import guarded_async_client
+from switch_core.outbound import OutboundPolicy, guarded_async_client
 
 logger = logging.getLogger(__name__)
 
@@ -444,7 +444,12 @@ class MatrixAdapter(PlatformAdapter):
         return f"Matrix account {str(connection_config['bot_user_id']).casefold()}"
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         """Ask the homeserver whose token this is (`/account/whoami`).
 
         It has to be `bot_user_id`'s, since that is what the connection
