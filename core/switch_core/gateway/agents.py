@@ -398,6 +398,7 @@ async def delete_agent(
 
 @router.get("/known-types")
 async def list_known_agent_types(
+    _user: Annotated[User, Depends(get_current_user)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> list[KnownAgentType]:
     return [

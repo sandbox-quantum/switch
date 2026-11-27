@@ -300,6 +300,9 @@ type FetchOptions = {
   body?: unknown;
   /** A multipart body, sent as is; `fetch` sets its boundary. Excludes `body`. */
   formData?: FormData;
+  /** The route answers with a file someone uploaded, of any type, so a page
+   * that comes back successfully is that file, not another server answering. */
+  servesFiles?: true;
 };
 
 /**
@@ -448,7 +451,7 @@ export async function gatewayRequest(
     if (options.authenticated) noteSessionEnded(server.id);
     throw new GatewayError('unauthorized', 'Switch session expired — please sign in again.', 401);
   }
-  if (answeredWithPage(response)) {
+  if (answeredWithPage(response, options.servesFiles === true)) {
     throw new NoManagementApiError(server.name, server.url, response.status);
   }
   // Only a call made without a session can blame the address: a signed-in
@@ -471,10 +474,11 @@ function isHtmlResponse(response: Response): boolean {
  * answer the management API gives is JSON, its 404 included, so a page that
  * comes back successfully (a catch-all serving a web app) or as a 404 (a proxy
  * with no route for the path) is not from it. A proxy's 502 page means the
- * server is down, which the caller reports as it is.
+ * server is down, which the caller reports as it is. A route that serves
+ * uploaded files answers a page that someone uploaded with 200.
  */
-function answeredWithPage(response: Response): boolean {
-  return isHtmlResponse(response) && (response.ok || response.status === 404);
+function answeredWithPage(response: Response, servesFiles: boolean): boolean {
+  return isHtmlResponse(response) && ((response.ok && !servesFiles) || response.status === 404);
 }
 
 /** The `retryable` beside `detail` in a coded refusal, or undefined without one. */

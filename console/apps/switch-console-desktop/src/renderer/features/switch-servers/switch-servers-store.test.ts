@@ -397,7 +397,7 @@ describe('adding the first server', () => {
     addServer.mockResolvedValue(server('a'));
     listServers.mockResolvedValue([server('a')]);
     installIsEmpty.mockResolvedValue(false);
-    await store.addServer('a', 'https://a.example.com');
+    await store.addServer('a', 'https://a.example.com', false);
 
     expect(store.installIsEmpty).toBe(false);
   });
@@ -780,7 +780,7 @@ describe('keeping a server active', () => {
     addServer.mockResolvedValue(created);
     listServers.mockResolvedValue([created]);
 
-    await store.addServer('New', created.url);
+    await store.addServer('New', created.url, false);
 
     expect(store.activeServerId).toBe('srv-new');
   });
@@ -795,7 +795,7 @@ describe('keeping a server active', () => {
     addServer.mockResolvedValue(created);
     listServers.mockResolvedValue([server('srv-a'), created]);
 
-    await store.addServer('B', created.url);
+    await store.addServer('B', created.url, false);
 
     expect(store.activeServerId).toBe('srv-a');
   });

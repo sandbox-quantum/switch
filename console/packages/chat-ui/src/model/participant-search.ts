@@ -1,3 +1,5 @@
+import { chatAgentNaming } from '../contracts/chats';
+
 /**
  * Someone who can be put in a new room: an agent, or a person. A person from
  * the workspace has their Switch user id as `id`; one from a messaging app has
@@ -8,17 +10,25 @@ export type Participant =
   | { kind: 'agent'; id: string; name: string; iconUrl: string | null; detail: string }
   | { kind: 'person'; id: string; name: string; detail: string; userIds?: string[] };
 
-/** An agent the workspace lists, as a participant; `provider` names what runs it. */
+/**
+ * An agent the workspace lists, as a participant; `provider` names what runs
+ * it. Named as a chat names it (`chatAgentNaming`): a display name that
+ * differs from its unique name has the unique name in its detail, where it
+ * can be searched for too, and one that reads as switch-buddy's is shown only
+ * for the person's own buddy (`ownBuddy`).
+ */
 export function agentParticipant(
   agent: { id: string; name: string; displayName: string | null; iconUrl: string | null },
-  provider: string
+  provider: string,
+  ownBuddy: boolean
 ): Participant {
+  const { label, uniqueName } = chatAgentNaming(agent, ownBuddy);
   return {
     kind: 'agent',
     id: agent.id,
-    name: agent.displayName ?? agent.name,
+    name: label,
     iconUrl: agent.iconUrl,
-    detail: `Agent · ${provider}`,
+    detail: uniqueName === null ? `Agent · ${provider}` : `@${uniqueName} · Agent · ${provider}`,
   };
 }
 

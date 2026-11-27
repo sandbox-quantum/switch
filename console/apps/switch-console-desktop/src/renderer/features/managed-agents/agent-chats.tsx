@@ -195,6 +195,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
     <div className="flex h-full min-h-0">
       <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
         <AgentProfile
+          agentId={agent.agentId}
           name={managedAgentLabel(agent)}
           iconUrl={agent.iconUrl}
           serverId={serverId}

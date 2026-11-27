@@ -1,10 +1,12 @@
 import { homedir } from 'node:os';
 import type { PluginFs } from '@switch-console/core/agents/plugins';
+import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { createPluginFs } from '@main/core/providers/plugin-fs';
 import { createRemotePluginFs } from '@main/core/providers/remote-plugin-fs';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
+import { type GitIgnoreCheck, localGitIgnoreCheck, remoteGitIgnoreCheck } from './git-ignore-check';
 
 /**
  * A {@link PluginFs} rooted at an agent's working directory (local disk or a
@@ -17,6 +19,8 @@ export type WorkdirFs = {
   fs: PluginFs;
   /** FS for user-scoped (`~/.claude`) definitions; empty for remote agents. */
   homeFs: PluginFs;
+  /** Asks git, where the working dir is, whether a path in it is ignored. */
+  ignored: GitIgnoreCheck;
   close: () => void;
 };
 
@@ -42,9 +46,23 @@ const EMPTY_PLUGIN_FS: PluginFs = {
  */
 export async function resolveWorkdirFsFor(sshHost: string | null, dir: string): Promise<WorkdirFs> {
   if (sshHost === null) {
-    return { fs: createPluginFs(dir), homeFs: createPluginFs(homedir()), close: () => {} };
+    return {
+      fs: createPluginFs(dir),
+      homeFs: createPluginFs(homedir()),
+      ignored: localGitIgnoreCheck(dir),
+      close: () => {},
+    };
   }
   const proxy = await ensureSshConnected(sshConnectionIdForHost(sshHost), sshHost);
   const sshFs = new SshFileSystem(proxy, dir);
-  return { fs: createRemotePluginFs(sshFs), homeFs: EMPTY_PLUGIN_FS, close: () => sshFs.close() };
+  const exec = new SshExecutionContext(proxy);
+  return {
+    fs: createRemotePluginFs(sshFs),
+    homeFs: EMPTY_PLUGIN_FS,
+    ignored: remoteGitIgnoreCheck(exec, dir),
+    close: () => {
+      sshFs.close();
+      exec.dispose();
+    },
+  };
 }

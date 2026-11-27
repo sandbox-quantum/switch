@@ -555,7 +555,7 @@ const credentials: MigrationCredentialsPort = {
     }
     const workdir = await resolveWorkdirFsFor(agent.sshHost, agent.dir);
     try {
-      await writeNeutralAgentSettingsFs(workdir.fs, {
+      await writeNeutralAgentSettingsFs(workdir, {
         slug: identity.slug,
         apiEndpoint: endpoint,
         apiToken: token,
@@ -763,13 +763,6 @@ export const agentMigrationService = new AgentMigrationService({
         workspaceId: agent.workspaceId,
         sshHost: agent.sshHost,
       }),
-    enable: async (agent) => {
-      if (!agent.serverId || !agent.workspaceId)
-        throw new Error(`${agent.name} is not on a Switch workspace.`);
-      if (agent.sshHost)
-        await hostControllerService.enable(agent.sshHost, agent.serverId, agent.workspaceId);
-      else await embeddedControllerService.enable(agent.serverId, agent.workspaceId);
-    },
     heal: (agent) => healMachine(agent),
   },
   management,

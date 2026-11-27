@@ -6,7 +6,8 @@ import {
   type ChatAgent,
   type ChatCommand,
   type ChatMessage,
-  chatAgentLabel,
+  chatAgentNameText,
+  chatAgentNaming,
   requestIdOfClientTxn,
 } from '../contracts/chats';
 import { AgentAvatar, useChatHost } from '../host';
@@ -120,6 +121,26 @@ const CONTROL_LABEL: Record<ControlRequest['command'], string> = {
 };
 
 const CONTEXT_BLOCKED = 'Waiting for the previous command to be sent.';
+
+/** An agent in the mention list, named as the chat's rows name it (`chatAgentNaming`). */
+const MentionAgentName = observer(function MentionAgentName({
+  agent,
+  serverId,
+}: {
+  agent: ChatAgent;
+  serverId: string;
+}) {
+  const { isOwnBuddy } = useChatHost();
+  const { label, uniqueName } = chatAgentNaming(agent, isOwnBuddy(serverId, agent.id));
+  return (
+    <>
+      <span className="truncate">{label}</span>
+      {uniqueName !== null && (
+        <span className="truncate text-xs text-foreground-passive">@{uniqueName}</span>
+      )}
+    </>
+  );
+});
 
 /**
  * Where each Stop, Reset or Compact sent from here stands: being posted,
@@ -394,10 +415,11 @@ export const ChatComposer = observer(function ChatComposer({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [host]);
   const agent = agents[0] ?? null;
-  const recipient = groupName ?? (agent ? chatAgentLabel(agent) : 'the agent');
+  const nameOf = (each: ChatAgent) => chatAgentNameText(each, host.isOwnBuddy(serverId, each.id));
+  const recipient = groupName ?? (agent ? nameOf(agent) : 'the agent');
   const labelOf = (activity: AgentActivity) => {
     const owner = agents.find((each) => each.id === activity.agentId);
-    return owner ? chatAgentLabel(owner) : 'the agent';
+    return owner ? nameOf(owner) : 'the agent';
   };
   const group = activities.length > 1;
   const stopActivities = activities.filter((activity) => activity.runningTurn);
@@ -686,12 +708,13 @@ export const ChatComposer = observer(function ChatComposer({
                       ) : each.kind === 'agent' ? (
                         <>
                           <AgentAvatar
+                            agentId={each.agent.id}
                             name={each.agent.name}
                             iconUrl={each.agent.iconUrl}
                             serverId={serverId}
                             size={20}
                           />
-                          <span className="truncate">{chatAgentLabel(each.agent)}</span>
+                          <MentionAgentName agent={each.agent} serverId={serverId} />
                           {each.agent.alias && (
                             <span className="truncate text-xs text-foreground-muted">
                               @{each.agent.alias}
@@ -882,6 +905,7 @@ export const ChatComposer = observer(function ChatComposer({
                         >
                           {owner && (
                             <AgentAvatar
+                              agentId={owner.id}
                               name={owner.name}
                               iconUrl={owner.iconUrl}
                               serverId={serverId}

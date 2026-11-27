@@ -135,9 +135,6 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # What a signed-in caller's session resolves to — including that it
     # resolves to no workspace, which is the answer a caller with none needs.
     ("GET", "/auth/session"),
-    # A deployment-wide constant — the agent types this build knows about.
-    # Nothing tenant-specific to scope it to.
-    ("GET", "/known-types"),
     # A caller with several memberships and no selection cannot reach
     # `get_current_user` by construction, and these are the routes such a
     # caller needs: list the workspaces, make one, pick one.

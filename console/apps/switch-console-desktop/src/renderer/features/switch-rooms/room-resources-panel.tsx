@@ -19,10 +19,10 @@ import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { openContentLink } from '@renderer/lib/content-link';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { openExternalUrl } from '@renderer/lib/open-external';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import type { RoomResource, RoomResourceKind } from '@shared/core/switch-servers/switch-servers';
 import { useRoomDetail } from './room-participants';
@@ -248,7 +248,7 @@ const ResourceSection = observer(function ResourceSection({
                   via={resource.packageIds.flatMap((id) => packageNames.get(id) ?? [])}
                   onOpen={
                     resource.urls[0]
-                      ? () => void openExternalUrl(resource.urls[0]!, 'Could not open the link')
+                      ? () => openContentLink(resource.urls[0])
                       : kind === 'documents'
                         ? () => setReading(resource)
                         : // A package has nothing to read here: its page shows what it holds,
@@ -332,6 +332,15 @@ const ResourceSection = observer(function ResourceSection({
   );
 });
 
+/** Where a link goes, as the row shows it under the name someone gave it. */
+export function linkHost(url: string): string {
+  try {
+    return new URL(url).host || url;
+  } catch {
+    return url;
+  }
+}
+
 function ResourceRow({
   resource,
   via,
@@ -359,6 +368,7 @@ function ResourceRow({
   const Icon =
     resource.kind === 'packages' ? Package : resource.kind === 'documents' ? FileText : Link2;
   const meta = [
+    resource.urls[0] ? linkHost(resource.urls[0]) : null,
     resource.typeLabel,
     resource.createdByAgentName ? `by ${resource.createdByAgentName}` : null,
     ...via.map((name) => `via ${name}`),

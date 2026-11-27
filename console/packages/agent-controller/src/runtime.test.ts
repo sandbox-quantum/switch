@@ -5,8 +5,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -60,6 +62,7 @@ let dir: string;
 let bundle: string;
 let runtime: InProcessRuntime;
 let home: string | undefined;
+let userProfile: string | undefined;
 let opened: { agentId: string; scope: string; filter: string; signal: AbortSignal }[];
 let attempts: number;
 let failOpens: number;
@@ -95,7 +98,9 @@ async function waitFor(condition: () => boolean, what: string): Promise<void> {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'controller-runtime-'));
   home = process.env.HOME;
+  userProfile = process.env.USERPROFILE;
   process.env.HOME = join(dir, 'home');
+  process.env.USERPROFILE = join(dir, 'home');
   bundle = join(dir, 'fake-bundle.cjs');
   writeFileSync(bundle, FAKE_BUNDLE);
   opened = [];
@@ -116,6 +121,8 @@ afterEach(async () => {
   for (const child of children) child.kill('SIGKILL');
   children.length = 0;
   process.env.HOME = home;
+  if (userProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = userProfile;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -389,6 +396,82 @@ describe('InProcessRuntime', () => {
       runtime.workingDirectory('agent-1', 'scout', join(dir, 'data', 'workspaces'))
     ).resolves.toBe(join(dir, 'data', 'workspaces'));
   });
+
+  it('refuses the data directory and everything in it but its old workspaces folder', async () => {
+    mkdirSync(join(dir, 'data', 'secrets'), { recursive: true });
+    mkdirSync(join(dir, 'data', 'agents', 'agent-1'), { recursive: true });
+    for (const directory of [
+      join(dir, 'data'),
+      join(dir, 'data', 'secrets'),
+      join(dir, 'data', 'agents', 'agent-1'),
+      join(dir, 'data', 'workspaces', '..', 'secrets'),
+    ])
+      await expect(runtime.workingDirectory('agent-1', 'scout', directory)).rejects.toMatchObject({
+        reason: 'definition_invalid',
+        message: expect.stringContaining('data directory'),
+      });
+    const legacy = join(dir, 'data', 'workspaces', 'scout');
+    expect(await runtime.workingDirectory('agent-1', 'scout', legacy)).toBe(legacy);
+  });
+
+  it('refuses the data directory named from the home directory, as a server can name it', async () => {
+    const root = join(dir, 'home', '.local', 'state', 'switch', 'agent-controller');
+    mkdirSync(join(root, 'secrets'), { recursive: true });
+    const inHome = new InProcessRuntime({
+      layout: dataLayout(root),
+      workspaces: join(dir, 'home', '.switch', 'agents', 'switch.example.com'),
+      bundlePath: bundle,
+      openStream,
+      log: silentLogger,
+      crashBackoffMs: 5,
+    });
+    await expect(
+      inHome.workingDirectory('agent-1', 'scout', '~/.local/state/switch/agent-controller/secrets')
+    ).rejects.toMatchObject({ reason: 'definition_invalid' });
+    expect(await inHome.workingDirectory('agent-1', 'scout', '~')).toBe(join(dir, 'home'));
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses a link that leads into the data directory, wherever it is',
+    async () => {
+      const secrets = join(dir, 'data', 'secrets');
+      mkdirSync(secrets, { recursive: true });
+      mkdirSync(join(dir, 'data', 'workspaces'), { recursive: true });
+      const outside = join(dir, 'looks-harmless');
+      symlinkSync(secrets, outside);
+      await expect(runtime.workingDirectory('agent-1', 'scout', outside)).rejects.toMatchObject({
+        reason: 'definition_invalid',
+        message: expect.stringContaining(`leads to ${realpathSync(secrets)}`),
+      });
+      symlinkSync(secrets, join(dir, 'data', 'workspaces', 'linked'));
+      await expect(
+        runtime.workingDirectory('agent-1', 'scout', join(dir, 'data', 'workspaces', 'linked'))
+      ).rejects.toMatchObject({ reason: 'definition_invalid' });
+      symlinkSync(secrets, join(dir, 'data', 'workspaces', 'scout'));
+      await expect(runtime.workingDirectory('agent-1', 'scout', null)).rejects.toMatchObject({
+        reason: 'definition_invalid',
+      });
+    }
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses the data directory when the controller reaches it through a link',
+    async () => {
+      mkdirSync(join(dir, 'data', 'secrets'), { recursive: true });
+      symlinkSync(join(dir, 'data'), join(dir, 'data-link'));
+      const linked = new InProcessRuntime({
+        layout: dataLayout(join(dir, 'data-link')),
+        workspaces: join(dir, 'workspaces'),
+        bundlePath: bundle,
+        openStream,
+        log: silentLogger,
+        crashBackoffMs: 5,
+      });
+      await expect(
+        linked.workingDirectory('agent-1', 'scout', join(dir, 'data', 'secrets'))
+      ).rejects.toMatchObject({ reason: 'definition_invalid' });
+    }
+  );
 });
 
 describe('LaunchedBundle', () => {

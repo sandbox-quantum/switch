@@ -65,6 +65,7 @@ import {
   uploadChatAttachment,
   warmChatAgent,
 } from './gateway';
+import { saveChatAttachment } from './save-attachment';
 
 const onServer = withServerWorkspaceSession;
 
@@ -343,6 +344,23 @@ export const chatsController = createRPCController({
     );
     return { mimeType: media.mimeType, data: Buffer.from(media.bytes).toString('base64') };
   },
+  /**
+   * Save a room attachment where the person picks: the saved path, or null
+   * when they cancel. The dialog is open before the workspace session is
+   * taken, so a dialog left open holds up nothing else on the server.
+   */
+  saveAttachment: (params: {
+    serverId: string;
+    roomId: string;
+    uri: string;
+    filename: string;
+  }): Promise<string | null> =>
+    saveChatAttachment(params.filename, async () => {
+      const media = await onServer(params.serverId, (server) =>
+        fetchChatMedia(server, params.roomId, params.uri)
+      );
+      return media.bytes;
+    }),
   archive: (serverId: string, roomId: string): Promise<void> =>
     onServer(serverId, (server) => archiveChat(server, roomId)),
   unarchive: (serverId: string, roomId: string): Promise<void> =>

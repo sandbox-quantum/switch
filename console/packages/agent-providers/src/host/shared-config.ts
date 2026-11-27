@@ -312,18 +312,20 @@ export async function readSharedCredentials(config: SharedHostConfig) {
   return credentials;
 }
 
-export async function executionEnvironment(
-  cwd: string,
-  configured: Record<string, string>,
-  setup: string | undefined,
+/**
+ * The variables of `source` that `inheritEnv` names, never Switch's or
+ * Electron's own. Matched without regard to case on Windows.
+ */
+function inheritable(
+  source: Record<string, string | undefined>,
   inheritEnv: string[]
-): Promise<Record<string, string>> {
+): Record<string, string> {
   const env: Record<string, string> = {};
   const inherited =
     process.platform === 'win32'
       ? new Set(inheritEnv.map((key) => key.toUpperCase()))
       : new Set(inheritEnv);
-  for (const [key, value] of Object.entries(process.env))
+  for (const [key, value] of Object.entries(source))
     if (
       value !== undefined &&
       inherited.has(process.platform === 'win32' ? key.toUpperCase() : key) &&
@@ -331,7 +333,23 @@ export async function executionEnvironment(
       !key.startsWith('ELECTRON_')
     )
       env[key] = value;
-  Object.assign(env, configured);
+  return env;
+}
+
+/**
+ * A session's environment: the host's variables `inheritEnv` names, then the
+ * agent's `configured` ones. A `setup` snippet runs in a login shell with
+ * that environment, and may change those variables (prepend to `PATH`, say);
+ * anything else it or the user's profile exports is left behind, so set an
+ * agent's other variables in its environment, not in its shell setup.
+ */
+export async function executionEnvironment(
+  cwd: string,
+  configured: Record<string, string>,
+  setup: string | undefined,
+  inheritEnv: string[]
+): Promise<Record<string, string>> {
+  const env = { ...inheritable(process.env, inheritEnv), ...configured };
   if (!setup) return env;
   if (process.platform === 'win32')
     throw new Error(
@@ -352,5 +370,11 @@ export async function executionEnvironment(
   );
   const offset = stdout.lastIndexOf(marker);
   if (offset < 0) throw new Error('Shell setup did not return the execution environment.');
-  return z.record(z.string(), z.string()).parse(JSON.parse(stdout.slice(offset + marker.length)));
+  const produced = z
+    .record(z.string(), z.string())
+    .parse(JSON.parse(stdout.slice(offset + marker.length)));
+  const kept = inheritable(produced, inheritEnv);
+  for (const [key, value] of Object.entries(produced))
+    if (Object.hasOwn(configured, key)) kept[key] = value;
+  return kept;
 }

@@ -41,6 +41,7 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
+from switch_core.delivery.send_limits import MessageTooLong, SendRateLimited
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
     BRIDGE_ERRORS,
@@ -72,8 +73,10 @@ def refusal_status(exc: Exception) -> int | None:
         return 404
     if isinstance(exc, BadArgumentsError):
         return 400
-    if isinstance(exc, BudgetExceeded):
+    if isinstance(exc, BudgetExceeded | SendRateLimited):
         return 429
+    if isinstance(exc, MessageTooLong):
+        return 422
     if isinstance(exc, GuardrailBlockedError):
         return 422
     if isinstance(exc, PermissionError):

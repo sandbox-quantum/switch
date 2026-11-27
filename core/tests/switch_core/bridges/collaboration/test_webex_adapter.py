@@ -19,6 +19,7 @@ import pytest
 from pydantic import ValidationError
 
 from switch_core.bridges.collaboration.adapter import (
+    MessagePartlySent,
     PrivateNoticeRefused,
     RequestCard,
     RichContentFailed,
@@ -595,6 +596,34 @@ async def test_a_long_reply_is_split_within_webexs_limit(webex: FakeWebex) -> No
     posts = webex.posts()
     assert len(posts) > 1
     assert all(len(p["markdown"].encode()) <= MAX_MESSAGE_BYTES for p in posts)
+
+
+async def test_a_refusal_part_way_through_a_long_reply_says_so_and_raises(
+    webex: FakeWebex,
+) -> None:
+    adapter, _ = await _started(webex)
+    first_id = wid("MESSAGE", "00000000-0000-4000-8000-00000000f1f1")
+    webex.refuse(
+        "POST",
+        "/messages",
+        _json_response(200, {"id": first_id}),
+        _json_response(403, {"message": "not a member"}),
+    )
+
+    with pytest.raises(MessagePartlySent) as raised:
+        await adapter.send_message(
+            ROOM, "coder", "\n\n".join(["word " * 400] * 8), thread_root_id="root-1"
+        )
+
+    partial = raised.value
+    assert (partial.first_ref, partial.delivered) == (first_id, 1)
+    assert partial.total > 2
+    notice = webex.posts()[-1]
+    assert notice["markdown"] == (
+        f"_Only 1 of {partial.total} parts of this message could be delivered; "
+        "Webex refused the rest._"
+    )
+    assert notice["parentId"] == "root-1"
 
 
 async def test_an_agent_mentions_people_switch_knows_and_nobody_else(

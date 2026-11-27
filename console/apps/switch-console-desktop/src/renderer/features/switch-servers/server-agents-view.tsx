@@ -4,6 +4,7 @@ import {
   AgentCardGrid,
 } from '@switch-console/chat-ui/components/agent-cards';
 import { ServerPage } from '@switch-console/chat-ui/components/server-page';
+import { BUDDY_ICON_URL } from '@switch-console/chat-ui/model/switch-buddy';
 import { Badge } from '@switch-console/chat-ui/primitives/badge';
 import { Button } from '@switch-console/chat-ui/primitives/button';
 import {
@@ -43,7 +44,6 @@ import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import type { Agent } from '@shared/core/agents/agents';
-import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { homeRedirect } from './home-target';
@@ -144,7 +144,13 @@ function PendingBuddyCard({ serverId, name }: { serverId: string; name: string }
   return (
     <div className="flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] p-[14px]">
       <div className="flex flex-1 items-center justify-center py-1 opacity-60 grayscale">
-        <AgentAvatar name={name} iconUrl={BUDDY_ICON_URL} serverId={serverId} size={66} />
+        <AgentAvatar
+          agentId={null}
+          name={name}
+          iconUrl={BUDDY_ICON_URL}
+          serverId={serverId}
+          size={66}
+        />
       </div>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="truncate text-sm font-medium text-foreground">{name}</span>
@@ -174,7 +180,13 @@ function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
     <AgentCard
       label={label}
       avatar={
-        <AgentAvatar name={label} iconUrl={agent.iconUrl} serverId={agent.serverId} size={66} />
+        <AgentAvatar
+          agentId={agent.agentId}
+          name={label}
+          iconUrl={agent.iconUrl}
+          serverId={agent.serverId}
+          size={66}
+        />
       }
       detail={`${provider} · ${machine ?? 'no machine'}`}
       note={null}
@@ -223,7 +235,15 @@ const LocalAgentCard = observer(function LocalAgentCard({
   return (
     <AgentCard
       label={label}
-      avatar={<AgentAvatar name={label} iconUrl={iconUrl} serverId={serverId} size={66} />}
+      avatar={
+        <AgentAvatar
+          agentId={agent.switchAgentId}
+          name={label}
+          iconUrl={iconUrl}
+          serverId={serverId}
+          size={66}
+        />
+      }
       detail={`${provider ? `${provider} · ` : ''}${sshHost ?? 'this computer'}`}
       note={agent.ownerName ? `loaded · by ${agent.ownerName}` : null}
       footer={

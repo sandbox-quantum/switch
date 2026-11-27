@@ -1,3 +1,8 @@
+import { contentLinkHandlers } from '@switch-console/chat-ui/model/content-link';
+import {
+  AskBeforeLoading,
+  loadsFromElsewhere,
+} from '@switch-console/chat-ui/ui/ask-before-loading';
 import React, { useEffect, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import type { ExtraProps } from 'react-markdown';
@@ -9,8 +14,8 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import type { PluggableList } from 'unified';
+import { openContentLink } from '@renderer/lib/content-link';
 import { useTheme } from '@renderer/lib/hooks/useTheme';
-import { confirmOpenExternalLink } from '@renderer/lib/open-external-link';
 import { cn } from '@renderer/utils/utils';
 import { ExpandableImage } from './expandable-image';
 import { normalizeLatexDelimiters } from './markdown-latex';
@@ -112,6 +117,28 @@ const ResolvedImage: React.FC<{
   );
 };
 
+/**
+ * `children`, an image drawn from `src`, at once when `src` is the app's own
+ * or already here, and only once the reader asks when it is on another
+ * computer: documents and transcripts are written by other people and agents.
+ */
+function AskIfElsewhere({
+  src,
+  alt,
+  children,
+}: {
+  src: string | undefined;
+  alt: string;
+  children: React.ReactNode;
+}) {
+  if (typeof src !== 'string' || !loadsFromElsewhere(src)) return <>{children}</>;
+  return (
+    <AskBeforeLoading src={src} alt={alt}>
+      {children}
+    </AskBeforeLoading>
+  );
+}
+
 type WithChildren = { children?: React.ReactNode };
 type WithChildrenAndClass = { children?: React.ReactNode; className?: string };
 type AnchorProps = { href?: string; children?: React.ReactNode };
@@ -204,26 +231,17 @@ function useFullComponents(
         ) : (
           <pre className="mb-3 overflow-x-auto rounded-md border border-border">{children}</pre>
         ),
-      a: ({ href, children }: AnchorProps) => {
-        const isHttp = typeof href === 'string' && /^https?:\/\//i.test(href);
-        const handleClick = (e: React.MouseEvent) => {
-          if (isHttp) {
-            e.preventDefault();
-            confirmOpenExternalLink(href);
-          }
-        };
-        return (
-          <a
-            href={href}
-            className="text-primary decoration-primary/50 hover:decoration-primary underline"
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={handleClick}
-          >
-            {children}
-          </a>
-        );
-      },
+      a: ({ href, children }: AnchorProps) => (
+        <a
+          href={href}
+          className="text-primary decoration-primary/50 hover:decoration-primary underline"
+          target="_blank"
+          rel="noopener noreferrer"
+          {...contentLinkHandlers(() => openContentLink(href))}
+        >
+          {children}
+        </a>
+      ),
       blockquote: ({ children }: WithChildren) => (
         <blockquote className="bg-muted/30 text-muted-foreground mb-3 border-l-4 border-border py-1 pl-4 text-sm italic">
           {children}
@@ -250,13 +268,16 @@ function useFullComponents(
           return <ResolvedImage src={src} alt={alt || ''} resolveImage={resolveImage} />;
         }
         return (
-          <ExpandableImage
-            src={src}
-            alt={alt || ''}
-            containerClassName="my-3"
-            className={cn('max-w-full rounded', className)}
-            {...props}
-          />
+          <AskIfElsewhere src={src} alt={alt || ''}>
+            <ExpandableImage
+              src={src}
+              alt={alt || ''}
+              containerClassName="my-3"
+              className={cn('max-w-full rounded', className)}
+              {...props}
+              referrerPolicy="no-referrer"
+            />
+          </AskIfElsewhere>
         );
       },
       strong: ({ children }: WithChildren) => (
@@ -351,34 +372,28 @@ function useCompactComponents(isDark: boolean) {
       strong: ({ children }: WithChildren) => (
         <strong className="font-semibold text-foreground">{children}</strong>
       ),
-      a: ({ href, children }: AnchorProps) => {
-        const isHttp = typeof href === 'string' && /^https?:\/\//i.test(href);
-        const handleClick = (e: React.MouseEvent) => {
-          if (isHttp) {
-            e.preventDefault();
-            confirmOpenExternalLink(href);
-          }
-        };
-        return (
-          <a
-            href={href}
-            className="text-primary underline"
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={handleClick}
-          >
-            {children}
-          </a>
-        );
-      },
+      a: ({ href, children }: AnchorProps) => (
+        <a
+          href={href}
+          className="text-primary underline"
+          target="_blank"
+          rel="noopener noreferrer"
+          {...contentLinkHandlers(() => openContentLink(href))}
+        >
+          {children}
+        </a>
+      ),
       img: ({ node: _node, src, alt, className, ...props }: ImgProps) => (
-        <ExpandableImage
-          src={src}
-          alt={alt || ''}
-          containerClassName="my-2"
-          className={cn('h-auto max-h-80 max-w-full rounded', className)}
-          {...props}
-        />
+        <AskIfElsewhere src={src} alt={alt || ''}>
+          <ExpandableImage
+            src={src}
+            alt={alt || ''}
+            containerClassName="my-2"
+            className={cn('h-auto max-h-80 max-w-full rounded', className)}
+            {...props}
+            referrerPolicy="no-referrer"
+          />
+        </AskIfElsewhere>
       ),
     }),
     [isDark]

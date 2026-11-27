@@ -91,6 +91,7 @@ ONLY_ORGANIZATION = (
 ROUTES: dict[str, Case] = {
     # ── Agents ───────────────────────────────────────────────────────────
     "GET /gateway/agents": get(f"{G}/agents", anyone()),
+    "GET /gateway/agents/known-types": get(f"{G}/agents/known-types", anyone()),
     "GET /gateway/agents/avatar-settings": get(f"{G}/agents/avatar-settings", anyone()),
     "GET /gateway/agents/icon-choices": get(
         f"{G}/agents/icon-choices", anyone(), name="matrix"
@@ -1480,7 +1481,6 @@ STREAMS: dict[str, Case] = {
 # Routes that take no session, or the hosted controller's token: no persona
 # changes their answer, so each is asked once and must answer the same to all.
 UNAUTHENTICATED: dict[str, str] = {
-    "GET /gateway/agents/known-types": "The agent types any client may register.",
     "GET /gateway/auth/config": "How to sign in, read before anyone has.",
     "GET /gateway/license": "The license, which sign-up links to before any account exists.",
     "GET /gateway/auth/oidc/callback": "A sign-in coming back from the identity provider.",

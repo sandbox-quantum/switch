@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
+import { readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -12,6 +12,7 @@ import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
 import { isProcessAlive } from '../process-alive';
 import type { Handoff } from './handoff';
+import { ensurePrivateDirectory } from './host-permissions';
 import { Journal } from './journal';
 import {
   ensureSharedProcess,
@@ -369,6 +370,21 @@ export function definitionChanged(config: SharedHostConfig, template: SharedHost
   return !isDeepStrictEqual(withDefinitionOf(config, template), config);
 }
 
+/**
+ * Whether a session saved as `config` belongs to an earlier identity of its
+ * agent: another provider or working directory than `template` has. Such a
+ * session cannot be brought in step (its conversation lives with that
+ * provider, in that directory), so it no longer serves a room: it is stopped,
+ * and its room gets a new session where the agent works now. Left serving, a
+ * definition moved away from a directory would keep its agent working there.
+ */
+export function otherIdentity(config: SharedHostConfig, template: SharedHostConfig): boolean {
+  return (
+    config.start.provider !== template.start.provider ||
+    config.start.input.cwd !== template.start.input.cwd
+  );
+}
+
 /** The config saved at a session root; null when the session has not written one. */
 async function sessionConfigAt(sessionRoot: string): Promise<SharedHostConfig | null> {
   try {
@@ -405,6 +421,27 @@ export async function redefinedSessions(
 }
 
 /**
+ * The live sessions among `sessionIds` of an earlier identity of their agent
+ * than `template`'s (`otherIdentity`): stopped as the watcher starts, and
+ * taken out of their rooms when a room next needs its session.
+ */
+export async function earlierIdentitySessions(
+  sessionIds: string[],
+  template: SharedHostConfig
+): Promise<{ root: string; config: SharedHostConfig }[]> {
+  const found: { root: string; config: SharedHostConfig }[] = [];
+  for (const sessionId of new Set(sessionIds)) {
+    const root = sharedSessionRoot(sessionId);
+    const config = await sessionConfigAt(root);
+    if (!config || config.session.agentId !== template.session.agentId) continue;
+    if (!otherIdentity(config, template)) continue;
+    if (!(await liveSupervisor(root))) continue;
+    found.push({ root, config });
+  }
+  return found;
+}
+
+/**
  * Stops each session running under an earlier definition. Like a superseded
  * build, it is started again when it is next needed, and then resumes its
  * conversation under the current definition (`withDefinitionOf`). A turn it
@@ -420,6 +457,15 @@ export async function stopRedefinedSessions(
     );
     await supervision.stop(root);
   }
+}
+
+/**
+ * A session's state root, and the folder of them, private to this user: they
+ * hold its transcript, its room files and its provider's own databases.
+ */
+async function ensureSessionRoot(sessionId: string): Promise<void> {
+  await ensurePrivateDirectory(sharedSessionsBase());
+  await ensurePrivateDirectory(sharedSessionRoot(sessionId));
 }
 
 /**
@@ -605,7 +651,7 @@ export class AgentHostAssignments {
       throw new Error('A watcher assignment needs the connection its agent is reached over.');
     const sessionId = sessionIdFor(template.session.agentId, event.roomId, event.messageId);
     const config = sessionFrom(template, sessionId);
-    await mkdir(sharedSessionRoot(sessionId), { recursive: true });
+    await ensureSessionRoot(sessionId);
     await this.journal.append({
       sequence: event.sequence,
       roomId: event.roomId,
@@ -621,7 +667,7 @@ export class AgentHostAssignments {
       throw new Error('A watcher assignment needs the connection its agent is reached over.');
     const sessionId = randomUUID();
     const config = sessionFrom(template, sessionId);
-    await mkdir(sharedSessionRoot(sessionId), { recursive: true });
+    await ensureSessionRoot(sessionId);
     await this.journal.append({ warmed: true, roomId, config });
     return config;
   }
@@ -942,6 +988,21 @@ export async function runAgentHost(
       return latestTemplate;
     };
     /**
+     * Stops a session of an earlier identity of the agent (`otherIdentity`)
+     * and takes it out of its room, so the room's next message, or a reset,
+     * starts a session where the agent works now.
+     */
+    const retire = async (saved: SharedHostConfig, current: SharedHostConfig) => {
+      const sessionId = saved.session.sessionId;
+      console.warn(
+        `Session ${sessionId} runs ${saved.start.provider} in ${saved.start.input.cwd}, and its agent now runs ${current.start.provider} in ${current.start.input.cwd}; stopping it, and its room gets a session where the agent works now.`
+      );
+      await supervision.stop(sharedSessionRoot(sessionId));
+      if (placements.roomOf(sessionId) === null) return;
+      await placements.unplace(sessionId);
+      publishQuietly();
+    };
+    /**
      * The shape of the agent's grants as last read (`servicesShape`), which
      * every session's host is compared against: null until first read.
      */
@@ -1023,6 +1084,17 @@ export async function runAgentHost(
     const superseded = await supersededSessions(template.session.agentId, supervision);
     await stopSupersededSessions(superseded, supervision);
     const stoppedRoots = new Set(superseded.map((entry) => entry.root));
+    for (const { root: sessionRoot, config: saved } of await earlierIdentitySessions(
+      assignments.sessions().map((config) => config.session.sessionId),
+      template
+    )) {
+      if (stoppedRoots.has(sessionRoot)) continue;
+      console.warn(
+        `Session ${saved.session.sessionId} runs ${saved.start.provider} in ${saved.start.input.cwd}, and its agent now runs ${template.start.provider} in ${template.start.input.cwd}; stopping it.`
+      );
+      await supervision.stop(sessionRoot);
+      stoppedRoots.add(sessionRoot);
+    }
     await stopRedefinedSessions(
       (
         await redefinedSessions(
@@ -1231,15 +1303,21 @@ export async function runAgentHost(
       const placed = placements.sessionIn(event.roomId);
       if (placed) {
         const owner = await sessionConfig(placed);
-        if (owner && !(await stopped(placed))) {
+        // The template as last read: every message passes here, and only a
+        // replaced config.json (`onConfigReplaced`) changes the identity
+        // compared. Reading the file each time races that replace on Windows.
+        const current = latestTemplate;
+        if (owner && otherIdentity(owner, current)) await retire(owner, current);
+        else if (owner && !(await stopped(placed))) {
           await deliver(owner, event, waiting);
           return true;
+        } else {
+          await placements.unplace(placed);
+          publishQuietly();
+          console.warn(
+            `Session ${placed} ${owner ? 'was stopped' : 'is not one of this agent’s sessions here'}, so room ${event.roomId} has no session attending it now.`
+          );
         }
-        await placements.unplace(placed);
-        publishQuietly();
-        console.warn(
-          `Session ${placed} ${owner ? 'was stopped' : 'is not one of this agent’s sessions here'}, so room ${event.roomId} has no session attending it now.`
-        );
       }
       if (!spawning) return false;
       const config = await assignments.assign(
@@ -1302,6 +1380,38 @@ export async function runAgentHost(
       }
     }
     if (held.size) await resolveHeld();
+    /**
+     * Starts the session a message to `roomId` would start, and returns its
+     * id; null when none may be started. Queued with the events, so a message
+     * arriving meanwhile finds the session this placed rather than starting a
+     * second one.
+     */
+    const warmRoom = (roomId: string): Promise<string | null> => {
+      const run = async (): Promise<string | null> => {
+        const placed = placements.sessionIn(roomId);
+        const current = await currentTemplate();
+        if (placed) {
+          const owner = await sessionConfig(placed);
+          if (owner && otherIdentity(owner, current)) await retire(owner, current);
+          else if (owner && !(await stopped(placed))) {
+            if (!links.ready(sharedSessionRoot(placed))) await launch(owner);
+            return placed;
+          }
+        }
+        if (!spawn) return null;
+        const config = await assignments.warm(current, roomId);
+        await placements.place(config.session.sessionId, roomId);
+        publishQuietly();
+        await launch(config);
+        return config.session.sessionId;
+      };
+      const warmed = pending.then(run);
+      pending = warmed.then(
+        () => {},
+        () => {}
+      );
+      return warmed;
+    };
     stream = openStream({
       creds: {
         agentId: credentials.SWITCH_AGENT_ID,
@@ -1367,6 +1477,29 @@ export async function runAgentHost(
           return;
         }
         const command = { ...rest, sessionId };
+        // A reset of a session of an earlier identity of the agent starts the
+        // new conversation where the agent works now, not where that one did.
+        if (isReset(command)) {
+          const saved = await sessionConfig(sessionId);
+          const current = await currentTemplate();
+          if (saved && otherIdentity(saved, current)) {
+            const room = placements.roomOf(sessionId);
+            if (room === null) {
+              await retire(saved, current);
+              console.warn(
+                `Dropped command ${command.commandId}: session ${sessionId} belonged to an earlier identity of its agent and serves no room, so it was stopped instead.`
+              );
+              return;
+            }
+            const started = await warmRoom(room);
+            console.warn(
+              started
+                ? `Reset room ${room} into session ${started}, in ${current.start.input.cwd}.`
+                : `Room ${room}'s session belonged to an earlier identity of its agent and was stopped; starting sessions is off, so its next message waits for one.`
+            );
+            return;
+          }
+        }
         // A reset runs in the host the session has, which keeps the tools it
         // started with: one granted or taken away since needs a new host first.
         const restarted =
@@ -1525,32 +1658,7 @@ export async function runAgentHost(
             );
           return { sessionId, roomId, ...moved };
         },
-        // Queued with the events, so a message arriving meanwhile finds the
-        // session this placed rather than starting a second one.
-        warm: (roomId) => {
-          const run = async (): Promise<string | null> => {
-            const placed = placements.sessionIn(roomId);
-            if (placed) {
-              const owner = await sessionConfig(placed);
-              if (owner && !(await stopped(placed))) {
-                if (!links.ready(sharedSessionRoot(placed))) await launch(owner);
-                return placed;
-              }
-            }
-            if (!spawn) return null;
-            const config = await assignments.warm(await currentTemplate(), roomId);
-            await placements.place(config.session.sessionId, roomId);
-            publishQuietly();
-            await launch(config);
-            return config.session.sessionId;
-          };
-          const warmed = pending.then(run);
-          pending = warmed.then(
-            () => {},
-            () => {}
-          );
-          return warmed;
-        },
+        warm: warmRoom,
       })
     );
     // Queued behind the events rather than run beside them: the decision it
@@ -1570,8 +1678,9 @@ export async function runAgentHost(
      * its own conversation under the current one (`withDefinitionOf`) once it
      * is idle, so no turn is cut short: one in the middle of a turn waits in
      * `redefinitionDue` until its host says it is done. One saved under another
-     * provider or directory belongs to an earlier identity of the agent and is
-     * left alone.
+     * provider or directory belongs to an earlier identity of the agent
+     * (`otherIdentity`): once idle it is stopped and taken out of its room,
+     * which then gets a new session where the agent works now.
      *
      * A session whose host started under other granted services than the
      * agent has now (`servicesNow`, read every `GRANTS_CHECK_MS`) is restarted
@@ -1589,20 +1698,30 @@ export async function runAgentHost(
         assignments.sessions().map((config) => sharedSessionRoot(config.session.sessionId))
       );
       const idle: { root: string; saved: SharedHostConfig }[] = [];
+      const earlier: SharedHostConfig[] = [];
       for (const sessionRoot of links.live()) {
         if (!ours.has(sessionRoot) || !links.ready(sessionRoot)) continue;
         const saved = await sessionConfigAt(sessionRoot);
+        if (!saved || saved.session.agentId !== agentId) continue;
+        const retiring = otherIdentity(saved, current);
         if (
-          !saved ||
-          saved.session.agentId !== agentId ||
-          saved.start.provider !== current.start.provider ||
-          saved.start.input.cwd !== current.start.input.cwd
+          !retiring &&
+          !definitionChanged(saved, current) &&
+          !(await servicesStale(sessionRoot, servicesNow))
         )
           continue;
-        if (!definitionChanged(saved, current) && !(await servicesStale(sessionRoot, servicesNow)))
-          continue;
         if (links.busy(sessionRoot)?.busy !== false) redefinitionDue.add(sessionRoot);
+        else if (retiring) earlier.push(saved);
         else idle.push({ root: sessionRoot, saved });
+      }
+      for (const saved of earlier) {
+        try {
+          await retire(saved, current);
+        } catch (error) {
+          console.warn(
+            `Could not stop session ${saved.session.sessionId} of an earlier identity of its agent: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
       }
       if (idle.length === 0 && redefinitionDue.size === 0) return;
       console.warn(

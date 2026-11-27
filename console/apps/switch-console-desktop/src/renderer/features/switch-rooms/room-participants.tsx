@@ -45,6 +45,7 @@ export function AgentMark({
   return (
     <span className="flex size-7 shrink-0 items-center justify-center">
       <AgentAvatar
+        agentId={agentId}
         name={agentNameFor(agentId, workspaceId, remoteById)}
         iconUrl={remote?.iconUrl ?? null}
         serverId={workspaceId && workspacesStore.serverIdFor(workspaceId)}

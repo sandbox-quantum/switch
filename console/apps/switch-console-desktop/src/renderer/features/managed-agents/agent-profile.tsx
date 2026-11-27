@@ -56,6 +56,7 @@ export function managedAgentMachineLine(
  * `onOpenMachine` the line saying where it runs opens that machine's page.
  */
 export function AgentProfile({
+  agentId,
   name,
   iconUrl,
   serverId,
@@ -66,6 +67,8 @@ export function AgentProfile({
   onOpenMachine,
   actions,
 }: {
+  /** The agent on `serverId`, or null while it does not exist yet. */
+  agentId: string | null;
   name: string;
   iconUrl: string | null;
   serverId: string;
@@ -79,6 +82,7 @@ export function AgentProfile({
 }) {
   return (
     <AgentProfileHeader
+      agentId={agentId}
       name={name}
       iconUrl={iconUrl}
       serverId={serverId}

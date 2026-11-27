@@ -1,4 +1,8 @@
-import type { OpenAgentStream, ProviderReadiness } from '@switch-console/agent-providers';
+import type {
+  DeviceConsentNeed,
+  OpenAgentStream,
+  ProviderReadiness,
+} from '@switch-console/agent-providers';
 import { AgentHub } from './agent-hub';
 import {
   AccessTokens,
@@ -10,6 +14,7 @@ import {
   isUpgradeRequired,
   type OpenWebSocket,
 } from './api';
+import { consentNeeds, type DefinitionContext, type DevicePolicySource } from './device-policy';
 import { ConfigurationError } from './errors';
 import { HubSocket } from './hub-socket';
 import { errorMessage, type Logger } from './log';
@@ -133,6 +138,16 @@ export type ControllerDeps = {
   dataDir: string;
   /** Where agents' working directories go when their definition names none, for a server. */
   workspacesFor: (server: string) => string;
+  /**
+   * What the person using this device allows its agents (`device-policy.ts`);
+   * null where agents run as users of their own and it does not apply.
+   */
+  devicePolicy: DevicePolicySource | null;
+  /**
+   * Tells Switch Console, which runs this controller, which agents ask for
+   * something the device has not allowed; absent where nothing listens.
+   */
+  tellConsentNeeds?: (needs: DeviceConsentNeed[]) => void;
   version: string;
   /** Which machine, OS account and data folder this is (`readDeviceId`), or null when unknown. */
   deviceId: string | null;
@@ -344,6 +359,11 @@ export async function runController(
     onChange: () => reporter?.request(),
   });
   const workspaces = deps.workspacesFor(identity.server);
+  const definitionContext = (): DefinitionContext => ({
+    dataDir: deps.dataDir,
+    workspaces,
+    policy: deps.devicePolicy?.current() ?? null,
+  });
   const runtime = deps.runtime(
     (agentId) => (streamDeps) => hub.open(agentId, streamDeps),
     workspaces
@@ -476,6 +496,7 @@ export async function runController(
     attached: (agentId) => hub.attached(agentId),
     dataDir: deps.dataDir,
     workspacesDir: workspaces,
+    context: definitionContext,
     deviceId: deps.deviceId,
     version: deps.version,
     updatedBy: deps.updatedBy,
@@ -484,6 +505,7 @@ export async function runController(
   const reconcileDeps: ReconcileDeps = {
     store,
     runtime,
+    context: definitionContext,
     ensureCredentials: async (agentId, provider) =>
       ensureRelayCredentials(
         agentId,
@@ -579,7 +601,7 @@ export async function runController(
           client,
           assignment: () => assignment,
           restartAgent: async (entry) => {
-            const problem = definitionProblem(entry);
+            const problem = definitionProblem(entry, definitionContext());
             if (problem) return { reason: 'definition_invalid', detail: problem };
             return startAgent(
               {
@@ -716,7 +738,8 @@ export async function runController(
       if (!assignment || stop.signal.aborted) return;
       try {
         for (const entry of assignment.agents) {
-          if (entry.desired_state !== 'running' || definitionProblem(entry)) continue;
+          if (entry.desired_state !== 'running' || definitionProblem(entry, definitionContext()))
+            continue;
           const agentId = entry.agent_id;
           const observation = await runtime.observe(agentId);
           if (!observation.alive || !observation.outdated) continue;
@@ -815,8 +838,26 @@ export async function runController(
     }
   };
 
+  let announcedNeeds: string | null = null;
+  /** Tells Console what the device has not allowed, when that changed since it was last told. */
+  const announceConsentNeeds = () => {
+    if (!deps.tellConsentNeeds) return;
+    const needs = consentNeeds(assignment?.agents ?? [], definitionContext());
+    const text = JSON.stringify(needs);
+    if (text === announcedNeeds) return;
+    announcedNeeds = text;
+    deps.tellConsentNeeds(needs);
+  };
+  const stopFollowingPolicy = deps.devicePolicy?.onChange(() => {
+    log.info('What this device allows its agents changed; applying it');
+    void reconcileLocally();
+    reporter?.request();
+    announceConsentNeeds();
+  });
+
   await reconcileLocally();
   relay.setReady();
+  announceConsentNeeds();
 
   void providers.refreshStale().catch((error: unknown) => failed('Checking providers', error));
 
@@ -837,6 +878,10 @@ export async function runController(
     // the next periodic report to let the update through.
     if (deps.selfUpdate?.status()?.state === 'waiting_idle') offerRelease();
     void restartOutdated();
+    void deps.devicePolicy
+      ?.refresh()
+      .catch((error: unknown) => failed('Reading what this device allows its agents', error));
+    announceConsentNeeds();
   }, timing.statusPollMs);
 
   let ending: ControllerExit = 'stopped';
@@ -898,6 +943,7 @@ export async function runController(
     stopServingRechecks();
     clearInterval(resync);
     clearInterval(poll);
+    stopFollowingPolicy?.();
     signal.removeEventListener('abort', forward);
     stop.abort();
     try {

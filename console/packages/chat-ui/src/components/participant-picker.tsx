@@ -8,13 +8,14 @@ import { personColour } from '../model/person-colour';
 /** How the app draws an agent: its avatar, and the colour its chip is tinted with (null for none). */
 export type ParticipantMarks = {
   AgentAvatar: ComponentType<{
+    agentId: string;
     name: string;
     iconUrl: string | null;
     serverId: string | null;
     size: number;
   }>;
   useAgentAccent: (
-    agent: { name: string; iconUrl: string | null } | null,
+    agent: { id: string; name: string; iconUrl: string | null } | null,
     serverId: string | null
   ) => string | null;
 };
@@ -57,6 +58,7 @@ function Mark({
 }) {
   return participant.kind === 'agent' ? (
     <marks.AgentAvatar
+      agentId={participant.id}
       name={participant.name}
       iconUrl={participant.iconUrl}
       serverId={serverId}

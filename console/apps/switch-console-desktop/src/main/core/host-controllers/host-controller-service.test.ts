@@ -11,6 +11,7 @@ import {
 import {
   ENROLL_SCRIPT,
   PREPARE_SCRIPT,
+  SEALING_KEY_SCRIPT,
   START_SCRIPT,
   STATUS_SCRIPT,
   STOP_SCRIPT,
@@ -29,6 +30,7 @@ type Host = {
   failStart: boolean;
   running: boolean;
   unreachable: boolean;
+  sealingKey: { ok: true; publicKey: string | null } | { ok: false; reason: string };
 };
 
 let host: Host;
@@ -55,9 +57,11 @@ function fakeShell(): HostShell {
                 ? 'status'
                 : script === STOP_SCRIPT
                   ? 'stop'
-                  : script.includes('renameSync')
-                    ? 'rename'
-                    : 'unknown';
+                  : script === SEALING_KEY_SCRIPT
+                    ? 'sealing-key'
+                    : script.includes('renameSync')
+                      ? 'rename'
+                      : 'unknown';
       calls.push(name);
       options[name] = parsed;
       switch (name) {
@@ -88,6 +92,8 @@ function fakeShell(): HostShell {
         case 'stop':
           host.running = false;
           return JSON.stringify({ turnedOff: 1 });
+        case 'sealing-key':
+          return JSON.stringify(host.sealingKey);
         default:
           return '';
       }
@@ -154,6 +160,7 @@ beforeEach(() => {
     failStart: false,
     running: false,
     unreachable: false,
+    sealingKey: { ok: true, publicKey: 'a2V5LW9uLXRoZS1ob3N0' },
   };
   calls = [];
   options = {};
@@ -447,5 +454,42 @@ describe('the server address the controller is given', () => {
   ])('%s', (url, problem) => {
     if (problem === null) expect(serverUrlProblem(url)).toBeNull();
     else expect(serverUrlProblem(url)).toMatch(problem);
+  });
+});
+
+describe('the key a host seals logins to', () => {
+  it('is read on the host, with the bundle and data directory it was enrolled with', async () => {
+    const service = new HostControllerService(deps());
+    await service.enable(HOST, SERVER, WORKSPACE);
+    const record = records.get(`${HOST}|${SERVER}`)!;
+
+    expect(await service.sealingPublicKey(record)).toEqual({
+      kind: 'key',
+      publicKey: 'a2V5LW9uLXRoZS1ob3N0',
+    });
+    expect(options['sealing-key']).toEqual({
+      node: record.node,
+      bundle: record.bundle,
+      dataDir: record.dataDir,
+    });
+    host.sealingKey = { ok: true, publicKey: null };
+    expect(await service.sealingPublicKey(record)).toEqual({ kind: 'none' });
+  });
+
+  it('is unknown when the host cannot be asked, saying why', async () => {
+    const service = new HostControllerService(deps());
+    await service.enable(HOST, SERVER, WORKSPACE);
+    const record = records.get(`${HOST}|${SERVER}`)!;
+
+    host.sealingKey = { ok: false, reason: "Unknown command 'sealing-key'." };
+    expect(await service.sealingPublicKey(record)).toEqual({
+      kind: 'unknown',
+      reason: "Unknown command 'sealing-key'.",
+    });
+    host.unreachable = true;
+    expect(await service.sealingPublicKey(record)).toEqual({
+      kind: 'unknown',
+      reason: `${HOST} is unreachable`,
+    });
   });
 });

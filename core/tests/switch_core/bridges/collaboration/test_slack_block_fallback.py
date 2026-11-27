@@ -7,6 +7,7 @@ from slack_sdk.errors import SlackApiError
 
 from switch_core.bridges.collaboration.adapter import RichContentFailed, TurnActivity
 from switch_core.bridges.collaboration.models import BridgeOperationError
+from switch_core.bridges.collaboration.slack import adapter as slack_adapter
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -106,7 +107,7 @@ async def test_format_rejected_update_clears_buttons_on_the_same_message(adapter
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("code", ["ratelimited", "invalid_auth", "missing_scope"])
+@pytest.mark.parametrize("code", ["invalid_auth", "missing_scope"])
 async def test_definitive_nonformat_post_refusal_does_not_retry_as_text(adapter, code):
     client = adapter._web_client
     client.chat_postMessage.side_effect = refusal(code)
@@ -115,6 +116,27 @@ async def test_definitive_nonformat_post_refusal_does_not_retry_as_text(adapter,
             "channel-demo", "worker", TEXT, BLOCKS, "1.0", reply_broadcast=False
         )
     client.chat_postMessage.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limited_card_is_tried_again_as_the_card(adapter, monkeypatch):
+    # A rate limit posts nothing, so the same card is posted again once Slack
+    # allows it: never its text alone, and never past the bounded attempts.
+    async def no_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(slack_adapter.asyncio, "sleep", no_sleep)
+    client = adapter._web_client
+    client.chat_postMessage.side_effect = refusal("ratelimited")
+    with pytest.raises(SlackApiError):
+        await adapter.post_blocks(
+            "channel-demo", "worker", TEXT, BLOCKS, "1.0", reply_broadcast=False
+        )
+    assert client.chat_postMessage.await_count == 3
+    assert all(
+        call.kwargs["blocks"] == BLOCKS
+        for call in client.chat_postMessage.await_args_list
+    )
 
 
 @pytest.mark.asyncio

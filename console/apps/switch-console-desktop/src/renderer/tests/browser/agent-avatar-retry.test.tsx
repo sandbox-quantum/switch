@@ -32,6 +32,7 @@ it('tries a failed avatar again, then keeps the initials after the last try', as
     root!.render(
       <QueryClientProvider client={new QueryClient()}>
         <AgentAvatar
+          agentId="agent-1"
           name="Ada Lovelace"
           iconUrl="https://avatars.invalid/ada.svg"
           serverId={null}

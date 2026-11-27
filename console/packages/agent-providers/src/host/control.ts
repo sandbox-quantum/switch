@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
@@ -337,6 +337,13 @@ function lines(socket: Socket | Duplex, onLine: (line: string) => void): void {
 }
 
 /** Serve Console's requests for the sessions under `context.links` until `signal` aborts. */
+/** Whether `presented` is the control secret, compared in constant time. */
+function isSecret(presented: string, secret: string): boolean {
+  const given = Buffer.from(presented);
+  const expected = Buffer.from(secret);
+  return given.length === expected.length && timingSafeEqual(given, expected);
+}
+
 export async function serveControl(
   root: string,
   context: ControlContext,
@@ -363,7 +370,7 @@ export async function serveControl(
         return;
       }
       if (!authenticated) {
-        if (!('token' in parsed) || parsed.token !== token) {
+        if (!('token' in parsed) || !isSecret(parsed.token, token)) {
           socket.destroy();
           return;
         }

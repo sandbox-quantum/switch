@@ -10,6 +10,8 @@ for real.
 
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -74,6 +76,7 @@ from switch_core.rooms_yaml import (
     interpolate,
     resolve_params,
 )
+from tests.switch_core.test_template_yaml import alias_bomb
 from tests.telemetry_records import recording_telemetry
 
 
@@ -357,6 +360,39 @@ def test_parse_rejects_missing_room_key(env):
 def test_parse_rejects_malformed_yaml(env):
     with pytest.raises(ValueError, match="Invalid YAML"):
         _svc(env).parse("room: [unclosed\n")
+
+
+def test_parse_refuses_an_alias_bomb_before_walking_it(env):
+    """Ten nested aliases, six wide, stand for 60 million strings in 410
+    bytes; walking them for placeholders held the event loop for half a
+    minute."""
+    started = time.monotonic()
+    with pytest.raises(
+        ValueError, match="Invalid YAML: a template cannot use YAML anchors"
+    ):
+        _svc(env).parse_template(
+            alias_bomb(depth=10, width=6), inputs=None, builtins={"$creator": "zoe"}
+        )
+    assert time.monotonic() - started < 0.1
+
+
+@pytest.mark.asyncio
+async def test_reading_a_template_runs_off_the_event_loop(env, monkeypatch):
+    on_loop = []
+
+    def parse(text, inputs, builtins):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return "parsed"
+
+    monkeypatch.setattr(_svc(env), "parse_template", parse)
+    assert (
+        await _svc(env).read_template("room: {}", inputs=None, builtins={}) == "parsed"
+    )
+    assert on_loop == [False]
 
 
 def test_parse_inline_ref_missing_value_fails(env):

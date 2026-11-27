@@ -1,9 +1,9 @@
 import { CanManageAgentsToggle } from '@switch-console/chat-ui/components/agent-permissions';
-import { Button } from '@switch-console/chat-ui/primitives/button';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleAlert, Server } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { TurnOnMachine } from '@renderer/features/machines/turn-on-machine';
 import {
   advancedConfigFromForm,
   MODEL_FIELD,
@@ -23,7 +23,11 @@ import { newAgentMachineNotice } from './managed-run-location';
 
 const NO_SCHEMA: AdvancedConfigField[] = [];
 
-/** Under the run location: whether the new agent runs managed there, and turning the machine on when it cannot yet. */
+/**
+ * Under the run location: whether the new agent runs managed there, and
+ * turning the machine on when it cannot yet. Only the person turns it on,
+ * with the button and its confirmation: this form also opens from links.
+ */
 export function ManagedRunLocationNotice({
   machine,
   label,
@@ -41,22 +45,7 @@ export function ManagedRunLocationNotice({
 }) {
   const queryClient = useQueryClient();
   const [enabling, setEnabling] = useState(false);
-  const [autoTried, setAutoTried] = useState<string | null>(null);
   const notice = newAgentMachineNotice(machine, { label, sshHost });
-  const canEnable = notice.kind === 'blocked' && notice.enable !== null;
-  const where = `${serverId}:${workspaceId}:${sshHost ?? 'this-computer'}`;
-  const enableRef = useRef(enable);
-  enableRef.current = enable;
-
-  // A machine that can be set up for managed agents is set up as soon as it is
-  // chosen, as the automatic move to managed would: on a server with agent
-  // management that is how agents run, so asking first only stands in the way.
-  // Tried once per machine; if it fails, the button below is the way to retry.
-  useEffect(() => {
-    if (!canEnable || autoTried === where) return;
-    setAutoTried(where);
-    void enableRef.current();
-  }, [canEnable, where, autoTried]);
 
   if (enabling)
     return (
@@ -105,15 +94,14 @@ export function ManagedRunLocationNotice({
       <div className="flex min-w-0 flex-col gap-1.5">
         <span>{notice.text}</span>
         {notice.enable && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="w-fit"
-            disabled={enabling}
-            onClick={() => void enable()}
-          >
-            {enabling ? 'Turning on…' : notice.enable.label}
-          </Button>
+          <TurnOnMachine
+            serverId={serverId}
+            label={label}
+            sshHost={sshHost}
+            buttonLabel={notice.enable.label}
+            busy={enabling}
+            onConfirm={() => void enable()}
+          />
         )}
       </div>
     </div>

@@ -29,6 +29,7 @@ import { cn } from '@renderer/utils/utils';
 import type { MachineDetail, ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { Card } from './detail-card';
+import { DevicePermissionsCard } from './device-permissions-card';
 import { MachineIcon } from './machine-marks';
 import { MachineProviders } from './machine-providers';
 import {
@@ -194,6 +195,9 @@ export function MachineDetails({
       {/* Kept on a removed device: its agents stay placed on it until they are moved. */}
       <AgentsCard machine={machine} placed={placed} mine={mine} />
       {!removed && <MachineProviders serverId={serverId} machine={machine} />}
+      {!removed && machine.local?.kind === 'this-computer' && (
+        <DevicePermissionsCard serverId={serverId} agents={mine} />
+      )}
     </div>
   );
 }
@@ -440,6 +444,7 @@ function AgentsCard({
                       className="flex max-w-full cursor-pointer items-center gap-2.5 text-left text-foreground underline-offset-2 hover:underline"
                     >
                       <AgentAvatar
+                        agentId={agent.agentId}
                         name={label}
                         iconUrl={agent.iconUrl}
                         serverId={agent.serverId}

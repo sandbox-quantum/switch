@@ -12,6 +12,7 @@ import { chatFailure } from '@renderer/features/chats/chat-errors';
 import { workspaceRosterQuery } from '@renderer/features/chats/chat-people';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { forgetBuddyChat } from '@renderer/features/switch-buddy/buddy-chat';
+import { isOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -133,7 +134,11 @@ export const ChatAddParticipantPanel = observer(function ChatAddParticipantPanel
   const [refused, setRefused] = useState<string[]>([]);
   const candidates = [
     ...addableAgents(agents.data ?? [], allowed.data ?? []).map((agent) =>
-      agentParticipant(agent, knownAgentTypeDisplayName(agent.knownAgentType) ?? 'Agent')
+      agentParticipant(
+        agent,
+        knownAgentTypeDisplayName(agent.knownAgentType) ?? 'Agent',
+        isOwnBuddy(serverId, agent.id)
+      )
     ),
     ...addablePeople(roster.data ?? [], memberIds).map(personParticipant),
   ];
@@ -499,7 +504,13 @@ export const AddAgentPanel = observer(function AddAgentPanel({
           id: agent.id,
           name: agent.name,
           mark: (
-            <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} serverId={serverId} size={22} />
+            <AgentAvatar
+              agentId={agent.id}
+              name={agent.name}
+              iconUrl={agent.iconUrl}
+              serverId={serverId}
+              size={22}
+            />
           ),
           detail: [
             localAgentFor(agent.id, workspaceId) ||

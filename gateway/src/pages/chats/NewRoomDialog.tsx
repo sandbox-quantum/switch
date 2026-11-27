@@ -112,7 +112,7 @@ function NewRoom({
   onClose: () => void;
   setGuarded: (guarded: boolean) => void;
 }) {
-  const { chats } = useChatHost();
+  const { chats, isOwnBuddy } = useChatHost();
   const { session, user, canAdminTenant } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -164,7 +164,7 @@ function NewRoom({
     }
     const failed = agents.isError || (!bridged && allowed.isError);
     return {
-      offered: offered.map((agent) => agentParticipant(agent, agent.owner)),
+      offered: offered.map((agent) => agentParticipant(agent, agent.owner, isOwnBuddy(WEB_SERVER_ID, agent.id))),
       all: listed,
       loading: agents.isLoading || (!bridged && allowed.isLoading),
       loaded:

@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.agent_icon import generated_icon_url, new_icon_url
@@ -20,6 +20,7 @@ from switch_core.connections.broker import Principal, ServiceError
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     AgentController,
+    AgentDefinition,
     Tenant,
     TenantMember,
 )
@@ -857,6 +858,71 @@ class TestTheWorkingDirectory:
         assert moved.status_code == 200, moved.text
         assert moved.json()["definition"]["directory"] == "/two/workspaces/reviewer"
         assert kept.json()["definition"]["directory"] == "/srv/kept"
+
+    async def test_a_directory_that_is_no_place_to_work_is_refused(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        cookies = cookies_for(owner)
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            climbing = await create_managed_agent(
+                client,
+                owner,
+                name="climber",
+                controller_id=controller.controller_id,
+                definition_body=definition(directory="../../etc"),
+            )
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            path = f"/gateway/management/agents/{created.json()['agent_id']}"
+            relative = await client.patch(
+                path, json={"definition": definition(directory="work")}, cookies=cookies
+            )
+            with_nul = await client.patch(
+                path,
+                json={"definition": definition(directory="/srv/a\x00b")},
+                cookies=cookies,
+            )
+            kept = await client.get(path, cookies=cookies)
+        for refused in (climbing, relative, with_nul):
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["error"]["code"] == "validation_error"
+            assert "directory" in refused.json()["error"]["message"]
+        assert kept.json()["definition"]["directory"] == f"{WORKSPACES_DIR}/reviewer"
+
+    async def test_a_stored_directory_that_breaks_the_rules_is_reported(
+        self, harness: Harness
+    ) -> None:
+        """One stored before directories were checked is refused with what is
+        wrong with it when the agent is next changed, not with a server error."""
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+            async with harness.session_factory() as session:
+                row = (
+                    await session.execute(
+                        select(AgentDefinition).where(
+                            AgentDefinition.agent_id == agent_id
+                        )
+                    )
+                ).scalar_one()
+                row.definition = {**row.definition, "directory": "/srv/../etc"}
+                await session.commit()
+            stopped = await client.patch(
+                f"/gateway/management/agents/{agent_id}",
+                json={"desired_state": "stopped"},
+                cookies=cookies_for(owner),
+            )
+        assert stopped.status_code == 422, stopped.text
+        assert "'..' segment" in stopped.json()["error"]["message"]
 
     async def test_a_controller_that_has_not_said_leaves_it_null(
         self, harness: Harness

@@ -40,6 +40,10 @@ const resolvePortsMock = vi.hoisted(() => vi.fn());
 const readPersistedPortsMock = vi.hoisted(() => vi.fn());
 const rememberPortsMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const ensureManagedServerMock = vi.hoisted(() => vi.fn(() => Promise.resolve({ id: 'srv-1' })));
+const getRemoteManagedServerMock = vi.hoisted(() =>
+  vi.fn((): Promise<{ url: string } | null> => Promise.resolve(null))
+);
+const followManagedServerAddressMock = vi.hoisted(() => vi.fn(async () => {}));
 const passwordLoginMock = vi.hoisted(() =>
   vi.fn(() =>
     Promise.resolve({
@@ -101,9 +105,14 @@ const assertManagedServerUrlFreeMock = vi.hoisted(() => vi.fn(() => Promise.reso
 vi.mock('@main/core/telemetry/internal-account', () => ({
   currentInternalFlag: async () => 'unknown',
 }));
+vi.mock('./follow-server-address', () => ({
+  followManagedServerAddress: followManagedServerAddressMock,
+}));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   assertManagedServerUrlFree: assertManagedServerUrlFreeMock,
   ensureManagedServer: ensureManagedServerMock,
+  getManagedServer: () => Promise.resolve(null),
+  getRemoteManagedServer: getRemoteManagedServerMock,
   setActiveServerId: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('@main/core/switch-servers/auth', () => ({ passwordLogin: passwordLoginMock }));
@@ -301,8 +310,8 @@ describe('starting a shared stack', () => {
     expect(ensureManagedServerMock).toHaveBeenCalledWith(
       {
         name: 'Team server',
-        url: 'http://localhost:41001',
-        dashboardUrl: 'http://localhost:41000',
+        url: 'http://127.0.0.1:41001',
+        dashboardUrl: 'http://127.0.0.1:41000',
       },
       { kind: 'remote', sshHost: 'vm-1' }
     );
@@ -313,6 +322,18 @@ describe('starting a shared stack', () => {
     );
   });
 
+  it('moves the agents of a server whose record still names localhost to 127.0.0.1', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    getRemoteManagedServerMock.mockResolvedValueOnce({ url: 'http://localhost:41001' });
+    const { host } = sharedHost();
+
+    expect(await startStack(startOptions(host))).toMatchObject({ kind: 'started' });
+
+    expect(followManagedServerAddressMock).toHaveBeenCalledWith('http://localhost:41001', {
+      id: 'srv-1',
+    });
+  });
+
   it('waits for switch-core on its own address, then for the dashboard container', async () => {
     inspectStackMock.mockResolvedValue(present());
     const { host } = sharedHost();
@@ -320,15 +341,15 @@ describe('starting a shared stack', () => {
     await startStack(startOptions(host));
 
     expect(waitForHealthMock.mock.calls.map(([url]) => url)).toEqual([
-      'http://localhost:41001',
-      'http://localhost:41000',
+      'http://127.0.0.1:41001',
+      'http://127.0.0.1:41000',
     ]);
   });
 
   it('fails the start when the dashboard container never answers, registering nothing', async () => {
     inspectStackMock.mockResolvedValue(present());
     const { host } = sharedHost();
-    waitForHealthMock.mockImplementation(async (url: string) => url !== 'http://localhost:41000');
+    waitForHealthMock.mockImplementation(async (url: string) => url !== 'http://127.0.0.1:41000');
 
     expect(await startStack(startOptions(host))).toEqual({
       kind: 'error',
@@ -730,20 +751,20 @@ describe('connecting to a shared stack', () => {
     expect(await connectStack(connectOptions(host))).toEqual({
       kind: 'error',
       message:
-        'The Switch server on vm-1 is running, but did not answer at http://localhost:41001.',
+        'The Switch server on vm-1 is running, but did not answer at http://127.0.0.1:41001.',
     });
     expect(ensureManagedServerMock).not.toHaveBeenCalled();
   });
 
   it('names the dashboard container’s address when that is the part not answering', async () => {
     inspectStackMock.mockResolvedValue(present());
-    waitForHealthMock.mockImplementation(async (url: string) => url !== 'http://localhost:41000');
+    waitForHealthMock.mockImplementation(async (url: string) => url !== 'http://127.0.0.1:41000');
     const { host } = sharedHost();
 
     expect(await connectStack(connectOptions(host))).toEqual({
       kind: 'error',
       message:
-        'The Switch server on vm-1 is running, but did not answer at http://localhost:41000.',
+        'The Switch server on vm-1 is running, but did not answer at http://127.0.0.1:41000.',
     });
     expect(ensureManagedServerMock).not.toHaveBeenCalled();
   });
@@ -1115,7 +1136,7 @@ describe('what a start makes sure of before it changes anything', () => {
     await startStack(startOptions(host));
 
     expect(checkNetworking).toHaveBeenCalledWith(hostPorts);
-    expect(assertManagedServerUrlFreeMock).toHaveBeenCalledWith('http://localhost:41001', {
+    expect(assertManagedServerUrlFreeMock).toHaveBeenCalledWith('http://127.0.0.1:41001', {
       kind: 'remote',
       sshHost: 'vm-1',
     });
@@ -1139,7 +1160,7 @@ describe('what a start makes sure of before it changes anything', () => {
   it('changes nothing on the host when its address is already another server’s here', async () => {
     inspectStackMock.mockResolvedValue(present());
     assertManagedServerUrlFreeMock.mockRejectedValueOnce(
-      new Error('http://localhost:41000 is already the address of “My local server”')
+      new Error('http://127.0.0.1:41000 is already the address of “My local server”')
     );
 
     await expect(startStack(startOptions(sharedHost().host))).rejects.toThrow(

@@ -43,6 +43,9 @@ spec:
         {{- include "switch.selectorLabels" (dict "Release" .Release "component" "switch-core") | nindent 8 }}
     spec:
       serviceAccountName: {{ include "switch.coreServiceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.switchCore.podSecurityContext | nindent 8 }}
       {{- if .Values.global.imagePullSecrets }}
       {{- include "switch.imagePullSecrets" . | nindent 6 }}
       {{- end }}
@@ -77,12 +80,16 @@ spec:
           command: ["switch-migrate"]
           env:
             {{- include "switch.coreEnv" (merge (dict "omitTeamsApp" true) .) | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.switchCore.securityContext | nindent 12 }}
           resources:
             {{- toYaml .Values.switchCore.resources | nindent 12 }}
-          {{- if include "switch.dbCaBundleConfigMap" . }}
           volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if include "switch.dbCaBundleConfigMap" . }}
             {{- include "switch.dbCaBundleVolumeMount" . | nindent 12 }}
-          {{- end }}
+            {{- end }}
       containers:
         - name: switch-core
           image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.switchCore.image) }}
@@ -169,10 +176,13 @@ spec:
               port: 8000
             periodSeconds: 5
             failureThreshold: 60
+          securityContext:
+            {{- toYaml .Values.switchCore.securityContext | nindent 12 }}
           resources:
             {{- toYaml .Values.switchCore.resources | nindent 12 }}
-          {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.googleWorkspaceClientSecret .Values.switchCore.airtableClientSecret .Values.switchCore.gitlabClientSecret .Values.switchCore.hostedControllerSecret (include "switch.teamsAppFederated" .) }}
           volumeMounts:
+            - name: tmp
+              mountPath: /tmp
             {{- if .Values.switchCore.hostedControllerSecret }}
             - name: hosted-controller
               mountPath: /etc/switch-hosted
@@ -206,9 +216,10 @@ spec:
               mountPath: {{ include "switch.teamsAppTokenDir" . }}
               readOnly: true
             {{- end }}
-          {{- end }}
-      {{- if or (include "switch.dbCaBundleConfigMap" .) .Values.switchCore.githubConnectionsSecret .Values.switchCore.googleWorkspaceClientSecret .Values.switchCore.airtableClientSecret .Values.switchCore.gitlabClientSecret .Values.switchCore.hostedControllerSecret (include "switch.teamsAppFederated" .) }}
       volumes:
+        # The root filesystem is read-only; uploads spool here.
+        - name: tmp
+          emptyDir: {}
         {{- if .Values.switchCore.hostedControllerSecret }}
         - name: hosted-controller
           secret:
@@ -254,4 +265,3 @@ spec:
                   audience: api://AzureADTokenExchange
                   expirationSeconds: 3600
         {{- end }}
-      {{- end }}

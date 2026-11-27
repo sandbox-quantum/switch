@@ -1,4 +1,6 @@
 import type { ChatMessage } from '../contracts/chats';
+import { attachmentFilename } from './attachment-filename';
+import { messageText } from './message-text';
 
 /**
  * Threads are shown inline: every message in sequence order, and a reply
@@ -10,8 +12,11 @@ const SNIPPET = 80;
 
 /** A message's text, flattened to one line and cut to a chip's length. */
 export function snippetOf(message: Pick<ChatMessage, 'body' | 'attachments'>): string {
-  const text = message.body.replace(/\s+/g, ' ').trim();
-  if (!text) return message.attachments[0]?.filename ?? 'an attachment';
+  const text = messageText(message).replace(/\s+/g, ' ').trim();
+  if (!text) {
+    const file = message.attachments[0];
+    return file ? attachmentFilename(file.filename) : 'an attachment';
+  }
   return text.length > SNIPPET ? `${text.slice(0, SNIPPET - 1)}…` : text;
 }
 

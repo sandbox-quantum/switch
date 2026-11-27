@@ -85,6 +85,33 @@ ingress:
     - /api/messages
     - /api/teams/notifications
 
+# ── Network policies ──────────────────────────────────────────────────────────
+# NetworkPolicies that admit to each pod only who needs it. They need a CNI
+# that enforces NetworkPolicy; without one they are accepted and ignored. The
+# decision service has its own (decision.networkPolicy).
+#
+# The in-cluster Postgres (postgresql.mode: managed) admits only this
+# release's switch-core and migration Jobs, on 5432.
+#
+# switch-core and the gateway serve people, agents and webhooks
+# from outside the cluster, through whatever ingress controller or load
+# balancer you run, which the chart cannot name. So they get a policy only
+# once `ingressFrom` names who reaches them: then each admits, on the ports it
+# serves, those peers and the release's own pods that call it, and nothing
+# else. Left empty they get none, rather than one admitting everyone, which
+# would only widen a stricter policy of your own in the namespace. Kubelet
+# probes come from the node, which CNIs admit by default.
+networkPolicy:
+  enabled: true
+  # NetworkPolicyPeer entries: your ingress controller's pods, a load
+  # balancer's address ranges, and wherever your agents connect from. E.g.
+  #   ingressFrom:
+  #     - namespaceSelector:
+  #         matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+  #       podSelector:
+  #         matchLabels: {app.kubernetes.io/name: ingress-nginx}
+  ingressFrom: []
+
 # ── Secrets ───────────────────────────────────────────────────────────────────
 # Two ways to supply secrets:
 #
@@ -214,7 +241,7 @@ switchCore:
   airtableClientSecret: ""
   # Existing Secret with client.json ({"client_id", "client_secret"}): the
   # GitLab OAuth application for the GitLab connection, with the scopes mcp,
-  # read_api, read_user and api, and the redirect URI
+  # read_user and api, and the redirect URI
   # https://<public URL>/gateway/service-connections/gitlab/flows/callback.
   # Without it or one saved under Connectors, GitLab shows as not set up.
   gitlabClientSecret: ""
@@ -235,6 +262,25 @@ switchCore:
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""
   logLevel: INFO
+
+  # Every pod that runs the switch-core image: the server and its migrate init
+  # container, and the migration Job. The image's user is 10001. The root
+  # filesystem is read-only; /tmp, where uploads spool, is an emptyDir. The
+  # pods mount no ServiceAccount token: switch-core never calls the Kubernetes
+  # API, and workload identity (IRSA, EKS Pod Identity, Azure) and the Teams
+  # app's federated credential mount tokens of their own.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
 
   # The ServiceAccount switch-core runs as: one of its own, never the
   # namespace's `default`, which every pod that names no account shares.
@@ -891,6 +937,20 @@ gateway:
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""
+  # nginx as its own user (101), which the image runs as: the root filesystem
+  # is read-only, with emptyDirs for its cache and its pid file (/tmp).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
   replicaCount: 1
   service:
     type: ClusterIP
@@ -1051,7 +1111,7 @@ decision:
           memory: "28Gi"
           nvidia.com/gpu: 1
     llamacpp:
-      image: ghcr.io/ggml-org/llama.cpp:server-cuda
+      image: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:d68ec493c0ff9105ddfe2e909fff304117bc6e1fffbbd8d94182bd455983c264
       imagePullPolicy: IfNotPresent
       port: 8300
       # DECISION_MODEL unless `model` above is set.
@@ -1081,7 +1141,7 @@ decision:
         file: Qwen3.5-4B-Q4_K_M.gguf
         # Hex SHA-256 of the file. Empty skips the check (not recommended).
         sha256: 00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4
-        downloaderImage: curlimages/curl:8.11.1
+        downloaderImage: curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
       # llama.cpp's /health is 503 until the model is loaded (seconds).
       startupProbe:
         periodSeconds: 5
@@ -1310,8 +1370,26 @@ postgresql:
     database: switch
 
   # ── mode: managed ───────────────────────────────────────────────────────────
-  image: postgres:16-alpine
+  image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
   imagePullPolicy: IfNotPresent
+  # The image's postgres user (70 in the Alpine image; 999 in the Debian
+  # one), which owns the data directory: a volume first started by an older
+  # release, as root, was handed to it then. Also the create-runtime-role
+  # Job's. The root filesystem is read-only; the socket directory and /tmp
+  # are emptyDirs.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 70
+    runAsGroup: 70
+    fsGroup: 70
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
   database: switch
   persistence:
     size: 10Gi

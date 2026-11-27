@@ -47,6 +47,7 @@ function entry(overrides: Partial<ParsedAgentEntry>): ParsedAgentEntry {
     isolation: null,
     autoMode: null,
     autoApprove: null,
+    permissionsAsWritten: { autoApprove: undefined, addressing: undefined },
     connections: [],
     directory: null,
     join: [],

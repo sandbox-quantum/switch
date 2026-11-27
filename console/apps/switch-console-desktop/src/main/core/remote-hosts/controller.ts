@@ -1,8 +1,10 @@
 import { evictRemoteDependencyManager } from '@main/core/dependencies/remote-dependency-manager';
 import { hostControllerService } from '@main/core/host-controllers/host-controllers';
+import { hostKeyTrustService } from '@main/core/ssh/host-keys/production-host-keys';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { hostBlockedReason, type HostReachability } from '@shared/core/remote-hosts/reachability';
 import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';
+import type { HostKeyProblem } from '@shared/core/ssh/host-keys';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { listSshConfigHosts } from './list-ssh-config-hosts';
 import { hostReachabilityService, releaseHostIfUnused } from './production-host-reachability';
@@ -22,13 +24,28 @@ import { listRemoteHosts, removeRemoteHost, upsertRemoteHost, type RemoteHost } 
 export type TestConnectionResult = { ok: true } | { ok: false; message: string };
 
 /**
+ * Probe now. If the host's key is refused and the user can decide about it —
+ * the prompt for it is already up — wait for the answer, and probe again once
+ * they trust it, so an explicit check carries on rather than failing under the
+ * prompt.
+ */
+async function checkNowDecidingHostKey(sshHost: string): Promise<HostReachability> {
+  const reachability = await hostReachabilityService.checkNow(sshHost);
+  if (reachability.status !== 'untrusted') return reachability;
+  const decision = hostKeyTrustService.waitForDecision(sshHost);
+  if (!decision || (await decision) !== 'trusted') return hostReachabilityService.get(sshHost);
+  return hostReachabilityService.checkNow(sshHost);
+}
+
+/**
  * Ad-hoc reachability check. Routed through the reachability service rather
  * than connecting directly, so a manual "Test connection" and the background
  * probe share one code path — and a successful test immediately un-pauses the
  * host-dependent work that was gated on the old state.
  */
 async function testConnection(sshHost: string): Promise<TestConnectionResult> {
-  const reachability = await hostReachabilityService.checkNow(sshHost);
+  hostKeyTrustService.clearDismissals(sshHost);
+  const reachability = await checkNowDecidingHostKey(sshHost);
   if (reachability.status === 'reachable') return { ok: true };
   return { ok: false, message: reachability.lastError ?? hostBlockedReason(reachability) };
 }
@@ -50,8 +67,32 @@ export const remoteHostsController = createRPCController({
    * host-dependent path (reconciler included) rather than only fixing the
    * screen the user is looking at.
    */
-  retryHost: (sshHost: string): Promise<HostReachability> =>
-    hostReachabilityService.checkNow(sshHost),
+  retryHost: (sshHost: string): Promise<HostReachability> => {
+    // An explicit retry asks again about a host key the user turned down.
+    hostKeyTrustService.clearDismissals(sshHost);
+    return checkNowDecidingHostKey(sshHost);
+  },
+
+  /** Host keys refused and waiting for the user, for the renderer's hydrate. */
+  listHostKeyProblems: (): Promise<HostKeyProblem[]> => Promise.resolve(hostKeyTrustService.list()),
+
+  /**
+   * Trust the key a host presented — the one whose fingerprint the user was
+   * shown — then reconnect, which resumes the host's paused work.
+   */
+  trustHostKey: async (params: {
+    sshHost: string;
+    fingerprint: string;
+  }): Promise<HostReachability> => {
+    await hostKeyTrustService.trust(params.sshHost, params.fingerprint);
+    return hostReachabilityService.checkNow(params.sshHost);
+  },
+
+  /** Turn a host key down. The host stays blocked until the user retries. */
+  dismissHostKey: (params: { sshHost: string; fingerprint: string }): Promise<void> => {
+    hostKeyTrustService.dismiss(params.sshHost, params.fingerprint);
+    return Promise.resolve();
+  },
 
   /** Verify reachability, then onboard (or rename) the host. */
   onboardHost: async (params: {

@@ -48,7 +48,10 @@ MACHINES = [
         "id": "m-laptop",
         "name": "laptop",
         "state": "online",
-        "providers": [{"provider": "claude", "installed": True, "auth": "ok"}],
+        "providers": [
+            {"provider": "claude", "installed": True, "auth": "ok"},
+            {"provider": "cursor", "installed": True, "auth": "ok"},
+        ],
     },
     {
         "id": "m-box",
@@ -364,6 +367,33 @@ async def test_each_placement_refusal_carries_managements_reason(managed):
 
 
 @pytest.mark.asyncio
+async def test_a_directory_that_climbs_out_of_the_workspaces_is_refused(managed):
+    """`{$agents_dir}` becomes a path only once the machine is known, so the
+    directory it makes is checked then, as any other directory is."""
+    template_id = await _stored(
+        managed,
+        """\
+agent:
+  name: solo
+  instructions: Work alone.
+  provider: claude
+  machine: laptop
+  directory: "{$agents_dir}/../../etc"
+""",
+        kind="agent",
+    )
+
+    with pytest.raises(AgentsNotCreated) as e:
+        await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    assert {(p.slot, p.code) for p in e.value.problems} == {
+        ("solo", "invalid_directory")
+    }
+    assert "'..' segment" in str(e.value)
+    assert managed["management"].created == []
+
+
+@pytest.mark.asyncio
 async def test_a_name_already_taken_refuses_the_run(managed):
     template_id = await _stored(
         managed, TEAM.replace('name: "{team}-lead"', "name: claude-code.bob")
@@ -486,6 +516,63 @@ agent:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "line",
+    [
+        "  auto_approve: true\n",
+        "  advanced_config:\n    permissionMode: bypassPermissions\n",
+    ],
+)
+async def test_an_agent_cannot_make_a_bypass_agent_through_a_template(managed, line):
+    """Bypass waits for the owner when an agent asks for it with create_agent;
+    a template an agent runs is refused it rather than let it skip that."""
+    template_id = await _stored(
+        managed,
+        "agent:\n"
+        "  name: solo\n"
+        "  instructions: Work alone.\n"
+        "  provider: claude\n"
+        "  machine: laptop\n"
+        "  directory: /srv/solo\n" + line,
+        kind="agent",
+    )
+
+    with pytest.raises(AgentsNotCreated) as e:
+        await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    assert {(p.slot, p.code) for p in e.value.problems} == {
+        ("solo", "needs_owner_confirmation")
+    }
+    assert "create_agent" in str(e.value)
+    assert managed["management"].created == []
+
+
+@pytest.mark.asyncio
+async def test_an_agent_run_template_gives_a_cursor_agent_approvals_not_bypass(
+    managed,
+):
+    """Cursor's default is bypass, which an agent may not give another agent
+    without its owner; a template that does not ask for bypass is not refused
+    for that default, and its Cursor agent asks for approval instead."""
+    template_id = await _stored(
+        managed,
+        "agent:\n"
+        "  name: solo\n"
+        "  instructions: Work alone.\n"
+        "  provider: cursor\n"
+        "  machine: laptop\n"
+        "  directory: /srv/solo\n",
+        kind="agent",
+    )
+
+    result = await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    assert [a["name"] for a in result["created_agents"]] == ["solo"]
+    created = managed["management"].created[0]
+    assert (created.auto_mode, created.auto_approve) == (False, False)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("written", "expected"), [("true", True), (None, False)])
 async def test_a_template_says_whether_its_agent_can_manage_agents(
     managed, written, expected
@@ -556,6 +643,36 @@ async def test_switch_buddy_is_created_under_its_name_and_can_manage_agents(mana
     assert (
         managed["management"].created[0].icon_url.endswith("/assets/switch-buddy.png")
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chosen", "defined"),
+    [(None, None), ("/home/me/code/switch", "/home/me/code/switch")],
+)
+async def test_an_agent_runs_switch_expert_in_the_folder_the_person_chose(
+    managed, chosen, defined
+):
+    """An agent running an agent template passes the folder the person named
+    as `directory` (switch-buddy's AGENT.md, "Where it works"), or none for a
+    fresh one. The run creates the agent there, with nobody asked to confirm:
+    the machine asks its person before an agent works outside its
+    workspaces. The Switch expert is served where switch-buddy is not."""
+    managed["protocol"].config.feature_flags["switch_buddy"] = False
+    inputs = {} if chosen is None else {"directory": chosen}
+
+    result = await _as(
+        managed["agent_id"],
+        run_template,
+        template_id="official:switch-expert",
+        inputs=inputs,
+    )
+
+    assert [a["name"] for a in result["created_agents"]] == ["switch-expert"]
+    (created,) = managed["management"].created
+    assert created.directory == defined
+    assert created.auto_approve is False
+    assert "permissionMode" not in created.advanced_config
 
 
 def _plan(template: str, **kw: Any) -> Any:

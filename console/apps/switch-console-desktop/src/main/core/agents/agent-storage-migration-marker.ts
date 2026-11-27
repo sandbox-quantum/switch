@@ -21,6 +21,9 @@ const MARKER_KEY = 'agentStorageMigrationComplete';
  *   kept in its definition and what other providers kept on the agent row.
  * - `4` — every file in an agent's working directory that can hold its token
  *   is made readable by its owner alone, by changing permissions only.
+ * - `5` — once an agent's token is in its per-agent file, the copies an earlier
+ *   version left under `.claude/` lose it, and `.switch/agents/.gitignore` is
+ *   made Console's again where a repository replaced it.
  *
  * Bump this whenever the migration learns to fix something it previously
  * skipped, so installs that latched an earlier generation run the new pass
@@ -28,7 +31,7 @@ const MARKER_KEY = 'agentStorageMigrationComplete';
  * it says. Then teach `migrateAgentStorage` which agents the new generation can
  * actually change, so the re-run does not re-open workspaces it cannot fix.
  */
-export const AGENT_STORAGE_MIGRATION_GENERATION = 4;
+export const AGENT_STORAGE_MIGRATION_GENERATION = 5;
 
 /** The generation last completed on this install; 0 when it has never run. */
 export async function completedAgentStorageMigrationGeneration(): Promise<number> {

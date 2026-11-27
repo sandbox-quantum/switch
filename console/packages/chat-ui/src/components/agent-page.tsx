@@ -28,6 +28,7 @@ export type AgentLine = {
  * as buttons to the agent's own sections.
  */
 export function AgentProfileHeader({
+  agentId,
   name,
   iconUrl,
   serverId,
@@ -35,6 +36,8 @@ export function AgentProfileHeader({
   onOpenLine,
   children,
 }: {
+  /** The agent on `serverId`, or null while it does not exist yet. */
+  agentId: string | null;
   name: string;
   iconUrl: string | null;
   serverId: string;
@@ -46,7 +49,13 @@ export function AgentProfileHeader({
   return (
     <div className="flex flex-col items-center px-2 pt-4 pb-6 text-center">
       <span className="flex size-24 shrink-0 items-center justify-center rounded-[22%] bg-background-2">
-        <AgentAvatar name={name} iconUrl={iconUrl} serverId={serverId} size={76} />
+        <AgentAvatar
+          agentId={agentId}
+          name={name}
+          iconUrl={iconUrl}
+          serverId={serverId}
+          size={76}
+        />
       </span>
       <h2 className="mt-4 max-w-full truncate text-base font-semibold text-foreground">{name}</h2>
       {line && LineIcon && (

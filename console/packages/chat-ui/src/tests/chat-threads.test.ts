@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '../contracts/chats';
 import { messageAnchorId, snippetOf, threadChip } from '../model/chat-threads';
+import { messageText } from '../model/message-text';
 
 const root = {
   messageId: '$root',
@@ -45,5 +46,27 @@ describe('thread chips', () => {
       })
     ).toBe('log.txt');
     expect(messageAnchorId('$a:b')).toBe('chat-message-_a_b');
+  });
+});
+
+describe('a file’s name in a message', () => {
+  const spoofed = {
+    uri: 'mxc://example.test/abc',
+    filename: 'invoice\u202Efdp.exe',
+    mimetype: 'application/octet-stream',
+    size: 13,
+    msgtype: 'm.file',
+  };
+
+  it('shows a file posted without a caption under its real extension', () => {
+    expect(messageText({ body: spoofed.filename, attachments: [spoofed] })).toBe('invoice_fdp.exe');
+    expect(snippetOf({ body: spoofed.filename, attachments: [spoofed] })).toBe('invoice_fdp.exe');
+    expect(snippetOf({ body: '', attachments: [spoofed] })).toBe('invoice_fdp.exe');
+  });
+
+  it('leaves a caption as written', () => {
+    expect(messageText({ body: 'Here is the invoice', attachments: [spoofed] })).toBe(
+      'Here is the invoice'
+    );
   });
 });

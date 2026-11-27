@@ -92,6 +92,7 @@ async function render() {
           state: { kind: 'ready', machine: { id: 'm-1', providers: state.providers } as never },
           recheck: state.recheck,
           retry: () => {},
+          turnOn: async () => {},
         }}
       />
     )

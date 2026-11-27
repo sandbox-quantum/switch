@@ -1,4 +1,3 @@
-import Editor from '@monaco-editor/react';
 import { ServerPage } from '@switch-console/chat-ui/components/server-page';
 import {
   TEMPLATE_ACCESS_OPTIONS,
@@ -12,7 +11,7 @@ import { Input } from '@switch-console/chat-ui/primitives/input';
 import { SegmentedControl } from '@switch-console/chat-ui/primitives/segmented-control';
 import { ArrowRight, Save, Upload, FileText } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
@@ -28,6 +27,13 @@ import { useModalContext } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 
 // ── Source step ─────────────────────────────────────────────────────────────
+
+// Monaco is bundled with the app (`@renderer/lib/monaco`), and loaded the first
+// time the editor shows rather than with the window.
+const Editor = lazy(async () => {
+  await import('@renderer/lib/monaco');
+  return import('@monaco-editor/react');
+});
 
 function readFileAsText(file: File, onText: (text: string) => void): void {
   const reader = new FileReader();
@@ -106,27 +112,35 @@ function SourceStep({
             onDrop={handleDrop}
             className={`overflow-hidden rounded-md border border-border transition-colors ${dragging ? 'ring-primary ring-2' : ''}`}
           >
-            <Editor
-              height={editorHeight}
-              language="yaml"
-              theme="vs-dark"
-              value={yamlText}
-              onChange={(v) => onYamlChange(v ?? '')}
-              options={{
-                minimap: { enabled: false },
-                lineNumbers: 'on',
-                folding: true,
-                tabSize: 2,
-                fontSize: 13,
-                scrollBeyondLastLine: false,
-                wordWrap: 'on',
-                automaticLayout: true,
-                renderLineHighlight: 'none',
-                overviewRulerLanes: 0,
-                hideCursorInOverviewRuler: true,
-                scrollbar: { vertical: 'auto', horizontal: 'auto' },
-              }}
-            />
+            <Suspense
+              fallback={
+                <div className="p-3 text-sm text-foreground-muted" style={{ height: editorHeight }}>
+                  Loading…
+                </div>
+              }
+            >
+              <Editor
+                height={editorHeight}
+                language="yaml"
+                theme="vs-dark"
+                value={yamlText}
+                onChange={(v) => onYamlChange(v ?? '')}
+                options={{
+                  minimap: { enabled: false },
+                  lineNumbers: 'on',
+                  folding: true,
+                  tabSize: 2,
+                  fontSize: 13,
+                  scrollBeyondLastLine: false,
+                  wordWrap: 'on',
+                  automaticLayout: true,
+                  renderLineHighlight: 'none',
+                  overviewRulerLanes: 0,
+                  hideCursorInOverviewRuler: true,
+                  scrollbar: { vertical: 'auto', horizontal: 'auto' },
+                }}
+              />
+            </Suspense>
           </div>
         </Field>
       </FieldGroup>

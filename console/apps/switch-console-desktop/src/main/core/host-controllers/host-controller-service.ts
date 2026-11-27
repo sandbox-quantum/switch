@@ -18,6 +18,8 @@ import {
   PREPARE_SCRIPT,
   type PrepareResult,
   prepareResultSchema,
+  SEALING_KEY_SCRIPT,
+  sealingKeyResultSchema,
   START_SCRIPT,
   STATUS_SCRIPT,
   statusResultSchema,
@@ -44,6 +46,15 @@ export type HostControllerRecord = {
   path: string;
   enrolledAt: string;
 };
+
+/**
+ * The key a host's controller seals provider logins to, as the host itself
+ * says: the key, none kept, or why it could not be asked.
+ */
+export type HostSealingKey =
+  | { kind: 'key'; publicKey: string }
+  | { kind: 'none' }
+  | { kind: 'unknown'; reason: string };
 
 export interface HostControllerRecords {
   all(): Promise<HostControllerRecord[]>;
@@ -202,6 +213,35 @@ export class HostControllerService {
       return status.running
         ? { kind: 'running' }
         : { kind: 'stopped', state: status.state, code: status.code, log: status.log };
+    } catch (error) {
+      return { kind: 'unknown', reason: message(error) };
+    } finally {
+      shell.close();
+    }
+  }
+
+  /**
+   * The key the host's controller seals provider logins to, read on the host
+   * over SSH: never the copy Switch holds.
+   */
+  async sealingPublicKey(record: HostControllerRecord): Promise<HostSealingKey> {
+    let shell: HostShell;
+    try {
+      shell = await this.deps.shell(record.sshHost);
+    } catch (error) {
+      return { kind: 'unknown', reason: message(error) };
+    }
+    try {
+      const answer = parseLast(
+        await shell.script(SEALING_KEY_SCRIPT, [
+          JSON.stringify({ node: record.node, bundle: record.bundle, dataDir: record.dataDir }),
+        ]),
+        (value) => sealingKeyResultSchema.parse(value)
+      );
+      if (!answer.ok) return { kind: 'unknown', reason: answer.reason };
+      return answer.publicKey === null
+        ? { kind: 'none' }
+        : { kind: 'key', publicKey: answer.publicKey };
     } catch (error) {
       return { kind: 'unknown', reason: message(error) };
     } finally {

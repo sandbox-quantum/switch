@@ -1,7 +1,24 @@
 import fs from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
+import { makeFileOwnerOnly, restrictExistingFilesToOwner } from '@main/lib/owner-only-files';
 import { CURRENT_DB_FILENAME, LEGACY_DB_FILENAMES } from './default-path';
+
+/** The files SQLite keeps beside a database, which it creates with the database's own mode. */
+const SQLITE_COMPANION_SUFFIXES = ['-wal', '-shm', '-journal'];
+
+/**
+ * Makes a database readable by its owner alone before it is opened: the file
+ * is created empty (0600) when absent, so SQLite opens that one rather than
+ * making its own with the default mode, and an existing one and its
+ * companions are narrowed to 0600.
+ */
+export function makeDatabaseFilesOwnerOnly(databasePath: string): void {
+  makeFileOwnerOnly(databasePath);
+  restrictExistingFilesToOwner(
+    SQLITE_COMPANION_SUFFIXES.map((suffix) => `${databasePath}${suffix}`)
+  );
+}
 
 function quoteSqliteString(value: string): string {
   return `'${value.split("'").join("''")}'`;
@@ -9,13 +26,22 @@ function quoteSqliteString(value: string): string {
 
 export function copySqliteDatabase(sourcePath: string, destinationPath: string): void {
   fs.mkdirSync(dirname(destinationPath), { recursive: true });
+  // VACUUM INTO writes into an empty file that exists, keeping its mode.
+  makeFileOwnerOnly(destinationPath);
 
-  const source = new Database(sourcePath, { readonly: true, fileMustExist: true });
   try {
-    source.pragma('busy_timeout = 5000');
-    source.exec(`VACUUM INTO ${quoteSqliteString(destinationPath)}`);
-  } finally {
-    source.close();
+    const source = new Database(sourcePath, { readonly: true, fileMustExist: true });
+    try {
+      source.pragma('busy_timeout = 5000');
+      source.exec(`VACUUM INTO ${quoteSqliteString(destinationPath)}`);
+    } finally {
+      source.close();
+    }
+  } catch (error) {
+    // Left behind, the file would pass for the current database at the next
+    // launch, which would then start empty instead of copying again.
+    fs.rmSync(destinationPath, { force: true });
+    throw error;
   }
 }
 

@@ -58,6 +58,7 @@ from switch_core.db.models import (
     UsageMetric,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.events import COMMAND_EVENT_TYPE
 from switch_core.logging_context import log_context
 from switch_core.messages.recorded_types import EPHEMERAL
 from switch_core.messages.row import (
@@ -1128,6 +1129,9 @@ class PostgresTransport:
 
     # ── Outbound ──────────────────────────────────────────────────────────────
 
+    def admit_message(self, authored: str | None) -> None:
+        self._router.send_limits.admit(self.client_id, authored, actor=self._actor_role)
+
     async def send_message(
         self,
         room_id: str,
@@ -1139,6 +1143,7 @@ class PostgresTransport:
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
     ) -> SendResult:
         content = message_content(
             body,
@@ -1149,7 +1154,12 @@ class PostgresTransport:
             extra_content=extra_content,
         )
         return await self._send(
-            room_id, "m.room.message", content, sender_name, metered=metered
+            room_id,
+            "m.room.message",
+            content,
+            sender_name,
+            metered=metered,
+            authored=authored,
         )
 
     async def send_event(
@@ -1159,7 +1169,12 @@ class PostgresTransport:
         content: dict[str, object],
     ) -> SendResult:
         return await self._send(
-            room_id, event_type, content, self.display_name, metered=False
+            room_id,
+            event_type,
+            content,
+            self.display_name,
+            metered=False,
+            authored=None,
         )
 
     async def send_media(
@@ -1177,6 +1192,7 @@ class PostgresTransport:
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
     ) -> SendResult:
         content = media_content(
             uri,
@@ -1191,7 +1207,12 @@ class PostgresTransport:
             extra_content=extra_content,
         )
         return await self._send(
-            room_id, "m.room.message", content, sender_name, metered=metered
+            room_id,
+            "m.room.message",
+            content,
+            sender_name,
+            metered=metered,
+            authored=authored,
         )
 
     async def _send(
@@ -1202,6 +1223,7 @@ class PostgresTransport:
         sender_name: str,
         *,
         metered: bool,
+        authored: str | None,
     ) -> SendResult:
         """Write the event, which is what sending it means here.
 
@@ -1239,6 +1261,26 @@ class PostgresTransport:
                 MESSAGES_SENT, {"kind": kind, "actor": self._actor_role}
             )
             return result
+
+        if metered and kind in _METERED_KINDS:
+            # What a person or an agent says, admitted where it entered Switch
+            # (`admit_message`), held to the length limit again here, before
+            # it costs a session or the room's lock. Its length is what they
+            # wrote; what Switch wrote into it is the router's to bound
+            # (`require_row_length`).
+            self._router.send_limits.require_length(
+                content.get("body") if authored is None else authored,
+                actor=self._actor_role,
+            )
+        elif event_type == COMMAND_EVENT_TYPE:
+            # A room command a person typed on a messaging platform: held to
+            # the same allowance as what they say, and refused the same way.
+            self._router.send_limits.admit_command(
+                self.client_id,
+                content.get("command"),
+                content.get("args"),
+                actor=self._actor_role,
+            )
 
         try:
             room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)

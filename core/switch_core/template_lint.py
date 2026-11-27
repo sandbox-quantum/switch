@@ -28,6 +28,7 @@ from pydantic import ValidationError
 
 from switch_core.rooms_yaml import PLACEHOLDER_RE, ParamSpec
 from switch_core.template_v2 import RESOURCE_TYPES, condition_params, is_v2
+from switch_core.template_yaml import load_template_yaml
 
 # Top-level keys any shape of template may carry, across every shape known to
 # be in flight — room, group, and the kickoff message that rides beside them.
@@ -490,7 +491,7 @@ def lint_template(text: str) -> LintResult:
         return LintResult(errors, warnings)
 
     try:
-        document = yaml.safe_load(text)
+        document = load_template_yaml(text)
     except yaml.YAMLError as e:
         # A mark carries the line and column, which is the whole value of the
         # message to someone staring at an editor.

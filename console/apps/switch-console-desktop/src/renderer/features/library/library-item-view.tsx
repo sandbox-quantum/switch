@@ -35,12 +35,12 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { useReadableRoomsInWorkspace } from '@renderer/features/switch-servers/use-listed-rooms';
 import { administersWorkspaceInScope } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { openContentLink } from '@renderer/lib/content-link';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { openExternalUrl } from '@renderer/lib/open-external';
 import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import type {
   LibraryDocument,
@@ -268,7 +268,7 @@ function ItemBody({ item }: { item: LibraryItem | LibraryDocument }) {
                   key={url}
                   type="button"
                   className="flex w-full cursor-pointer items-center gap-2 px-3.5 py-2.5 text-left text-sm hover:bg-background-1"
-                  onClick={() => void openExternalUrl(url, 'Could not open the link')}
+                  onClick={() => openContentLink(url)}
                 >
                   <span className="min-w-0 flex-1 truncate font-mono text-xs">{url}</span>
                   <ExternalLink className="size-3.5 shrink-0 text-foreground-muted" />

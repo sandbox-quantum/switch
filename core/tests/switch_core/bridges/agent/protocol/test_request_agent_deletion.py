@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.operations import definitions
 from switch_core.bridges.agent.protocol.agent_core import AgentRenameRefused
 from switch_core.clients.actor import SystemActor
-from switch_core.clients.agent_admin import AgentDeletionRequests
+from switch_core.clients.agent_admin import AgentRequests
 from switch_core.db.models import Agent, AuditEvent, Room, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
@@ -52,7 +52,7 @@ async def _setup(
     lifecycle = _Lifecycle(session_factory)
     svc.client_lifecycle = lifecycle  # type: ignore[assignment]
     svc.room_store = RoomStore()
-    svc.deletion_requests = AgentDeletionRequests()
+    svc.agent_requests = AgentRequests()
     owner = await make_owner(session_factory)
     caller = await register(svc, "helper", owner)
     target = await register(svc, "notes-taker", owner)
@@ -88,7 +88,7 @@ class TestAsking:
         assert lifecycle.posted[0][0] == "!ops:test"
         assert "asks to delete" in lifecycle.posted[0][1]
         assert "`!delete-agent notes-taker confirm`" in lifecycle.posted[0][1]
-        assert svc.deletion_requests.take(room_id, target) is not None
+        assert svc.agent_requests.take(room_id, target) is not None
 
     async def test_the_ask_is_in_the_audit_log(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -182,7 +182,7 @@ class TestTheTool:
         with pytest.raises(PermissionError, match="not allowed to manage agents"):
             await definitions.request_agent_deletion(target)
         assert lifecycle.posted == []
-        assert svc.deletion_requests.take(room_id, target) is None
+        assert svc.agent_requests.take(room_id, target) is None
 
     async def test_it_says_what_the_person_must_send(
         self,

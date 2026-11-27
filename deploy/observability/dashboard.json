@@ -3539,6 +3539,44 @@
         "width": 4,
         "height": 4
       }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Messages refused before they were written, by reason (too_long, rate_limited) and sender",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.messages.refused{$service,$flint_env,$version,!version:0.27.0} by {reason,actor}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 218,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Switch Trust checks that did not complete, by reason (each let a message or file through unchecked)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.trust.check_failures{$service,$flint_env,$version,!version:0.27.0} by {reason}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 222,
+        "width": 12,
+        "height": 4
+      }
     }
   ]
 }

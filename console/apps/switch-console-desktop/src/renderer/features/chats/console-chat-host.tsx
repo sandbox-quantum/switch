@@ -3,6 +3,7 @@ import { type ChatHost, ChatHostProvider } from '@switch-console/chat-ui/host';
 import { CONSOLE_LINK_PREFIX } from '@switch-console/chat-ui/model/console-links';
 import type { ReactNode } from 'react';
 import { followConsoleLink } from '@renderer/features/deeplinks/console-link-handler';
+import { isOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import { navigateHome } from '@renderer/features/switch-servers/home-target';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -10,13 +11,13 @@ import { useAgentAccent } from '@renderer/lib/components/agent-accent';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { openContentLink } from '@renderer/lib/content-link';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useTheme } from '@renderer/lib/hooks/useTheme';
 import { events, rpc } from '@renderer/lib/ipc';
 import { showModal } from '@renderer/lib/modal/modal-provider';
 import { modalStore } from '@renderer/lib/modal/modal-store';
-import { confirmOpenExternalLink } from '@renderer/lib/open-external-link';
 import { appState } from '@renderer/lib/stores/app-state';
 import { chatRemovedChannel, chatResetChannel } from '@shared/core/chats/chatEvents';
 import { useChatPeople } from './chat-people';
@@ -41,9 +42,20 @@ export const consoleChatHost: ChatHost = {
   }),
   commands: (serverId, roomId) => rpc.chats.commands(serverId, roomId),
   media: (serverId, roomId, uri) => rpc.chats.media({ serverId, roomId, uri }),
-  // A link to a Console page moves the app there; an http(s) link leaves it through the confirm dialog.
+  // The main process writes the bytes to disk, marked as downloaded, without rendering them.
+  saveAttachment: async (serverId, roomId, attachment) => {
+    await rpc.chats.saveAttachment({
+      serverId,
+      roomId,
+      uri: attachment.uri,
+      filename: attachment.filename,
+    });
+  },
+  // A link to a Console page moves the app there; an http(s) link leaves it through the
+  // confirm dialog; any other is refused with a notice.
   openLink: (href) =>
-    href.startsWith(CONSOLE_LINK_PREFIX) ? followConsoleLink(href) : confirmOpenExternalLink(href),
+    href.startsWith(CONSOLE_LINK_PREFIX) ? followConsoleLink(href) : openContentLink(href),
+  isOwnBuddy,
   isModalOpen: () => modalStore.isOpen,
   toast: (each) => void toast(each),
   bridgePlatformLabel,

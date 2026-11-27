@@ -34,7 +34,16 @@ import {
 
 type Warn = (message: string, context: Record<string, unknown>) => void;
 
-export type ChatsRequest = { method?: string; body?: unknown; formData?: FormData };
+export type ChatsRequest = {
+  method?: string;
+  body?: unknown;
+  formData?: FormData;
+  /**
+   * The route answers with a room file, which may itself be an HTML page: the
+   * caller must not take an HTML answer for a proxy's or a web app's page.
+   */
+  servesFiles?: true;
+};
 
 export type ChatsClientDeps = {
   /**
@@ -332,7 +341,9 @@ export class ChatsClient {
     roomId: string,
     uri: string
   ): Promise<{ mimeType: string; bytes: Uint8Array }> {
-    const response = await this.call(`${room(roomId)}/media?${new URLSearchParams({ uri })}`, {});
+    const response = await this.call(`${room(roomId)}/media?${new URLSearchParams({ uri })}`, {
+      servesFiles: true,
+    });
     return {
       mimeType: response.headers.get('content-type') ?? 'application/octet-stream',
       bytes: new Uint8Array(await response.arrayBuffer()),

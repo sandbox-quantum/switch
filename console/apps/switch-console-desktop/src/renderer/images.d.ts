@@ -42,3 +42,8 @@ declare module '*.yaml?raw' {
   const value: string;
   export default value;
 }
+
+declare module '*?worker' {
+  const WorkerConstructor: new () => Worker;
+  export default WorkerConstructor;
+}
