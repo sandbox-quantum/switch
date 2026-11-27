@@ -238,7 +238,7 @@ switchCore:
   # visibilityKeyedIdKeySecret, and the "hosted_agents" and
   # "agent_management" feature flags (the chart refuses to render without
   # them). The box side (gVisor nodes, the box provisioner
-  # and controller) is set up in the cluster separately: deploy/hosted/k8s.
+  # and controller) is set up in the cluster separately, from the deployment repository.
   # Only true (a real true, or the string "true") turns it on; anything else is off.
   hostedBoxProvisioning: false
   # v2 only. How many boxes switch-core asks for per minute (1-60), and how

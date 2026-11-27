@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
 
 import pytest
@@ -21,7 +20,6 @@ from switch_hosted_controller.box_names import (
 )
 
 PACKAGE = Path(box_names.__file__).parent
-HOSTED = PACKAGE.parents[2]
 USER, BOX = "k1-0123456789abcdef", "k1-fedcba9876543210"
 
 
@@ -109,21 +107,3 @@ def test_every_gate_uses_the_shared_patterns():
     # What reads the box map: the readers' pattern.
     for module in (box_scaler, placer, drain_actions, restart_actions, egress_lists):
         assert module.NAMESPACE_RE is KNOWN_BOX_NAMESPACE_RE, module.__name__
-
-
-def test_p1_refuses_a_loose_person_keyed_name_at_creation():
-    """Creation stays exact: the admission policy's namespace pattern takes `agents-user-k1-<16 hex>` and nothing
-    looser, so the readers' legacy allowance can only ever see names that already exist."""
-    policy = (HOSTED / "k8s" / "30-admission-policies.yaml").read_text()
-    patterns = re.findall(r"object\.metadata\.name\.matches\('([^']+)'\)", policy)
-    box_patterns = [p for p in patterns if p.startswith("^agents-")]
-    assert box_patterns, "P1's namespace name check not found"
-    assert any(re.fullmatch(p, f"agents-user-{USER}") for p in box_patterns)
-    for pattern in box_patterns:
-        for loose in (
-            "agents-user-ada",
-            "agents-user-k1-0123",
-            "agents-box-ada",
-            "agents-box-k1-0123",
-        ):
-            assert not re.fullmatch(pattern, loose), (pattern, loose)

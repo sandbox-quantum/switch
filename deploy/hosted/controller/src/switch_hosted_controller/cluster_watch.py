@@ -16,7 +16,7 @@ an observation, and the node it runs on, for that observation.
 name rule, zones a zone pattern, and services come from the list here. No pod
 spec, environment, label value or event text is sent.
 
-**Its rights** (`placer/cluster-report-rbac.PROPOSED.yaml`), for the hosted
+**Its rights** (`placer/cluster-report-rbac.PROPOSED.yaml`, in the deployment repository), for the hosted
 controller's account: `get` and `list` on nodes (names, zones, taints,
 allocatable), `get` on `nodes` in `metrics.k8s.io` (node totals only, never
 pods), and `get` on each listed Deployment by name, through one Role per

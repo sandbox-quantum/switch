@@ -414,7 +414,7 @@ A listed service is read from its Deployment's own `spec.replicas` and
 clusters, so a 404 on either leaves it out of the report. A 404 on any other
 service is reported as short.
 
-The extra reads are in `placer/cluster-report-rbac.PROPOSED.yaml`, for review
+The extra reads are in `placer/cluster-report-rbac.PROPOSED.yaml` in the deployment repository, for review
 before they're applied. They're for the hosted controller's account
 (`switch-hosted-controller` in `switch-hosted`):
 - `list` on nodes, and `get` on node totals in `metrics.k8s.io`;

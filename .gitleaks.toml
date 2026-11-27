@@ -116,7 +116,9 @@ regexes = [
 
 [[allowlists]]
 description = "Test fixture in k8s-fields.json"
-# A plain source label in the box operator's Kubernetes field fixture.
+# A plain source label in the box operator's Kubernetes field fixture. The file
+# has moved to the deployment repository with the tests that read it; the entry
+# stays because older commits in history still carry it.
 condition = "AND"
 targetRules = ["generic-api-key"]
 paths = ['''^deploy/hosted/controller/tests/fixtures/k8s-fields\.json$''']

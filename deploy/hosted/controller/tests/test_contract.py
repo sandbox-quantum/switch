@@ -2,7 +2,6 @@
 committed up to date, and placeholders only, since it is public."""
 
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -164,46 +163,6 @@ def test_the_alert_lines_are_still_logged():
     assert contract.log_lines_problems(SRC) == []
 
 
-def test_each_alert_lines_service_is_a_pods_datadog_service_tag():
-    """A monitor filters on the pod's Datadog service tag, so each line names one a pod really carries."""
-    tags = set()
-    for path in (HOSTED / "k8s").glob("*.yaml"):
-        tags |= set(re.findall(r"tags\.datadoghq\.com/service: ([a-z0-9-]+)", path.read_text()))
-    # The node gate isn't deployed yet (its manifest is only proposed): its pod takes the tag when it is.
-    services = {line["service"] for line in contract.LOG_LINES} - {"switch-node-gate"}
-    assert services <= tags, services - tags
-
-
-def test_the_tiers_are_the_operators_and_the_policys():
-    """The tiers here, the operator's configuration and admission policy P4 agree. (Until the manifests move to
-    the deployment repository, which then checks its own configuration against `tiers.json`.)"""
-    config = (HOSTED / "k8s" / "40-switch-hosted.yaml").read_text()
-    raw = json.loads(
-        re.search(r"  config\.json: \|\n(.*?)\n(?=\S|  \S)", config, re.S).group(1)  # type: ignore[union-attr]
-    )
-    for tier, size in contract.TIERS.items():
-        assert raw["sizes"][tier] == size
-    policies = (HOSTED / "k8s" / "30-admission-policies.yaml").read_text()
-    for size in contract.TIERS.values():
-        assert (
-            f"[{{'cpu': '{size['cpu_request']}', 'memory': '{size['memory_request']}'}}, "
-            f"{{'cpu': '{size['cpu_limit']}', 'memory': '{size['memory_limit']}'}}]" in policies
-        )
-
-
-def test_the_fills_cover_the_manifests_tokens():
-    """Every token in the files a deployment applies (as `fill-placeholders.py` reads them)."""
-    applied = [
-        *(HOSTED / "k8s").glob("*.yaml"),
-        HOSTED / "box" / "priorityclass-switch-box.yaml",
-        HOSTED / "egress" / "egress-proxy-networkpolicy.yaml",
-    ]
-    tokens = set()
-    for path in applied:
-        tokens |= set(re.findall(r"__[A-Z0-9_]+__", path.read_text()))
-    assert tokens <= set(contract.fills()), sorted(tokens - set(contract.fills()))
-
-
 def test_check_mode_reports_a_stale_folder(tmp_path):
     contract.write(tmp_path)
     assert contract.main(["--check", str(tmp_path)]) == 0
@@ -224,64 +183,6 @@ def test_an_alert_line_left_out_of_the_catalogue_is_caught(monkeypatch):
 
 # Policy rules no service request here can reach, and why.
 NOT_REACHED: dict[str, str] = {}
-
-
-def _policy_messages() -> dict[str, list[str]]:
-    text = (HOSTED / "k8s" / "30-admission-policies.yaml").read_text()
-    out: dict[str, list[str]] = {}
-    for doc in text.split("\n---\n"):
-        if "\nkind: ValidatingAdmissionPolicy\n" not in "\n" + doc + "\n":
-            continue
-        name = re.search(r"\nmetadata:\n  name: (\S+)", "\n" + doc).group(1)  # type: ignore[union-attr]
-        out[name] = [
-            m.strip().strip("'\"").replace("''", "'")
-            for m in re.findall(r"\n\s+message: ([^\n]+)", doc)
-        ]
-    return out
-
-
-def test_every_policy_rule_has_a_bad_sample(files):
-    """One bad sample per validation of every policy: admission refuses it by that rule's message, or RBAC
-    refuses it first (marked so)."""
-    bad = [json.loads(d) for n, d in files.items() if n.startswith("admission/bad/")]
-    messages = _policy_messages()
-    for sample in bad:
-        assert sample["expect"] == "refuse"
-        assert (sample["refused_by"] == "rbac") == (not sample["policies"])
-        for policy in sample["policies"]:
-            assert policy in messages, policy
-        if sample["policies"]:
-            assert any(m.startswith(sample["message"]) for m in messages[sample["policies"][0]]), (
-                sample["what"]
-            )
-    covered = {(s["policies"][0], s["message"]) for s in bad if s["policies"]}
-    for policy, rules in messages.items():
-        if policy in NOT_REACHED:
-            continue
-        for rule in rules:
-            reached = any(p == policy and rule.startswith(m) for p, m in covered)
-            by_rbac = any(
-                s["refused_by"] == "rbac" and s["from_good"] for s in bad
-            )  # a verb or name the account isn't granted: RBAC refuses before the rule
-            assert reached or (by_rbac and _rbac_only(policy, rule)), (policy, rule)
-
-
-def _rbac_only(policy: str, rule: str) -> bool:
-    """The rules about a verb or object the account has no grant for: their bad samples stop at RBAC."""
-    return rule.startswith(
-        (
-            "the provisioner may only create namespaces",
-            "the provisioner only creates; it never updates or deletes",
-            "the provisioner may only update the box map",
-            "the provisioner may only update the pool-map",
-            "the provisioner may only update the box-owners",
-            "the reaper may only delete namespaces",
-            "the remover may only delete namespaces",
-            "the provisioner may only create the RoleBinding",
-            "the operator may not change a node's status",
-            "the operator may only create placeholder pods",
-        )
-    )
 
 
 def test_each_bad_sample_has_its_own_name():

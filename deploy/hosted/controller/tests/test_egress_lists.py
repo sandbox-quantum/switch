@@ -1266,3 +1266,9 @@ def test_a_retired_box_gets_no_login_and_an_unreadable_list_keeps_every_box():
         FakeCall({boxmap: {"data": data}, removals: HTTPError("u", 403, "x", None, None)})
     )
     assert set(api.live_box_map().values()) == {"agents-user-ada", "agents-user-bo"}
+
+
+def test_an_empty_settings_secret_is_what_egress_lists_accepts() -> None:
+    from switch_hosted_controller.egress_lists import parse_egress
+
+    assert parse_egress("{}", {}, ()) == []

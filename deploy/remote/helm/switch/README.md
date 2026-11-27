@@ -569,7 +569,7 @@ switchCore:
   operator.
 - **The box side** runs in the cluster, outside this chart: gVisor nodes, the
   box provisioner and controller, and their permissions and network rules
-  (`deploy/hosted/k8s`). It needs cluster-admin to set up once, and boxes must
+  (in the deployment repository). It needs cluster-admin to set up once, and boxes must
   reach switch-core over HTTPS.
 - **`hosted_awake_budgets`** is an optional feature flag for awake-time budgets.
   Leave it off until every box runs the split layout.

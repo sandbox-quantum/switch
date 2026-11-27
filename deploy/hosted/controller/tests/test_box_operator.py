@@ -726,7 +726,6 @@ def test_the_operator_builds_exactly_the_ticked_template():
     render values (fixture sha256 7293ce26…), with the same
     two placeholders as before swapped in: the AWS account id for 123456789012 and the server address for
     10.0.0.10. Every one of the 14 objects must be equal, field for field."""
-    from pathlib import Path
 
     rendered = json.loads(
         (Path(__file__).parent / "fixtures" / "box-template-split-v2.3-render.json").read_text()
@@ -1179,7 +1178,6 @@ def _real_box_c() -> dict:
     """A real `kubectl get sts box -n agents-user-c -o json` (2026-10-29, sha256 e7a0208d…f025), with only the
     registry account and the server address swapped for placeholders (the repo is public). Box C predates box provisioning, made from
     an older template, so it's used here for the API server's real defaults only."""
-    from pathlib import Path
 
     return json.loads(
         (Path(__file__).parent / "fixtures" / "box-sts-agents-user-c-real.json").read_text()
@@ -1561,17 +1559,6 @@ def test_the_switch_ca_object_is_pinned():  # type: ignore[no-untyped-def]
     }
 
 
-def test_the_documented_ca_change_loads_in_one_step():  # type: ignore[no-untyped-def]
-    """DEPLOY.md's order: the new box-ca.crt and the old bundle in earlier_box_cas, in one change. That loads; the
-    current bundle listed as earlier is refused, so the operator would not start (which is why it's one step)."""
-    config = _ca_cfg(CA_NEW, earlier_box_cas=[CA_BUNDLE])
-    assert config.ca_cert == CA_NEW and config.earlier_box_cas == (CA_BUNDLE,)
-    with pytest.raises(ConfigError):
-        _ca_cfg(CA_BUNDLE, earlier_box_cas=[CA_BUNDLE])
-    deploy = (Path(__file__).resolve().parents[2] / "DEPLOY.md").read_text()
-    assert "in one apply and one roll" in deploy and "Don't list the current bundle there" in deploy
-
-
 # ---- box-keyed names (warm pool, `box_names`) ----
 
 BOX_ID = "k1-00000000000000aa"
@@ -1843,21 +1830,6 @@ def test_the_starter_lets_a_registered_box_start_without_a_code(tmp_path):  # ty
     out, _ = proc.communicate(timeout=5)
     assert proc.returncode == 0
     assert out == "switch-box: registration and login present\n"
-
-
-def test_the_admission_policy_lets_switch_enrol_hold_the_code_and_the_mark_only():
-    """The scaler's writes to `switch-enrol` are refused by the cluster unless every key is one it allows: exactly
-    the code and the `registered` mark the starter reads."""
-    import re
-    from pathlib import Path
-
-    from switch_hosted_controller.registration_codes import REGISTERED_KEY
-
-    policies = (
-        Path(__file__).resolve().parents[2] / "k8s" / "30-admission-policies.yaml"
-    ).read_text()
-    (allowed,) = re.findall(r"== 'switch-enrol' \? (\[[^\]]*\])", policies)
-    assert allowed == f"['code', '{REGISTERED_KEY}']"
 
 
 @pytest.mark.parametrize("make", [action, box_action])

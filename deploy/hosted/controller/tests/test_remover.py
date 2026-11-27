@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import logging
-import re
-from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 
@@ -19,7 +16,6 @@ M1 = "11111111-1111-4111-8111-111111111111"
 M2 = "22222222-2222-4222-8222-222222222222"
 NS1 = "agents-box-k1-00000000000000a1"
 NS2 = "agents-user-k1-00000000000000b2"
-K8S = Path(__file__).resolve().parents[2] / "k8s"
 
 
 def _ns(machine: str, terminating: bool = False) -> dict[str, Any]:
@@ -181,57 +177,6 @@ def test_the_kube_client_touches_only_box_namespaces_and_reads_the_list_by_name(
 
 
 # ---- its account and the cluster's rule ----
-
-
-def _docs(text: str) -> list[str]:
-    return [d for d in ("\n" + text).split("\n---\n") if "\nkind: " in "\n" + d]
-
-
-def _doc(text: str, kind: str, name: str) -> str:
-    (found,) = [
-        d
-        for d in _docs(text)
-        if f"\nkind: {kind}\n" in "\n" + d + "\n" and f"\n  name: {name}\n" in d + "\n"
-    ]
-    return found
-
-
-def test_the_remover_has_its_own_account_and_only_its_rights():
-    text = (K8S / "46-switch-hosted-remover.yaml").read_text()
-    dep = _doc(text, "Deployment", "switch-hosted-remover")
-    assert "serviceAccountName: switch-hosted-remover" in dep
-    assert "secretName: switch-hosted-remover-core" in dep and "reaper" not in text.lower()
-    role = _doc(text, "Role", "switch-hosted-remover-removals")
-    assert role.rstrip().endswith(
-        "rules:\n- apiGroups:\n  - ''\n  resourceNames:\n  - box-removals\n  resources:\n  - secrets\n  verbs:\n  - get"
-    )
-    cluster_role = _doc(text, "ClusterRole", "switch-hosted-remover")
-    assert cluster_role.rstrip().endswith(
-        "rules:\n- apiGroups:\n  - ''\n  resources:\n  - namespaces\n  verbs:\n  - get\n  - delete"
-    )
-
-
-def test_the_cluster_lets_the_remover_delete_only_a_listed_box_namespace():
-    policies = (K8S / "30-admission-policies.yaml").read_text()
-    p = _doc(policies, "ValidatingAdmissionPolicy", "switch-remover-deletes-listed-boxes")
-    b = _doc(policies, "ValidatingAdmissionPolicyBinding", "switch-remover-deletes-listed-boxes")
-    assert "system:serviceaccount:switch-hosted:switch-hosted-remover" in p
-    assert "failurePolicy: Fail" in p and "request.operation == 'DELETE'" in p
-    assert "request.resource.resource == 'namespaces'" in p
-    assert "request.?name.orValue('') in params.?data.orValue({})" in p
-    (box_re,) = re.findall(r"\.matches\('([^']*)'\)", p)
-
-    def allows(name: str, listed: dict[str, str]) -> bool:
-        return re.fullmatch(box_re, name) is not None and name in listed
-
-    listed = {NS1: M1}
-    assert allows(NS1, listed)
-    assert not allows(NS2, listed)  # a box, but not listed
-    assert not allows("kube-system", {"kube-system": M1})  # listed, but not a box
-    assert (
-        "name: box-removals\n    namespace: switch-hosted\n    parameterNotFoundAction: Deny" in b
-    )
-    assert json.dumps(b).count("Deny") == 2
 
 
 @pytest.mark.parametrize("status", [403, 500])

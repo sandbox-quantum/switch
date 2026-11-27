@@ -1,5 +1,5 @@
 # Hosted agents v2: the values to turn it on, as an example. Once the box side of
-# the cluster is set up (deploy/hosted/DEPLOY.md), put them in the deployment's
+# the cluster is set up (the deployment repository's DEPLOY.md), put them in the deployment's
 # own values, or layer a copy of this file over them with a second -f. Don't
 # commit a filled copy to this repo.
 #

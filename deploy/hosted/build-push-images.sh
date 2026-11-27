@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the two v2 images from this checkout, pushes them, and prints their digests for fill-placeholders.py.
+# Builds the two v2 images from this checkout, pushes them, and prints their digests for the deployment repository's fill-placeholders.py.
 #
 #   deploy/hosted/build-push-images.sh <registry> <tag>
 #   DRY_RUN=1 deploy/hosted/build-push-images.sh <registry> <tag>   prints what it would run, and runs nothing
@@ -31,7 +31,7 @@ if [ "${DRY_RUN:-}" = 1 ]; then
   echo "  PUSH_REPO=$registry/switch-agent-box $hosted/box/image/build.sh --from-source $tag"
   echo "  docker build --label switch.built-from=<commit> -t $registry/switch-hosted-controller:$tag $hosted/controller"
   echo "  docker push $registry/switch-hosted-controller:$tag"
-  echo "and print --box-image <repo@sha256:...> and --controller-image <repo@sha256:...> for fill-placeholders.py"
+  echo "and print --box-image <repo@sha256:...> and --controller-image <repo@sha256:...> for the deployment repository's fill-placeholders.py"
   exit 0
 fi
 [ -z "$(git -C "$hosted" status --porcelain)" ] || { echo "the checkout has uncommitted changes" >&2; exit 2; }
@@ -51,6 +51,6 @@ ctl=$(docker image inspect "$ctl_repo:$tag" --format '{{range .RepoDigests}}{{pr
 printf '%s' "$ctl" | grep -qE '@sha256:[0-9a-f]{64}$' || { echo "FAILED: no digest for the controller image" >&2; exit 1; }
 
 echo
-echo "Pushed. For fill-placeholders.py:"
+echo "Pushed. For the deployment repository's fill-placeholders.py:"
 echo "  --box-image $box"
 echo "  --controller-image $ctl"

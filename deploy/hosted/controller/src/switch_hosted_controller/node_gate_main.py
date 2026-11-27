@@ -1,7 +1,7 @@
 """The node gate's Kubernetes and EC2 clients, and its loop (`switch-node-gate`).
 
 It runs in the cluster as one replica, under its own service account (RBAC and the admission policy in
-`deploy/hosted/gate/`) and its own AWS identity, which may only call `ec2:DescribeInstances` and
+`gate/` in the deployment repository) and its own AWS identity, which may only call `ec2:DescribeInstances` and
 `ec2:DescribeSubnets`. Its configuration is one JSON file (`SWITCH_NODE_GATE_CONFIG`), refused whole if anything in
 it is off.
 """

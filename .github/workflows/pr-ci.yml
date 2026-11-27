@@ -339,20 +339,6 @@ jobs:
         working-directory: deploy/hosted/controller
         run: uv run --frozen pytest -q
 
-      # squid's reload wrapper and config, on squid's own pinned image: the wrapper on that image's shell and
-      # tools (not only the runner's GNU ones), and the config through its real `squid -k parse`.
-      - name: squid wrapper and config, in squid's image
-        working-directory: deploy/hosted/controller
-        run: |
-          image=$(sed -n 's#^ *image: \(public\.ecr\.aws/ubuntu/squid@sha256:[0-9a-f]\{64\}\)$#\1#p' ../k8s/50-egress-proxy.yaml)
-          test -n "$image"
-          docker pull -q "$image"
-          printf '#!/bin/sh\nexec docker run --rm --network none --user "%s" -v /tmp:/tmp --entrypoint squid "%s" "$@"\n' \
-            "$(id -u):$(id -g)" "$image" > "$RUNNER_TEMP/squid-in-image"
-          chmod +x "$RUNNER_TEMP/squid-in-image"
-          SQUID_TEST_IMAGE="$image" SQUID_BIN="$RUNNER_TEMP/squid-in-image" \
-            uv run --frozen pytest -q -rs tests/test_egress_proxy_manifest.py
-
   observability:
     name: Morning report
     needs: changes

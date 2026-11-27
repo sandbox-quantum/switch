@@ -622,7 +622,7 @@ DETAIL: Mapping[Condition, str] = {
     Condition.TURN_OFF_FAILED: "The turn-off's action record says failed. Check it in the Audit log; the admin can try again.",
     Condition.BOX_CAP_REACHED: "New users wait for room until provisioning drops back under the cap. The cap is a Core setting.",
     Condition.OPERATOR_BULK_ACTIONS: "Check the Audit log for this operator's recent actions. Nothing is blocked until the hourly limit.",
-    Condition.BOX_REMOVAL_UNJUSTIFIED: "Nothing is deleted for it. If the box is a person's live box, an admin must repair its entry (DEPLOY.md).",
+    Condition.BOX_REMOVAL_UNJUSTIFIED: "Nothing is deleted for it. If the box is a person's live box, an admin must repair its entry (the deployment repository's runbook).",
     Condition.BOX_REMOVAL_STUCK: "Check the box provisioner's and the reaper's logs for this box. Its disk is still in the cluster.",
     Condition.BOX_MAP_NEAR_CEILING: "New boxes are refused at the ceiling. Check that removals are going through, or raise the operator's ceiling.",
 }
