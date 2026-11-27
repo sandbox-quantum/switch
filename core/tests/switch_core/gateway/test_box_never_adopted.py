@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core import box_cluster
 from switch_core.db.models import TENANT_ZERO_ID, AgentController, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.gateway.cloud_controllers import set_cloud_enrollment
@@ -151,3 +152,22 @@ async def test_no_box_controller_is_ever_adopted(
     after = await _row(harness, box_id)
     assert after.revoked_at == before.revoked_at
     assert after.api_key_id == before.api_key_id
+
+
+@pytest.mark.parametrize("cluster", [True, False])
+async def test_a_v1_ec2_device_is_taken_over_as_before_boxes(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, cluster: bool
+) -> None:
+    """The guard is a box's: an `ec2` controller on no box (v1's) enrolling
+    again on the same device takes it over, as before boxes, with or without
+    a box cluster (hosted agents v1 is frozen, not changed)."""
+    monkeypatch.setattr(box_cluster, "_process_on", cluster)
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        first = await _enroll_by_code(client, await _plain_code(client, owner), "ec2")
+        await _settle(harness)
+        second = await _enroll_by_code(client, await _plain_code(client, owner), "ec2")
+
+    assert first["adopted"] is False
+    assert second["adopted"] is True
+    assert second["controller_id"] == first["controller_id"]

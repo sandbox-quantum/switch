@@ -642,9 +642,7 @@
     {
       "route": "GET /gateway/hosted-controller/machines",
       "auth": "operator-token",
-      "flags": [
-        "box_cluster"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/hosted-controller/pool",
@@ -1497,16 +1495,12 @@
     {
       "route": "POST /gateway/hosted-controller/machines/{machine_id}/observation",
       "auth": "operator-token",
-      "flags": [
-        "box_cluster"
-      ]
+      "flags": []
     },
     {
       "route": "POST /gateway/hosted-controller/machines/{machine_id}/prepare",
       "auth": "operator-token",
-      "flags": [
-        "box_cluster"
-      ]
+      "flags": []
     },
     {
       "route": "POST /gateway/hosted-machines/ensure",

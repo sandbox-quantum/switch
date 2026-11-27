@@ -395,20 +395,25 @@ class ManagementService:
         which is left to it: the new one is a device of its own. The rows are
         locked until the caller commits.
 
-        A Switch Cloud machine's controller (kind `ec2`, every box's) is never
-        taken over, whatever device id is sent: a box enrolls again only after
-        its controller was revoked or lost, and the box's own path
-        (`_move_placed`, under the box's revocation and removal rules) is the
-        only one that moves its agents."""
-        if same_device is None or kind == "ec2":
+        A box's controller is never taken over, whatever device id is sent: a
+        box enrolls again only after its controller was revoked or lost, and
+        the box's own path (`_move_placed`, under the box's revocation and
+        removal rules) is the only one that moves its agents. A v1 machine's
+        controller (kind `ec2` too) is taken over as before boxes: hosted
+        agents v1 is frozen, not changed."""
+        if same_device is None:
             return None
-        twins = await self.controllers.lock_same_device(
-            session,
-            tenant_id,
-            owner_id=owner_id,
-            kind=kind,
-            device_hash=same_device,
-        )
+        twins = [
+            twin
+            for twin in await self.controllers.lock_same_device(
+                session,
+                tenant_id,
+                owner_id=owner_id,
+                kind=kind,
+                device_hash=same_device,
+            )
+            if not (twin.kind == "ec2" and await on_box(session, tenant_id, twin.id))
+        ]
         if not twins:
             return None
         leases = await self.leases(session)
