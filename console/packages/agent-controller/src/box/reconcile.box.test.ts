@@ -549,14 +549,16 @@ describe('removing an agent deletes its files', () => {
     expect(existsSync(keptSession)).toBe(true);
   });
 
-  it('keeps the folders of a host still running after the stop, and clears them once it is gone', async () => {
+  it('stops a host still running after the stop again at each sweep, keeping its folders until it is gone', async () => {
     await reconcile(assignment(agent()), removalDeps(), { fetched: true });
     plant('agent-1');
     plant('agent-2');
     const l = layout();
     const stop = runtime.stop.bind(runtime);
     let stubborn = true;
+    const stopped: string[] = [];
     runtime.stop = async (agentId, options) => {
+      stopped.push(agentId);
       await stop(agentId, options);
       if (stubborn) runtime.observation(agentId).alive = true;
     };
@@ -566,12 +568,52 @@ describe('removing an agent deletes its files', () => {
     expect(existsSync(join(l.watcherRoot('agent-1'), 'provider-home'))).toBe(false);
     expect(existsSync(join(l.watcherRoot('agent-1'), 'placements.json'))).toBe(true);
     expect(store.agent('agent-1')).toBeNull();
+    // Removed and stopped once; then, still running at the sweep, stopped again.
+    expect(stopped).toEqual(['agent-1', 'agent-1']);
 
     stubborn = false;
-    runtime.observation('agent-1').alive = false;
     await reconcile(onlyAgent2, removalDeps(), { fetched: true });
+    expect(stopped).toEqual(['agent-1', 'agent-1', 'agent-1']);
+    expect(runtime.observation('agent-1').alive).toBe(false);
     expect(existsSync(l.agentDir('agent-1'))).toBe(false);
     expect(existsSync(l.watcherRoot('agent-1'))).toBe(false);
+  });
+
+  it('stops a leftover agent’s host the controller no longer knows, then deletes its files', async () => {
+    // Removed while the controller was not running: no store row, no remove
+    // action, only its folders and a host still running from before.
+    plant('r6-zombie');
+    runtime.observation('r6-zombie').alive = true;
+    const l = layout();
+    const stopped: { agentId: string; wait: boolean }[] = [];
+    const stop = runtime.stop.bind(runtime);
+    runtime.stop = async (agentId, options) => {
+      stopped.push({ agentId, wait: options.wait });
+      await stop(agentId, options);
+      runtime.observation(agentId).alive = false;
+    };
+    await fetchedTwice(assignment(agent()));
+    expect(stopped).toEqual([{ agentId: 'r6-zombie', wait: true }]);
+    expect(existsSync(l.agentCredentials('r6-zombie'))).toBe(false);
+    expect(existsSync(l.agentDir('r6-zombie'))).toBe(false);
+    expect(existsSync(l.watcherRoot('r6-zombie'))).toBe(false);
+  });
+
+  it('keeps a leftover’s folders when its host cannot be stopped, and says so as an error', async () => {
+    plant('r6-zombie');
+    runtime.observation('r6-zombie').alive = true;
+    runtime.stop = async () => {
+      throw new Error('The launcher did not stop the agent host (timed_out).');
+    };
+    const errors: unknown[] = [];
+    const deps = removalDeps();
+    const log = { ...silentLogger, error: (...args: unknown[]) => errors.push(args) };
+    const l = layout();
+    await reconcile(assignment(agent()), { ...deps, log }, { fetched: true });
+    clock += LEFTOVER_MIN_MISSING_MS;
+    await reconcile(assignment(agent()), { ...removalDeps(), log }, { fetched: true });
+    expect(existsSync(l.agentDir('r6-zombie'))).toBe(true);
+    expect(errors).toHaveLength(1);
   });
 
   it("clears leftovers of agents removed before, never an assigned agent's, and follows no link out", async () => {

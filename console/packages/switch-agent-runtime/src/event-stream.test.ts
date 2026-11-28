@@ -232,6 +232,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe('the socket', () => {
@@ -444,6 +445,25 @@ describe('credentials the server rejects', () => {
     expect(evicted).toEqual([]);
     abort.abort();
   });
+
+  it.each([
+    [0, 500],
+    [0.999, 1000],
+  ])(
+    'waits a jittered step after a 429, half the step at least (random %f: %i ms)',
+    async (random, reopensAtMs) => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, 'random').mockReturnValue(random);
+      serve((socket, index) => (index === 0 ? socket.refuse(429, 'too many') : attach(socket, 0)));
+      const { abort } = makeStream({ rooms: [] });
+
+      await vi.advanceTimersByTimeAsync(reopensAtMs - 50);
+      expect(server.sockets).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(server.sockets).toHaveLength(2);
+      abort.abort();
+    }
+  );
 
   it('keeps reconnecting after a network error', async () => {
     vi.useFakeTimers();

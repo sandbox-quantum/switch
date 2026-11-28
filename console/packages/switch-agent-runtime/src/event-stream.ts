@@ -164,6 +164,16 @@ export function busyRetryAfterMs(status: number, body: string): number | null {
   }
 }
 
+/**
+ * A backoff step with jitter: somewhere between half of it and all of it, so
+ * the agents that lost the same server at the same moment (a box's, a busy
+ * hour's) don't all come back at the same moment, and keep apart as the
+ * steps double.
+ */
+export function jittered(backoffMs: number): number {
+  return Math.round(backoffMs / 2 + Math.random() * (backoffMs / 2));
+}
+
 /** Waits `ms`, or less if any of these signals aborts first, and leaves no timer behind. */
 function waitUnless(ms: number, ...signals: AbortSignal[]): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -759,7 +769,7 @@ export class SwitchEventStream {
         await new Promise((r) => setTimeout(r, wait));
         return;
       }
-      await new Promise((r) => setTimeout(r, backoff));
+      await new Promise((r) => setTimeout(r, jittered(backoff)));
       backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
     };
 

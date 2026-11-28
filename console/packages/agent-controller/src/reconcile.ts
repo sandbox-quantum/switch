@@ -596,15 +596,37 @@ export async function removeLeftovers(assignment: Assignment, deps: ReconcileDep
     assignment.agents.length,
     deps.now()
   )) {
-    if ((await deps.runtime.observe(agentId)).alive) {
-      deps.log.warn('A removed agent’s host is still running; its folders are kept for now', {
-        agentId,
-      });
+    if ((await deps.runtime.observe(agentId)).alive && !(await stopLeftover(agentId, deps)))
       continue;
-    }
     logRemoval(deps.log, agentId, 'login copies', await deleteLoginCopies(deps.removal, agentId));
     logRemoval(deps.log, agentId, 'folders', await deleteAgentFolders(deps.removal, agentId));
   }
+}
+
+/**
+ * A removed agent's host still running: stopped and waited for, as removal
+ * does, since nothing else will stop it, and it may still hold its relay
+ * connection and its web access. True once it is proven gone. One that will
+ * not stop keeps its folders, and is tried again on the next sweep.
+ */
+async function stopLeftover(agentId: string, deps: ReconcileDeps): Promise<boolean> {
+  try {
+    await deps.runtime.stop(agentId, { wait: true });
+  } catch (error) {
+    deps.log.error('Could not stop a removed agent’s host; its folders are kept for now', {
+      agentId,
+      error: errorMessage(error),
+    });
+    return false;
+  }
+  if ((await deps.runtime.observe(agentId)).alive) {
+    deps.log.error('A removed agent’s host is still running after a stop; its folders are kept', {
+      agentId,
+    });
+    return false;
+  }
+  deps.log.info('Stopped a removed agent’s host that was still running', { agentId });
+  return true;
 }
 
 /**

@@ -223,6 +223,27 @@ describe('who may call', () => {
   });
 });
 
+describe('an agent removed from the box', () => {
+  it('is refused at once, while its owner’s other agents on the same login keep working', async () => {
+    // One person's login fronts both agents: removing one must not touch it.
+    const removed = gateway.mint('agent-removed', anthropicKey(REAL_A));
+    const kept = gateway.mint('agent-kept', anthropicKey(REAL_A));
+    gateway.forget('agent-removed');
+
+    const refused = await call(gateway.endpoint, '/v1/messages', {
+      headers: { 'x-api-key': removed },
+    });
+    expect(refused.status).toBe(401);
+    expect(upstream.seen).toHaveLength(0);
+
+    const served = await call(gateway.endpoint, '/v1/messages', { headers: { 'x-api-key': kept } });
+    expect(served.status).toBe(200);
+    expect(upstream.seen).toHaveLength(1);
+    expect(upstream.seen[0]!.headers['x-api-key']).toBe(REAL_A);
+    expect(gateway.has('agent-removed')).toBe(false);
+  });
+});
+
 describe('what reaches the provider', () => {
   it('swaps an API key: the provider sees the real key, never the opaque token', async () => {
     const token = gateway.mint('agent-a', anthropicKey(REAL_A));
