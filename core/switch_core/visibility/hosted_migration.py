@@ -351,8 +351,11 @@ class HostedMigrations:
                     HostedMigration, owner_id, with_for_update=True
                 )
                 if record is not None and record.step in ("done", "cleaned"):
+                    # Read before the rollback, which expires the row: reading it
+                    # after would be a lazy load outside the async context.
+                    finished = record.step
                     await session.rollback()
-                    return Outcome(True, record.step, record.step, "Nothing to do.")
+                    return Outcome(True, finished, finished, "Nothing to do.")
                 if record is None or record.step == "rolled_back":
                     return await self._freeze(
                         session, owner_id, record, operator_id, now
