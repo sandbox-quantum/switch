@@ -743,6 +743,20 @@ describe("the layout", () => {
         "Users",
         "Guardrails",
         "Audit log",
+        "Plans & billing",
+      ]);
+    });
+
+    it("shows an organization admin the Free Beta on Plans & billing", async () => {
+      mockFetch(signedInAs("org_admin"));
+      renderAt("/settings/org/billing");
+      const panel = await screen.findByRole("region", { name: "Build your human-agent hybrid team now." });
+      expect(within(panel).getByText("Free Beta for Switch Cloud")).toBeTruthy();
+      expect(within(panel).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+        "A free cloud device to host your agents",
+        "Unlimited rooms",
+        "Free until 18 Feb 2027",
+        "Self-hosting version is open source",
       ]);
     });
 
@@ -869,6 +883,34 @@ describe("the layout", () => {
       const crumb = await screen.findByRole("button", { name: /Acme Group\s*\/\s*Acme/ });
       // In the top bar, not the page's own title.
       expect(within(crumb.parentElement!).getByText("Agents", { selector: "span" })).toBeTruthy();
+    });
+
+    it("opens what the Free Beta offers from its pill, and closes it again", async () => {
+      mockFetch(signedInAs("member"));
+      renderAt("/rooms");
+      fireEvent.click(await screen.findByRole("button", { name: "Free Beta" }));
+      const dialog = await screen.findByRole("dialog", { name: "Build your human-agent hybrid team now." });
+      expect(within(dialog).getByText("Free until 18 Feb 2027")).toBeTruthy();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    });
+
+    it("leads with the product badge, which offers Switch Trust in a new tab", async () => {
+      mockFetch(signedInAs("member"));
+      renderAt("/rooms");
+      const badge = await screen.findByRole("button", { name: "Rooms" });
+      expect(badge.getAttribute("aria-expanded")).toBe("false");
+      fireEvent.click(badge);
+      const menu = await screen.findByRole("menu", { name: "Switch product" });
+      expect(badge.getAttribute("aria-expanded")).toBe("true");
+      const rooms = within(menu).getByRole("menuitemradio", { name: /^Rooms/ });
+      const trust = within(menu).getByRole("menuitemradio", { name: /^Trust/ });
+      expect(rooms.getAttribute("aria-checked")).toBe("true");
+      expect(trust.getAttribute("aria-checked")).toBe("false");
+      expect(trust.getAttribute("href")).toBe("https://app.switchagents.ai");
+      expect(trust.getAttribute("target")).toBe("_blank");
+      fireEvent.click(rooms);
+      await waitFor(() => expect(screen.queryByRole("menu", { name: "Switch product" })).toBeNull());
     });
 
     it("names only the workspace where it belongs to no organization", async () => {
@@ -1057,7 +1099,7 @@ describe("the layout", () => {
       for (const [role, path] of [
         ["member", "/settings/org"],
         ["workspace_admin", "/settings/org/users"],
-        ["org_admin", "/settings/org/billing"],
+        ["org_admin", "/settings/org/no-such-page"],
       ] as const) {
         mockFetch(signedInAs(role));
         renderAt(path);

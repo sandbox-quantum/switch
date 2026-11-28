@@ -38,6 +38,7 @@ import ConnectorPage from "../pages/connectors/ConnectorPage";
 import ConnectorsPage from "../pages/connectors/ConnectorsPage";
 import {
   OrganizationAuditLogPage,
+  OrganizationBillingPage,
   OrganizationConnectorsPage,
   OrganizationGeneralPage,
   OrganizationDevicesPage,
@@ -353,6 +354,13 @@ export const ROUTES: readonly AppRoute[] = [
     "Audit log",
     organizationAdminsOnly,
     <OrganizationAuditLogPage />,
+  ),
+  settingsPage(
+    "/settings/org/billing",
+    "organization",
+    "Plans & billing",
+    organizationAdminsOnly,
+    <OrganizationBillingPage />,
   ),
 ];
 

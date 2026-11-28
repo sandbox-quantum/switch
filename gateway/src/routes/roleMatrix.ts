@@ -118,6 +118,7 @@ export const PAGES: readonly MatrixPage[] = [
   page("/settings/org/guardrails", ORGANIZATION_ADMIN),
   page("/settings/org/devices", ORGANIZATION_ADMIN),
   page("/settings/org/audit-log", ORGANIZATION_ADMIN),
+  page("/settings/org/billing", ORGANIZATION_ADMIN),
 ];
 
 export const AREAS: readonly MatrixArea[] = [
@@ -220,6 +221,7 @@ export const SETTINGS_MENUS: Record<MatrixSettingsArea, Record<Persona, readonly
         "Guardrails",
         "Devices",
         "Audit log",
+        "Plans & billing",
       ],
       workspaceAdmin: null,
       member: null,

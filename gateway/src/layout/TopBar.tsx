@@ -6,6 +6,7 @@ import { Alert, Box, Button, IconButton, Snackbar, Stack, Tooltip, Typography } 
 import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { Link as RouterLink, useLocation, useNavigate } from "react-router";
+import { FreeBetaButton } from "../components/FreeBeta";
 import { useAuth } from "../data/AuthContext";
 import { useOrganizationRenamed } from "../data/organizationEvents";
 import {
@@ -16,6 +17,7 @@ import {
 import CreateInvitationDialog from "../pages/workspace/CreateInvitationDialog";
 import { areaOf, outsideWorkspace, underAreaOutsideWorkspace } from "../routes/routeTable";
 import { DevRoleSlot } from "./DevRoleSlot";
+import ProductSwitcher from "./ProductSwitcher";
 import { useWayBackToWorkspace } from "./wayBack";
 import WorkspaceMenu from "./WorkspaceMenu";
 
@@ -228,14 +230,20 @@ export default function TopBar() {
         height: "var(--top-bar-height)",
         alignItems: "center",
         justifyContent: "space-between",
+        flexShrink: 0,
         color: "text.primary",
-        pr: 1,
+        pl: "var(--surface-gutter)",
+        pr: "calc(var(--surface-gutter) + 8px)",
       }}
     >
-      <WorkspaceCrumbs section={section} outside={outside} wayBack={wayBack} fallback={fallback} />
+      <Stack direction="row" sx={{ alignItems: "center", gap: 1, minWidth: 0 }}>
+        <ProductSwitcher />
+        <WorkspaceCrumbs section={section} outside={outside} wayBack={wayBack} fallback={fallback} />
+      </Stack>
 
       <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
         <DevRoleSlot />
+        <FreeBetaButton />
         <LinkButton href={HELP_URL} icon={<HelpOutlineOutlined sx={{ fontSize: 20 }} />} label="Help" />
         <LinkButton
           href={DOCS_URL}

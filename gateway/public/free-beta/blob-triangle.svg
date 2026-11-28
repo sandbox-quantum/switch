@@ -1,0 +1,13 @@
+<svg width="73" height="73" viewBox="0 0 73 73" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Group 35">
+<path id="switch_logo_dark" d="M64.3969 0C69.1482 0 73 3.85176 73 8.60314V53.2145C73 55.4961 72.0936 57.6844 70.4802 59.2978L59.2978 70.4802C57.6844 72.0936 55.4961 73 53.2145 73H8.60314C3.85176 73 0 69.1482 0 64.3969V19.7856C0 17.5039 0.906375 15.3156 2.51975 13.7022L13.7022 2.51975C15.3156 0.906375 17.5039 0 19.7856 0H64.3969Z" fill-rule="evenodd" clip-rule="evenodd" fill="url(#paint0_radial_0_6)"/>
+<path id="Ellipse 28" d="M8.84306 39.4373C10.1991 37.4033 11.5752 35.3692 14.9454 35.3692C18.3156 35.3692 19.6916 37.4033 21.0477 39.4373" stroke-width="5" stroke-linecap="round" stroke="#0F172A"/>
+<path id="Ellipse 29" d="M33.2524 39.4374C34.6084 37.4033 35.9844 35.3692 39.3546 35.3692C42.7249 35.3692 44.1009 37.4033 45.4569 39.4374" stroke-width="5" stroke-linecap="round" stroke="#0F172A"/>
+</g>
+<defs>
+<radialGradient id="paint0_radial_0_6" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(7.07366e-07 68.4667) rotate(-43.115) scale(100.176)">
+<stop stop-color="#FF895E"/>
+<stop offset="0.784679" stop-color="#A1C9D2"/>
+</radialGradient>
+</defs>
+</svg>
