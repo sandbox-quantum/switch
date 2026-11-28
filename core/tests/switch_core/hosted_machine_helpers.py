@@ -34,8 +34,10 @@ async def seed_machine(
     desired_state: str,
     stop_reason: str | None,
     revision: int,
+    backend: str | None = None,
 ) -> CloudMachine:
     now = datetime.now(UTC)
+    extra = {} if backend is None else {"backend": backend}
     machine = CloudMachine(
         id=str(uuid4()),
         owner_id=owner_id,
@@ -46,6 +48,7 @@ async def seed_machine(
         active_at=now,
         created_at=now,
         updated_at=now,
+        **extra,
     )
     session.add(machine)
     await session.flush()

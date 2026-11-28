@@ -227,6 +227,26 @@ async def controller_session(
             yield session
 
 
+ControllerScope = Literal["box", "vm"] | None
+
+
+def controller_scope(
+    request: Request,
+    settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
+) -> ControllerScope:
+    """Which machines the calling controller may see and act on, on the shared
+    routes: boxes for the box workers' bearer; v1 machines for v1's `token`
+    once a box bearer is configured; every machine (None) for `token` while
+    none is, so a box cluster not yet moved over works as before. Only ever
+    used beside `controller_session`, which has already refused anything else."""
+    which = which_controller_bearer(settings, request.headers.get("authorization", ""))
+    if which == "box":
+        return "box"
+    if getattr(settings, "box_controller_token", None) is not None:
+        return "vm"
+    return None
+
+
 async def box_controller_session(
     request: Request,
     settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
@@ -769,19 +789,25 @@ async def machines(
     factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
+    scope: Annotated[ControllerScope, Depends(controller_scope)],
 ) -> dict:
     reconciler_heard()
     now = datetime.now(UTC)
+    # Core's own housekeeping, whichever controller asked: the sweep reads every
+    # machine itself and takes no scope, so a v1 poll still sweeps boxes.
     await sweep_hosted_machines(session, factory, config, settings, now)
+    # What this controller is shown: only the machines it may act on.
+    query = select(CloudMachine).where(CloudMachine.state != "deleted")
+    if scope is not None:
+        query = query.where(CloudMachine.backend == scope)
     rows = await session.scalars(
-        select(CloudMachine)
-        .where(CloudMachine.state != "deleted")
-        .order_by(CloudMachine.created_at)
-        .execution_options(populate_existing=True)
+        query.order_by(CloudMachine.created_at).execution_options(
+            populate_existing=True
+        )
     )
     listed = list(rows)
     response: dict = {"machines": [machine_item(machine) for machine in listed]}
-    if process_hosted_v2():
+    if process_hosted_v2() and scope != "vm":
         # Which boxes the box scaler may report missing: on a v2 box's entry
         # only, so a v1 machine's entry (and a v1 listing) stays upstream's.
         expected = await boxes_expected(session, listed)
@@ -791,7 +817,11 @@ async def machines(
     # For the operator only (this route takes the controller's token): the
     # server lets every workspace and account claim a machine. Absent when
     # either list narrows it; owners' routes never carry it.
-    if process_hosted_v2() and open_to_all(settings, config.hosted_launch_capacity):
+    if (
+        process_hosted_v2()
+        and scope != "vm"
+        and open_to_all(settings, config.hosted_launch_capacity)
+    ):
         response["open_to_all"] = True
     await session.commit()
     return response
@@ -826,9 +856,14 @@ async def pool(
 BOX_NOT_BOUND = "The box is still being handed to its person; try again shortly."
 
 
-async def _locked_machine(session: AsyncSession, machine_id: str) -> CloudMachine:
+async def _locked_machine(
+    session: AsyncSession, machine_id: str, scope: ControllerScope
+) -> CloudMachine:
+    """The machine, locked, if the calling controller may act on it. One of the
+    other kind is answered exactly as a machine that doesn't exist, before
+    anything about its state, so the answer doesn't say it's there."""
     machine = await CloudMachineStore().locked(session, machine_id)
-    if machine is None:
+    if machine is None or (scope is not None and machine.backend != scope):
         raise HTTPException(404, "Cloud machine not found.")
     return machine
 
@@ -841,13 +876,14 @@ async def prepare(
     factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    scope: Annotated[ControllerScope, Depends(controller_scope)],
 ) -> dict:
     """What the machine boots from at its current revision: per workspace it
     serves, the controller it enrolled as there, or, until it has one that is
     not revoked, a one-time code to enroll with. Never a long-lived credential:
     the machine keeps the ones it enrolls with on its own disk."""
     response.headers["Cache-Control"] = "no-store"
-    machine = await _locked_machine(session, machine_id)
+    machine = await _locked_machine(session, machine_id, scope)
     if machine.state == "deleted" or machine.desired_state == "deleted":
         raise HTTPException(409, "machine is deleted")
     v2 = process_hosted_v2()
@@ -1073,9 +1109,10 @@ async def observe(
     factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
+    scope: Annotated[ControllerScope, Depends(controller_scope)],
 ) -> dict:
     reconciler_heard()
-    machine = await _locked_machine(session, machine_id)
+    machine = await _locked_machine(session, machine_id, scope)
     # Counted once this answer's transaction commits. Every answer from here
     # is a 200 and commits, so the reconciler forgets only what was counted;
     # a batch counts twice only if Core's answer is lost after the commit.
@@ -1157,7 +1194,7 @@ async def observe(
         await session.commit()
         if ask_again:
             await _ask_again_for_missing_box(factory, machine.id, config, settings, now)
-            machine = await _locked_machine(session, machine_id)
+            machine = await _locked_machine(session, machine_id, scope)
             await session.commit()
         return machine_item(machine)
     if (
