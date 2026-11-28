@@ -53,6 +53,118 @@
       "sha256": "a6fe88448697f4f9839e0484b0c37f2dd6872627897fc8f2a6eb19050d923e52"
     },
     {
+      "path": "admission/bad/m1-another-label.json",
+      "sha256": "555f693101a6b4158d726427b7a400a43172c22279b12c21de45cbf46724ece2"
+    },
+    {
+      "path": "admission/bad/m1-baseline-by-someone-else.json",
+      "sha256": "1b91fa183bdc4c1334a55b3efd522ec32bfceccf45526d3feb8d3d18aeb224ef"
+    },
+    {
+      "path": "admission/bad/m1-enforce-privileged.json",
+      "sha256": "9be4595c1cf063ce5f46c6c77a250b9e853da685d1dd1e2a4e425be330e09393"
+    },
+    {
+      "path": "admission/bad/m1-warn-changed.json",
+      "sha256": "3154703a506ae0d9039fe59e4ce321dda1f1dfaee1da7b669817fecad99ebec5"
+    },
+    {
+      "path": "admission/bad/m1-window-closed-by-someone-else.json",
+      "sha256": "03f0991444f679a9274716d468e7c94940aeb2dbdfd3858f9c05e87576725701"
+    },
+    {
+      "path": "admission/bad/m2-egress-deleted-outside-the-window.json",
+      "sha256": "69d4f8bcd049764a2f1c0af59d26ad36aa13e1021573fb47fbe5b3d25c4dbbef"
+    },
+    {
+      "path": "admission/bad/m2-egress-recreated-by-someone-else.json",
+      "sha256": "31016e15fd5e6819087be80b6610dc18ee75f3c9010e94f06911e12a6177432d"
+    },
+    {
+      "path": "admission/bad/m2-egress-recreated-looser.json",
+      "sha256": "7c972cf66ae37fed4e8088267a0f1a62608b000189d0e4e4cd0f4cdbf97cdf12"
+    },
+    {
+      "path": "admission/bad/m3-content-another-machine-label.json",
+      "sha256": "c1450f31aca276e128496d138cbc0e2d7b7cfd65bc95939f9fa59315923fe9f6"
+    },
+    {
+      "path": "admission/bad/m3-content-deletes-the-snapshot.json",
+      "sha256": "88d1ea60dcecb0f3ec12231291465b4ea7b9b6901194c9704d017fcd7942b7f8"
+    },
+    {
+      "path": "admission/bad/m3-content-names-a-volume.json",
+      "sha256": "3749890cde2207a1a5b1c2b9242ed24624066707ef157e41821402b69fc98003"
+    },
+    {
+      "path": "admission/bad/m3-content-points-outside-a-box.json",
+      "sha256": "e30089d00695ef2753a99959bf3ef2d977159395e4002bd5be1d7136577bc30b"
+    },
+    {
+      "path": "admission/bad/m3-snapshot-another-machines-content.json",
+      "sha256": "8ca98cb7f7d4242ed3b33d9f52d46e30fdfcb158b7a071a857c9e25d6bb5ade7"
+    },
+    {
+      "path": "admission/bad/m4-claim-clones-the-box-disk.json",
+      "sha256": "3bba6820f634f908e61ad4c5774525aef1d50572b88cd05ac483a676bb29f19d"
+    },
+    {
+      "path": "admission/bad/m4-claim-names-a-volume.json",
+      "sha256": "581cf3740fd6f0cae9943aa406ef4be6ea0e7520ebc211559b4cec9a3b225bc8"
+    },
+    {
+      "path": "admission/bad/m4-delete-the-box-disk.json",
+      "sha256": "e3fe9a4af21093165709e4f681fb8d12dd44b49f0ff929b94afa75537457e0bf"
+    },
+    {
+      "path": "admission/bad/m5-job-outside-the-window.json",
+      "sha256": "e02517ee63f10a0177bd4280c163bf4f791f99f1c3d3edf9cb4e84559a93869c"
+    },
+    {
+      "path": "admission/bad/m5-job-retries.json",
+      "sha256": "ffce00cfa9e0aa4843d179b83467ee46c2807f5e7ed46d59a142ebb4179a1e7f"
+    },
+    {
+      "path": "admission/bad/m6-a-host-path.json",
+      "sha256": "15c88a939db835965eafb36574885657480f9b7da0daea7ffd8e4b8277d514e1"
+    },
+    {
+      "path": "admission/bad/m6-another-image.json",
+      "sha256": "b885580819f5f23b88a75ec510da4f2cc7d5f42d5ca2a4214ca3f4464e1209d3"
+    },
+    {
+      "path": "admission/bad/m6-delete-another-pod.json",
+      "sha256": "bb343ac3321b1d67f377f6a94007eb6eda9bd6c9573f9ff50c023baf8ba011b8"
+    },
+    {
+      "path": "admission/bad/m6-outside-the-window.json",
+      "sha256": "6739211986a5899a23218d7a057d5f692738399417d096048055cb8d662ab3ba"
+    },
+    {
+      "path": "admission/bad/m6-reader-can-chown.json",
+      "sha256": "68ec72fb7b617835f1c74c310c5248ad43b67dff376b8e8435e136cfee707062"
+    },
+    {
+      "path": "admission/bad/m6-with-a-token.json",
+      "sha256": "4275f9c5a5e30aa64c3c3f9661836185e10d8db4d1e172ed0872c01492916093"
+    },
+    {
+      "path": "admission/bad/m6-writer-as-root.json",
+      "sha256": "9ed5595386db087038f826d62a424b0cc97e4846b9683449445226cb30855c83"
+    },
+    {
+      "path": "admission/bad/m7-box-started-inside-the-window.json",
+      "sha256": "c1d7afa02134888d284bed57053ba77e3d5f3b806364bb8587238ab506b2b348"
+    },
+    {
+      "path": "admission/bad/m8-runner-configmap-in-default.json",
+      "sha256": "8ed172d48845c3460695449a1cdb45bd0b59cda5f227a2c3ab6d433bb437997a"
+    },
+    {
+      "path": "admission/bad/m8-runner-patches-kube-system.json",
+      "sha256": "9abedf09912adbf4de9ee238d1bda6c6d14464d4c536ab7cbc0b0d6b0ce6d223"
+    },
+    {
       "path": "admission/bad/p1-a-finalizer.json",
       "sha256": "165952ba47ed00335c1117a3d4e1e6dd96abe506181e915026fc60ab32947d2f"
     },
@@ -423,6 +535,70 @@
     {
       "path": "admission/good/eviction-watch-a-warning-event-on-a-box-post-event.json",
       "sha256": "89a9b4de40c6e4164e09da2eea190037f7ed403449ea860dc6595958b6d7dda5"
+    },
+    {
+      "path": "admission/good/job-controller-the-migration-copy-pod-post-pod-migration-copy-contract.json",
+      "sha256": "dd3227ddbd4832655f2f4e7abf19b023ac9a23d1881d1c6d2aced07bf750717a"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-delete-configmap-migration-manifest.json",
+      "sha256": "d97a681d1c08d1e072d54385f30d71891ecb56a2f0c505f1e3327e93bcc085e3"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-delete-job-migration-copy.json",
+      "sha256": "c66c1cbbddf34b711026583369a366628116c59a9cdbbfa62a85469ccec80e46"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-delete-networkpolicy-agent-egress.json",
+      "sha256": "15e7a25c3ce6d4f44e1e6ad52958d7e690b7350d226badfa7146745de7ff1188"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-delete-persistentvolumeclaim-migration-source.json",
+      "sha256": "9ff59c49cba701dc02a3d9865f7456c3f6e054404f284fd0a9bdfb18106a6b47"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-delete-pod-migration-copy-contract.json",
+      "sha256": "7a87b95ac36bd2e7744162ee5c12f86fe0a5e59c1f9d8a1ce79b49471887fab4"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-delete-volumesnapshot-migration-copy.json",
+      "sha256": "b0bada5ea6554bd01882bbaf8ae1f90ad3607903e3a0d738b03b5904d8263632"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-delete-volumesnapshotcontent-migration-copy-00000006-0000-4000-8000-000000000006.json",
+      "sha256": "1195ff25d588cbd0ffb3e2b3a87608494e9389e06749d4ebbc439c46e7be8586"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-patch-namespace-box-namespace-2.json",
+      "sha256": "33de418165017aabdf7b8caa398e4f7bef6015c95aacda1497139d305b2939a5"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-patch-namespace-box-namespace.json",
+      "sha256": "c18d93038f8bc0eecb3fc27ae66121ca5f5f4d21a6591fbe918d9ad933f0a22a"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-post-configmap-migration-manifest.json",
+      "sha256": "0123b6c4d1a3b12007004965931991653189b79f83aa349f2f109d8bd8acc8db"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-post-job-migration-copy.json",
+      "sha256": "e6afffb769b4a8ffce0ab582b3965cb9c778cb8570df6ea1893ec3a205c5e9dc"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-post-networkpolicy-agent-egress.json",
+      "sha256": "7c43142cda0029844c1ee2a6d9bc6a31634b673e7c2554fb977b88cb99c9aa29"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-post-persistentvolumeclaim-migration-source.json",
+      "sha256": "3b7de189ae365b4224b3eb4930649b40701f160ea2e4ff6ad13270ac3efdf5d3"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-post-volumesnapshot-migration-copy.json",
+      "sha256": "46e9e8acf362b5fc68460b433755bba3363a72b9c20a5140e864ea2f842136b6"
+    },
+    {
+      "path": "admission/good/migration-runner-the-copy-post-volumesnapshotcontent-migration-copy-00000006-0000-4000-8000-000000000006.json",
+      "sha256": "dc3b44674b36df260f5807cce2f80fa99af088cf68a62baaf3b81476f1ef834e"
     },
     {
       "path": "admission/good/provisioner-a-base-box-box-keyed-post-configmap-claude-managed-settings.json",
@@ -838,7 +1014,7 @@
     },
     {
       "path": "fills.json",
-      "sha256": "fd700675f026580baa9ba853208959b5799d2a5bd1fd1930a8144106e72868ab"
+      "sha256": "002081f2a5c783e6f9da15aec15fa978ae1ff6671355838ea0995524b394e37a"
     },
     {
       "path": "log-lines.json",
@@ -846,7 +1022,7 @@
     },
     {
       "path": "rbac.json",
-      "sha256": "1e79b20d4a1cd8446aeacfa0db1f2fd0237a023e48aeb64483a0ca68e7ba38b1"
+      "sha256": "0473716d4b80311f54e9f9d9e2e3d3f0bfefa9c3644f9c0a14534e5899d9a298"
     },
     {
       "path": "tiers.json",

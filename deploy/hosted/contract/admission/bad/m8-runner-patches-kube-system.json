@@ -1,0 +1,47 @@
+{
+  "as": "contract-migration-operator",
+  "expect": "refuse",
+  "from_good": "good/migration-runner-the-copy-patch-namespace-box-namespace.json",
+  "group": "",
+  "groups": [
+    "switch:migration-runners"
+  ],
+  "message": "the migration runner writes in box namespaces only",
+  "name": "kube-system",
+  "namespace": "",
+  "object": null,
+  "operation": "UPDATE",
+  "policies": [
+    "switch-migration-box-namespaces-only"
+  ],
+  "refused_by": "admission",
+  "request": {
+    "body": {
+      "metadata": {
+        "labels": {
+          "pod-security.kubernetes.io/enforce": "baseline"
+        }
+      }
+    },
+    "content_type": "application/merge-patch+json",
+    "method": "PATCH",
+    "path": "/api/v1/namespaces/kube-system?fieldManager=switch-migration-runner"
+  },
+  "resource": "namespaces",
+  "setup": [
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "labels": {},
+          "name": "kube-system"
+        }
+      },
+      "path": "/api/v1/namespaces/kube-system"
+    }
+  ],
+  "subresource": "",
+  "version": "v1",
+  "what": "refused: m8 runner patches kube system"
+}

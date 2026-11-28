@@ -26,10 +26,13 @@ kept.
   `refuse`; `policies` names the policy (or, where two guard the same thing, both) and `message` that rule's message.
   `refused_by: rbac` marks a change the account's RBAC refuses before admission is reached (a verb or object it has
   no grant for). `groups`, when present, are the impersonated user's groups (an administrator, for the rules every
-  account meets). `from_good` names the good sample it was made from.
+  account meets, or the migration runner's operators' group, as in its good samples). `from_good` names the good sample it was made from.
 - `rbac.json`: per service account, every call its code made. `(box)` stands for any box namespace
   (`box_namespace`), in `namespace`, or in `name` for the namespace itself; `names` lists the other names a service
-  chooses at run time, each standing for every name of its shape.
+  chooses at run time, each standing for every name of its shape. `groups` names the callers that are people, not
+  service accounts (the migration copy runner's operators, each under their own sign-in), with the groups their
+  calls are granted through: check those groups' bindings. `builtin` lists Kubernetes' own controllers (the job
+  controller making the copy pod), whose grants are the cluster's built-in roles.
 - `log-lines.json`: every alert line the services log, each paging: `service` (the pod's Datadog service tag) and
   the fixed `words` its monitor matches (`only_with_any_of`: the monitor matches only lines that also carry one of
   these words).

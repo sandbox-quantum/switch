@@ -37,6 +37,7 @@ import json
 import re
 import shutil
 import sys
+import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -51,6 +52,7 @@ from . import (
     cluster_watch,
     drain_actions,
     egress_lists,
+    migration_runner,
     reaper,
     remover,
     restart_actions,
@@ -170,6 +172,7 @@ def fills() -> dict[str, Any]:
         "__CLUSTER_VPC_CIDR__": CLUSTER_VPC_CIDR,
         "__CONTROLLER_IMAGE__": IMAGE["controller"],
         "__EGRESS_LISTS_IMAGE__": IMAGE["egress_lists"],
+        "__MIGRATION_COPIER_IMAGE__": IMAGE["controller"],
         "__PAUSE_IMAGE__": IMAGE["pause"],
         "__PREVIOUS_BOX_IMAGE_1__": IMAGE["box_previous_1"],
         "__PREVIOUS_BOX_IMAGE_2__": IMAGE["box_previous_2"],
@@ -210,6 +213,10 @@ _RESOURCE_KIND = {
     "statefulsets": ("apps", "v1", "StatefulSet"),
     "rolebindings": ("rbac.authorization.k8s.io", "v1", "RoleBinding"),
     "deployments": ("apps", "v1", "Deployment"),
+    "jobs": ("batch", "v1", "Job"),
+    "storageclasses": ("storage.k8s.io", "v1", "StorageClass"),
+    "volumesnapshots": ("snapshot.storage.k8s.io", "v1", "VolumeSnapshot"),
+    "volumesnapshotcontents": ("snapshot.storage.k8s.io", "v1", "VolumeSnapshotContent"),
 }
 
 
@@ -279,6 +286,7 @@ class Sample:
     request: dict
     setup: list[dict]
     note: str
+    groups: tuple[str, ...] = ()
 
 
 @dataclass
@@ -291,6 +299,7 @@ class Cluster:
     samples: list[Sample] = field(default_factory=list)
     account: str = ""
     note: str = ""
+    groups: tuple[str, ...] = ()
 
     def put(self, path: str, obj: dict) -> None:
         """Made by an administrator, before the services run."""
@@ -407,16 +416,20 @@ class Cluster:
             request["content_type"] = content_type or "application/merge-patch+json"
         if body is not None:
             request["body"] = _strip(body) if method != "PATCH" else copy.deepcopy(body)
-        self.samples.append(Sample(self.account, request, self._setup_for(target), self.note))
+        self.samples.append(
+            Sample(self.account, request, self._setup_for(target), self.note, self.groups)
+        )
 
     @contextmanager
-    def acting(self, account: str, note: str) -> Iterator[None]:
-        before = self.account, self.note
-        self.account, self.note = account, note
+    def acting(self, account: str, note: str, groups: tuple[str, ...] = ()) -> Iterator[None]:
+        """Calls made as `account`: a service account, or a person signed in with `groups` (the migration
+        runner's operators)."""
+        before = self.account, self.note, self.groups
+        self.account, self.note, self.groups = account, note, groups
         try:
             yield
         finally:
-            self.account, self.note = before
+            self.account, self.note, self.groups = before
 
 
 @contextmanager
@@ -749,7 +762,266 @@ def run_services() -> Cluster:
     restart = _client(restart_actions.RestartKubeApi, cluster, ("_token", ""))
     with cluster.acting(ACCOUNT["controller"], "restart worker: a box's pod restarted"):
         restart.delete_box_pod(base, "00000000-0000-4000-8000-00000000000b")
+
+    _migration_copy(cluster, core, op)
     return cluster
+
+
+# ---------------------------------------------------------------- the migration copy runner
+
+# An operator signed in through their own role, in the group the runner's ClusterRole is bound to: a person, not a
+# service account, so the audit log names them.
+MIGRATION_OPERATOR = "contract-migration-operator"
+MIGRATION_GROUPS = ("switch:migration-runners",)
+JOB_CONTROLLER = "system:serviceaccount:kube-system:job-controller"
+MIGRATION_SNAPSHOT = "snap-0aaaaaaaaaaaaaaaa"
+MIGRATION_V1_DISK = "vol-0bbbbbbbbbbbbbbbb"
+MIGRATION_RESTORED = "vol-0cccccccccccccccc"
+MIGRATION_BOX_DISK = "vol-0dddddddddddddddd"
+MIGRATION_INSTALLATION = "contract-installation"
+MIGRATION_KMS_KEY = "contract-cluster-key"
+
+
+class _MigrationEc2:
+    """EC2 as the runner reads it: the move's snapshot, tagged as `switch-hosted-migration-cloud` tags it."""
+
+    def __init__(self, machine_id: str, person: str):
+        self._snapshot = {
+            "SnapshotId": MIGRATION_SNAPSHOT,
+            "State": "completed",
+            "Encrypted": True,
+            "VolumeId": MIGRATION_V1_DISK,
+            "VolumeSize": 40,
+            "Tags": [
+                {"Key": migration_runner.TAG_INSTALLATION, "Value": MIGRATION_INSTALLATION},
+                {"Key": migration_runner.TAG_MACHINE, "Value": machine_id},
+                {"Key": migration_runner.TAG_OWNER, "Value": person},
+                {"Key": migration_runner.TAG_SOURCE, "Value": MIGRATION_V1_DISK},
+                {"Key": migration_runner.TAG_PURPOSE, "Value": migration_runner.PURPOSE},
+            ],
+        }
+
+    def describe_snapshots(self, **_kw: Any) -> dict:
+        return {"Snapshots": [copy.deepcopy(self._snapshot)]}
+
+    def describe_snapshot_attribute(self, **_kw: Any) -> dict:
+        return {"CreateVolumePermissions": []}
+
+
+class _StillClock:
+    def now(self) -> float:
+        return 0.0
+
+    def sleep(self, _seconds: float) -> None:
+        return None
+
+
+def _pv(name: str, handle: str, claim_ns: str, claim: str) -> dict:
+    return {
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": name},
+        "spec": {
+            "capacity": {"storage": "40Gi"},
+            "accessModes": ["ReadWriteOnce"],
+            "storageClassName": STORAGE_CLASS,
+            "claimRef": {"namespace": claim_ns, "name": claim},
+            "csi": {"driver": migration_runner.CSI_DRIVER, "volumeHandle": handle},
+            "nodeAffinity": {
+                "required": {
+                    "nodeSelectorTerms": [
+                        {
+                            "matchExpressions": [
+                                {
+                                    "key": "topology.kubernetes.io/zone",
+                                    "operator": "In",
+                                    "values": [ZONE],
+                                }
+                            ]
+                        }
+                    ]
+                }
+            },
+        },
+    }
+
+
+def _path_of(obj: dict) -> str:
+    """An object's own path, from its kind (`_RESOURCE_KIND`) and metadata."""
+    kind = obj["kind"]
+    resource, (group, version, _k) = next((r, v) for r, v in _RESOURCE_KIND.items() if v[2] == kind)
+    meta = obj["metadata"]
+    return Target(group, resource, "", meta.get("namespace", ""), meta["name"], version).item
+
+
+def _job_pod(job: dict) -> dict:
+    """The copy pod as the job controller makes it from the Job's template."""
+    template = job["spec"]["template"]
+    name = job["metadata"]["name"]
+    return {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": f"{name}-contract",
+            "namespace": job["metadata"]["namespace"],
+            "labels": {
+                **template["metadata"]["labels"],
+                "batch.kubernetes.io/job-name": name,
+                "job-name": name,
+            },
+            "ownerReferences": [
+                {
+                    "apiVersion": "batch/v1",
+                    "kind": "Job",
+                    "name": name,
+                    "uid": "00000000-0000-4000-8000-0000000000c0",
+                    "controller": True,
+                    "blockOwnerDeletion": True,
+                }
+            ],
+        },
+        "spec": copy.deepcopy(template["spec"]),
+    }
+
+
+def _migration_copy(cluster: Cluster, core: _Core, op: box_operator.BoxOperator) -> None:
+    """The migration copy runner's requests: one person's copy into their held box, then `verify`. The runner's own
+    code and client (`CopyRunner`, `KubeHttp`), with the cluster's controllers played here as an administrator:
+    the snapshot import becomes ready, the job controller makes the copy pod (its request recorded as the job
+    controller's), the pod ends with its two notes, and the claim binds to a restored volume."""
+    n = 6
+    person, machine_id = _keyed(n), _machine(n)
+    namespace = user_namespace(person)
+    # The held box, made earlier: laid in as an administrator from the operator's own objects, so the operator's
+    # requests aren't recorded twice.
+    action = box_operator.ProvisionAction.parse(
+        {
+            "action_id": f"contract-{n}",
+            "machine_id": machine_id,
+            "user_keyed_id": person,
+            "size": "base",
+            "claim_token": TOKEN,
+        }
+    )
+    for _step, obj in box_operator.box_objects(action, operator_config()):
+        cluster.put(_path_of(obj), obj)
+    claim_path = (
+        f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{migration_runner.BOX_CLAIM}"
+    )
+    claim = cluster.objects[claim_path]
+    claim["spec"]["volumeName"] = "pv-contract-box"
+    claim["status"] = {"phase": "Bound"}
+    cluster.put(
+        "/api/v1/persistentvolumes/pv-contract-box",
+        _pv("pv-contract-box", MIGRATION_BOX_DISK, namespace, migration_runner.BOX_CLAIM),
+    )
+    cluster.put(
+        f"/apis/storage.k8s.io/v1/storageclasses/{STORAGE_CLASS}",
+        {
+            "apiVersion": "storage.k8s.io/v1",
+            "kind": "StorageClass",
+            "metadata": {"name": STORAGE_CLASS},
+            "provisioner": migration_runner.CSI_DRIVER,
+            "volumeBindingMode": "WaitForFirstConsumer",
+            "parameters": {"type": "gp3", "encrypted": "true", "kmsKeyId": MIGRATION_KMS_KEY},
+        },
+    )
+    report = {
+        "machine_id": machine_id,
+        "workspaces": ["contract-workspace"],
+        "files": 3,
+        "bytes": 1024,
+        "symlinks_skipped": 0,
+        "refused": 0,
+        "checksum_mismatches": 0,
+        "source_volume_id": None,
+        "seconds": 1,
+    }
+
+    def controllers(method: str, path: str, body: Any) -> None:
+        target = parse_path(path)
+        if method == "POST" and target.resource == "volumesnapshots":
+            snap = cluster.objects[
+                target.item if target.name else f"{path.split('?')[0]}/{body['metadata']['name']}"
+            ]
+            snap["status"] = {"readyToUse": True}
+        if method == "POST" and target.resource == "jobs":
+            pod = _job_pod(body)
+            with cluster.acting(JOB_CONTROLLER, "job controller: the migration copy pod"):
+                cluster.call("POST", f"/api/v1/namespaces/{namespace}/pods", pod)
+            stored = cluster.objects[
+                f"/api/v1/namespaces/{namespace}/pods/{pod['metadata']['name']}"
+            ]
+            stored["status"] = {
+                "containerStatuses": [
+                    {"name": "read", "state": {"terminated": {"exitCode": 0, "message": json.dumps(
+                        {"read": "done", "skipped_agents": [], "skipped_total": 0})}}},
+                    {"name": "write", "state": {"terminated": {"exitCode": 0, "message": json.dumps(report)}}},
+                ]
+            }  # fmt: skip
+            cluster.objects[f"{path.split('?')[0]}/{body['metadata']['name']}"]["status"] = {
+                "succeeded": 1
+            }
+            source = f"/api/v1/namespaces/{namespace}/persistentvolumeclaims/{migration_runner.SOURCE_CLAIM}"
+            cluster.objects[source]["spec"]["volumeName"] = "pv-contract-restored"
+            cluster.put(
+                "/api/v1/persistentvolumes/pv-contract-restored",
+                _pv(
+                    "pv-contract-restored",
+                    MIGRATION_RESTORED,
+                    namespace,
+                    migration_runner.SOURCE_CLAIM,
+                ),
+            )
+
+    def send(method: str, path: str, body: Any = None, content_type: str | None = None) -> Any:
+        try:
+            answer = cluster.call(method, path, body, content_type)
+        except HTTPError as error:
+            raise migration_runner.ApiError(error.code, str(error.reason)) from None
+        controllers(method, path, body)
+        return answer
+
+    manifest = migration_runner.load_manifest(
+        json.dumps(
+            {
+                "machine_id": machine_id,
+                "person": person,
+                "namespace": namespace,
+                "snapshot_id": MIGRATION_SNAPSHOT,
+                "workspaces": [{"tenant_id": "contract-workspace", "agents": []}],
+            }
+        )
+    )
+    record = migration_runner.load_record(
+        json.dumps(
+            {
+                "machine_id": machine_id,
+                "owner_keyed_id": person,
+                "step": "held",
+                "v1_instance_id": "i-0eeeeeeeeeeeeeeee",
+                "v1_data_volume_id": MIGRATION_V1_DISK,
+                "snapshot_id": MIGRATION_SNAPSHOT,
+                "done_at": None,
+            }
+        )
+    )
+    kube = migration_runner.KubeHttp(send)
+    runner = migration_runner.CopyRunner(
+        kube, _MigrationEc2(machine_id, person), _StillClock(), lambda _l: None
+    )
+    with tempfile.TemporaryDirectory() as folder:
+        with cluster.acting(MIGRATION_OPERATOR, "migration runner: the copy", MIGRATION_GROUPS):
+            runner.run(
+                record,
+                manifest,
+                installation_id=MIGRATION_INSTALLATION,
+                image=IMAGE["controller"],
+                saved_egress=Path(folder) / "egress.json",
+            )
+        assert runner.egress_sha256 is not None
+        with cluster.acting(MIGRATION_OPERATOR, "migration runner: verify", MIGRATION_GROUPS):
+            migration_runner.verify(kube, manifest, runner.egress_sha256)
 
 
 def _box_pod(namespace: str) -> dict:
@@ -935,8 +1207,106 @@ IDENTITY, P6, P7, P8 = (
     "switch-v0-p7-box-writes",
     "switch-v0-p8-box-watch-binding",
 )
+# The migration copy runner's samples (`_migration_copy`), and its policies (napoleon's, from the runner's spec).
+_M = G + "migration-runner-the-copy-"
+M_BASELINE = _M + "patch-namespace-box-namespace.json"
+M_RESTRICTED = _M + "patch-namespace-box-namespace-2.json"
+M_EGRESS_DEL = _M + "delete-networkpolicy-agent-egress.json"
+M_EGRESS_POST = _M + "post-networkpolicy-agent-egress.json"
+M_CONTENT = (
+    _M + "post-volumesnapshotcontent-migration-copy-00000006-0000-4000-8000-000000000006.json"
+)
+M_SNAPSHOT = _M + "post-volumesnapshot-migration-copy.json"
+M_CLAIM = _M + "post-persistentvolumeclaim-migration-source.json"
+M_CLAIM_DEL = _M + "delete-persistentvolumeclaim-migration-source.json"
+M_CONFIGMAP = _M + "post-configmap-migration-manifest.json"
+M_JOB = _M + "post-job-migration-copy.json"
+M_POD = G + "job-controller-the-migration-copy-pod-post-pod-migration-copy-contract.json"
+M_POD_DEL = _M + "delete-pod-migration-copy-contract.json"
+M2, M3, M4 = (
+    "switch-migration-egress-window",
+    "switch-migration-snapshot-import",
+    "switch-migration-source-claim",
+)
+M5, M6, M7, M8 = (
+    "switch-migration-copy-job",
+    "switch-migration-copy-pod",
+    "switch-migration-no-scale-up",
+    "switch-migration-box-namespaces-only",
+)
 GVISOR, CORDON_ONLY = "switch-gvisor-class-scope", "switch-operator-cordon-only"
 EVICT_ONLY, PLACEHOLDER = "switch-operator-evict-boxes-only", "switch-operator-placeholder-shape"
+
+
+def _window(value: str) -> Callable[[dict], None]:
+    """The box namespace in the sample's setup with its `enforce` label at `value`: `restricted` is outside the
+    copy window, `baseline` inside it."""
+
+    def apply(s: dict) -> None:
+        ns = parse_path(s["request"]["path"]).namespace or parse_path(s["request"]["path"]).name
+        _setup(s, f"/namespaces/{ns}")["metadata"]["labels"][
+            "pod-security.kubernetes.io/enforce"
+        ] = value
+
+    return apply
+
+
+def _labels_patch(labels: dict[str, str]) -> Callable[[dict], None]:
+    def apply(s: dict) -> None:
+        _body(s)["metadata"]["labels"] = labels
+
+    return apply
+
+
+def _pod_container(s: dict, name: str) -> dict:
+    return next(c for c in _body(s)["spec"]["containers"] if c["name"] == name)
+
+
+def _then(*changes: Callable[[dict], None]) -> Callable[[dict], None]:
+    def apply(s: dict) -> None:
+        for change in changes:
+            change(s)
+
+    return apply
+
+
+def _elsewhere(namespace: str) -> Callable[[dict], None]:
+    """The runner's request moved to a namespace that isn't a box's (it exists, as in any cluster)."""
+
+    def apply(s: dict) -> None:
+        target = parse_path(s["request"]["path"])
+        query = s["request"]["path"].partition("?")[2]
+        if target.resource == "namespaces":
+            path = f"/api/v1/namespaces/{namespace}"
+        else:
+            path = Target(
+                target.group, target.resource, "", namespace, "", target.version
+            ).item.rstrip("/")
+        s["request"]["path"] = path + (f"?{query}" if query else "")
+        body = s["request"].get("body") or {}
+        if body.get("metadata", {}).get("namespace"):
+            body["metadata"]["namespace"] = namespace
+        s["setup"] = [{"path": f"/api/v1/namespaces/{namespace}", "object": _ns_obj(namespace)}]
+
+    return apply
+
+
+def _delete_other_claim(s: dict) -> None:
+    s["request"]["path"] = s["request"]["path"].replace("/migration-source", "/data-agents")
+
+
+def _added_volume(s: dict) -> None:
+    spec = _body(s)["spec"]
+    spec["volumes"].append({"name": "host", "hostPath": {"path": "/"}})
+    _pod_container(s, "read")["volumeMounts"].append(
+        {"name": "host", "mountPath": "/host", "readOnly": True}
+    )
+
+
+def _another_machines_content(s: dict) -> None:
+    _body(s)["spec"]["source"]["volumeSnapshotContentName"] = (
+        "migration-copy-00000007-0000-4000-8000-000000000007"
+    )
 
 
 def _set(path: tuple[str, ...], value: Any) -> Callable[[dict], None]:
@@ -1205,6 +1575,35 @@ BAD: list[Bad] = [
     Bad("placeholder-another-toleration", ROOM, _room_set("tolerations", [{"key": "example.com/x", "operator": "Exists"}]), (PLACEHOLDER,), "a placeholder tolerates only"),
     Bad("placeholder-with-a-token", ROOM, _room_set("automountServiceAccountToken", True), (PLACEHOLDER,), "a placeholder has no token, no volumes and no host access"),
     Bad("placeholder-another-zone", ROOM, lambda s: _body(s)["spec"]["nodeSelector"].__setitem__("topology.kubernetes.io/zone", "xx-example-9z"), (PLACEHOLDER,), "a placeholder asks only for an agents machine in one zone"),
+    # The migration copy runner (its spec's P-M1 to P-M8). P-M1 amends P1.
+    Bad("m1-enforce-privileged", M_BASELINE, _labels_patch({"pod-security.kubernetes.io/enforce": "privileged"}), (P1,), "the runner may set enforce to baseline or back to restricted, nothing else"),
+    Bad("m1-warn-changed", M_BASELINE, _labels_patch({"pod-security.kubernetes.io/warn": "baseline"}), (P1,), "only the enforce label may change"),
+    Bad("m1-another-label", M_BASELINE, _labels_patch({"example.com/extra": "x"}), (P1,), "no labels beyond the template's"),
+    Bad("m1-baseline-by-someone-else", M_BASELINE, _as_admin, (P1,), "only the migration runner may set enforce to baseline"),
+    Bad("m1-window-closed-by-someone-else", M_RESTRICTED, _as_admin, (P1,), "while enforce is baseline, only the migration runner may change it"),
+    Bad("m2-egress-deleted-outside-the-window", M_EGRESS_DEL, _window("restricted"), (M2,), "agent-egress may be set aside only inside the copy window"),
+    Bad("m2-egress-recreated-by-someone-else", M_EGRESS_POST, _as_admin, (M2,), "inside the copy window, only the migration runner may put agent-egress back"),
+    Bad("m2-egress-recreated-looser", M_EGRESS_POST, _set(("spec", "egress"), [{}]), (M2,), "agent-egress must be exactly the template's"),
+    Bad("m3-content-deletes-the-snapshot", M_CONTENT, _set(("spec", "deletionPolicy"), "Delete"), (M3,), "a migration snapshot import is Retain"),
+    Bad("m3-content-names-a-volume", M_CONTENT, _set(("spec", "source"), {"volumeHandle": "vol-0ffffffffffffffff"}), (M3,), "a migration snapshot import names a snapshot handle only"),
+    Bad("m3-content-another-machine-label", M_CONTENT, _set(("metadata", "labels", "switch.dev/machine-id"), "00000007-0000-4000-8000-000000000007"), (M3,), "the content's machine label is its name's"),
+    Bad("m3-content-points-outside-a-box", M_CONTENT, _set(("spec", "volumeSnapshotRef"), {"name": "migration-copy", "namespace": "kube-system"}), (M3,), "a migration snapshot import points into a box namespace"),
+    Bad("m3-snapshot-another-machines-content", M_SNAPSHOT, _another_machines_content, (M3,), "a migration snapshot names its own machine's import"),
+    Bad("m4-claim-names-a-volume", M_CLAIM, _set(("spec", "volumeName"), "pv-contract-box"), (M4,), "the source claim binds only through the CSI provisioner"),
+    Bad("m4-claim-clones-the-box-disk", M_CLAIM, _set(("spec", "dataSource"), {"kind": "PersistentVolumeClaim", "name": "data-agents"}), (M4,), "the source claim is restored from migration-copy only"),
+    Bad("m4-delete-the-box-disk", M_CLAIM_DEL, _delete_other_claim, (M4,), "the migration runner deletes migration-source only"),
+    Bad("m5-job-outside-the-window", M_JOB, _window("restricted"), (M5,), "the copy Job runs only inside the copy window"),
+    Bad("m5-job-retries", M_JOB, _set(("spec", "backoffLimit"), 3), (M5,), "the copy Job never retries"),
+    Bad("m6-reader-can-chown", M_POD, lambda s: _pod_container(s, "read")["securityContext"]["capabilities"].__setitem__("add", ["DAC_OVERRIDE", "CHOWN"]), (M6,), "the reader adds DAC_OVERRIDE only"),
+    Bad("m6-writer-as-root", M_POD, lambda s: _pod_container(s, "write")["securityContext"].update({"runAsUser": 0, "runAsNonRoot": False}), (M6,), "the writer runs as 2000 with no capabilities"),
+    Bad("m6-a-host-path", M_POD, _added_volume, (M6,), "the copy pod's volumes are exactly source, target, manifest and stream"),
+    Bad("m6-with-a-token", M_POD, lambda s: _body(s)["spec"].__setitem__("automountServiceAccountToken", True), (M6,), "the copy pod mounts no token"),
+    Bad("m6-another-image", M_POD, lambda s: _pod_container(s, "write").__setitem__("image", IMAGE["box_previous_3"]), (M6,), "the copier image is one of the allowed digests"),
+    Bad("m6-outside-the-window", M_POD, _window("restricted"), (M6,), "the copy pod runs only inside the copy window"),
+    Bad("m6-delete-another-pod", M_POD_DEL, lambda s: s["request"].__setitem__("path", s["request"]["path"].replace("migration-copy-contract", "box-0")), (M6,), "the migration runner deletes copy pods only"),
+    Bad("m7-box-started-inside-the-window", SCALE, _window("baseline"), (M7,), "no box starts while its namespace is in the copy window"),
+    Bad("m8-runner-patches-kube-system", M_BASELINE, _elsewhere("kube-system"), (M8,), "the migration runner writes in box namespaces only"),
+    Bad("m8-runner-configmap-in-default", M_CONFIGMAP, _elsewhere("default"), (M8,), "the migration runner writes in box namespaces only"),
 ]  # fmt: skip
 
 
@@ -1300,12 +1699,20 @@ def documents() -> dict[str, Any]:
             if seen[base] > 1
             else f"admission/good/{base}.json"
         )
-        out[name] = _sample_doc(sample.note, sample.service, sample.setup, sample.request, "allow")
+        extra = {"groups": list(sample.groups)} if sample.groups else {}
+        out[name] = _sample_doc(
+            sample.note, sample.service, sample.setup, sample.request, "allow", **extra
+        )
     out.update(bad_samples(out))
     out["rbac.json"] = {
         # Services whose calls aren't recorded here yet: their grants are unchecked, not wrong.
         "unrecorded": UNRECORDED,
         "box_namespace": BOX_NAMESPACE_PATTERN,
+        # Calls made by a person rather than a service account are granted through these groups (the migration
+        # runner's operators, each under their own sign-in): check the group's bindings for them.
+        "groups": {MIGRATION_OPERATOR: list(MIGRATION_GROUPS)},
+        # Kubernetes' own controllers: their grants are the cluster's built-in roles, not the deployment's.
+        "builtin": [JOB_CONTROLLER],
         "names": {placeholder: pattern for placeholder, (_, pattern) in VARYING_NAMES.items()},
         "calls": {
             account: [

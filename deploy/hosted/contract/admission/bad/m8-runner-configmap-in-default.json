@@ -1,0 +1,68 @@
+{
+  "as": "contract-migration-operator",
+  "expect": "refuse",
+  "from_good": "good/migration-runner-the-copy-post-configmap-migration-manifest.json",
+  "group": "",
+  "groups": [
+    "switch:migration-runners"
+  ],
+  "message": "the migration runner writes in box namespaces only",
+  "name": "migration-manifest",
+  "namespace": "default",
+  "object": {
+    "apiVersion": "v1",
+    "data": {
+      "manifest.json": "{\"machine_id\": \"00000006-0000-4000-8000-000000000006\", \"person\": \"k1-6666666666666666\", \"namespace\": \"agents-user-k1-6666666666666666\", \"snapshot_id\": \"snap-0aaaaaaaaaaaaaaaa\", \"workspaces\": [{\"tenant_id\": \"contract-workspace\", \"agents\": []}]}"
+    },
+    "kind": "ConfigMap",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/name": "switch-migration-copy",
+        "switch.dev/machine-id": "00000006-0000-4000-8000-000000000006"
+      },
+      "name": "migration-manifest",
+      "namespace": "default"
+    }
+  },
+  "operation": "CREATE",
+  "policies": [
+    "switch-migration-box-namespaces-only"
+  ],
+  "refused_by": "admission",
+  "request": {
+    "body": {
+      "apiVersion": "v1",
+      "data": {
+        "manifest.json": "{\"machine_id\": \"00000006-0000-4000-8000-000000000006\", \"person\": \"k1-6666666666666666\", \"namespace\": \"agents-user-k1-6666666666666666\", \"snapshot_id\": \"snap-0aaaaaaaaaaaaaaaa\", \"workspaces\": [{\"tenant_id\": \"contract-workspace\", \"agents\": []}]}"
+      },
+      "kind": "ConfigMap",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/name": "switch-migration-copy",
+          "switch.dev/machine-id": "00000006-0000-4000-8000-000000000006"
+        },
+        "name": "migration-manifest",
+        "namespace": "default"
+      }
+    },
+    "method": "POST",
+    "path": "/api/v1/namespaces/default/configmaps?fieldManager=switch-migration-runner"
+  },
+  "resource": "configmaps",
+  "setup": [
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "labels": {},
+          "name": "default"
+        }
+      },
+      "path": "/api/v1/namespaces/default"
+    }
+  ],
+  "subresource": "",
+  "version": "v1",
+  "what": "refused: m8 runner configmap in default"
+}

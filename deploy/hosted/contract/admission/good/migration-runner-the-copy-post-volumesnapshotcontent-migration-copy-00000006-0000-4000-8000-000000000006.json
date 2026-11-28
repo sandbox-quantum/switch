@@ -1,0 +1,187 @@
+{
+  "as": "contract-migration-operator",
+  "expect": "allow",
+  "group": "snapshot.storage.k8s.io",
+  "groups": [
+    "switch:migration-runners"
+  ],
+  "name": "migration-copy-00000006-0000-4000-8000-000000000006",
+  "namespace": "",
+  "object": {
+    "apiVersion": "snapshot.storage.k8s.io/v1",
+    "kind": "VolumeSnapshotContent",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/name": "switch-migration-copy",
+        "switch.dev/machine-id": "00000006-0000-4000-8000-000000000006"
+      },
+      "name": "migration-copy-00000006-0000-4000-8000-000000000006"
+    },
+    "spec": {
+      "deletionPolicy": "Retain",
+      "driver": "ebs.csi.aws.com",
+      "source": {
+        "snapshotHandle": "snap-0aaaaaaaaaaaaaaaa"
+      },
+      "volumeSnapshotRef": {
+        "name": "migration-copy",
+        "namespace": "agents-user-k1-6666666666666666"
+      }
+    }
+  },
+  "operation": "CREATE",
+  "request": {
+    "body": {
+      "apiVersion": "snapshot.storage.k8s.io/v1",
+      "kind": "VolumeSnapshotContent",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/name": "switch-migration-copy",
+          "switch.dev/machine-id": "00000006-0000-4000-8000-000000000006"
+        },
+        "name": "migration-copy-00000006-0000-4000-8000-000000000006"
+      },
+      "spec": {
+        "deletionPolicy": "Retain",
+        "driver": "ebs.csi.aws.com",
+        "source": {
+          "snapshotHandle": "snap-0aaaaaaaaaaaaaaaa"
+        },
+        "volumeSnapshotRef": {
+          "name": "migration-copy",
+          "namespace": "agents-user-k1-6666666666666666"
+        }
+      }
+    },
+    "method": "POST",
+    "path": "/apis/snapshot.storage.k8s.io/v1/volumesnapshotcontents?fieldManager=switch-migration-runner"
+  },
+  "resource": "volumesnapshotcontents",
+  "setup": [
+    {
+      "object": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "name": "switch-hosted"
+        }
+      },
+      "path": "/api/v1/namespaces/switch-hosted"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "00000001-0000-4000-8000-000000000001": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDIx",
+          "00000002-0000-4000-8000-000000000002": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDIy",
+          "00000003-0000-4000-8000-000000000003": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDIz",
+          "00000004-0000-4000-8000-000000000004": "YWdlbnRzLXVzZXItazEtNDQ0NDQ0NDQ0NDQ0NDQ0NA==",
+          "00000005-0000-4000-8000-000000000005": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDI1",
+          "0000000f-0000-4000-8000-00000000000f": "YWdlbnRzLWJveC1rMS1mZmZmZmZmZmZmZmZmZmZm"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-map",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-map"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "00000005-0000-4000-8000-000000000005": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDI1",
+          "00000006-0000-4000-8000-000000000006": "YWdlbnRzLWJveC1rMS0wMDAwMDAwMDAwMDAwMDI2",
+          "0000000e-0000-4000-8000-00000000000e": "YWdlbnRzLWJveC1rMS1lZWVlZWVlZWVlZWVlZWVl"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "pool-map",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/pool-map"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-0000000000000021": "azEtMTExMTExMTExMTExMTExMQ==",
+          "agents-box-k1-0000000000000022": "azEtMjIyMjIyMjIyMjIyMjIyMg==",
+          "agents-box-k1-0000000000000023": "azEtMzMzMzMzMzMzMzMzMzMzMw==",
+          "agents-box-k1-0000000000000025": "azEtNTU1NTU1NTU1NTU1NTU1NQ==",
+          "agents-box-k1-ffffffffffffffff": "azEtZGRkZGRkZGRkZGRkZGRkZA=="
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-owners",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-owners"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-0000000000000022": "MDAwMDAwMDItMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAy",
+          "agents-box-k1-cccccccccccccccc": "MDAwMDAwMGMtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBj"
+        },
+        "kind": "Secret",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "switch-hosted"
+          },
+          "name": "box-removals",
+          "namespace": "switch-hosted"
+        },
+        "type": "Opaque"
+      },
+      "path": "/api/v1/namespaces/switch-hosted/secrets/box-removals"
+    },
+    {
+      "object": {
+        "apiVersion": "v1",
+        "data": {
+          "agents-box-k1-0000000000000021": ""
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "egress-held",
+          "namespace": "switch-hosted"
+        }
+      },
+      "path": "/api/v1/namespaces/switch-hosted/configmaps/egress-held"
+    },
+    {
+      "object": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+          "name": "switch-hosted-controller",
+          "namespace": "switch-hosted"
+        },
+        "spec": {
+          "replicas": 1
+        }
+      },
+      "path": "/apis/apps/v1/namespaces/switch-hosted/deployments/switch-hosted-controller"
+    }
+  ],
+  "subresource": "",
+  "version": "v1",
+  "what": "migration runner: the copy"
+}

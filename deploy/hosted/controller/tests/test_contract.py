@@ -88,10 +88,15 @@ def test_every_box_tier_has_its_good_requests(files):
 
 
 def test_every_recorded_call_is_a_services(files):
-    """No call is recorded outside a service's account, where no grant could cover it."""
+    """No call is recorded outside a service's account (or an operator's group), where no grant could cover it."""
     calls = json.loads(files["rbac.json"])["calls"]
     assert "" not in calls
-    assert all(account.startswith("system:serviceaccount:") for account in calls)
+    people = json.loads(files["rbac.json"])["groups"]
+    # A service account, or a person signed in through a group the file names (the migration runner's operators).
+    assert all(
+        account.startswith("system:serviceaccount:") or account in people for account in calls
+    )
+    assert people == {"contract-migration-operator": ["switch:migration-runners"]}
 
 
 # Every list the policies keep add-only: each has a sample that removes an entry, and one that changes one.

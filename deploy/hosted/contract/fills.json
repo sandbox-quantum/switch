@@ -8,6 +8,7 @@
   "__CLUSTER_VPC_CIDR__": "198.51.100.0/22",
   "__CONTROLLER_IMAGE__": "registry.example/switch-hosted-controller@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "__EGRESS_LISTS_IMAGE__": "registry.example/switch-hosted-controller@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "__MIGRATION_COPIER_IMAGE__": "registry.example/switch-hosted-controller@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "__PAUSE_IMAGE__": "registry.example/pause@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
   "__PREVIOUS_BOX_IMAGE_1__": "registry.example/hosted-agents-box@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "__PREVIOUS_BOX_IMAGE_2__": "registry.example/hosted-agents-box@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
