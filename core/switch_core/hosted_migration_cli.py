@@ -211,6 +211,14 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                         "seat_key": manifest.seat_keys[tenant],
                         "v1_controller_id": manifest.v1_controller_ids[tenant],
                         "agent_ids": agents,
+                        "agents": [
+                            {
+                                "id": agent,
+                                "name": manifest.agents[agent][0],
+                                "directory": manifest.agents[agent][1],
+                            }
+                            for agent in agents
+                        ],
                     }
                     for tenant, agents in manifest.workspaces
                 ],

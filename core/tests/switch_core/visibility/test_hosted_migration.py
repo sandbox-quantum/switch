@@ -420,6 +420,8 @@ async def test_a_move_runs_step_by_step_and_keeps_what_a_rollback_needs(
     # before and after the flip.
     assert manifest.seat_keys == {TENANT_ZERO_ID: workspace.id}
     assert manifest.v1_controller_ids == {TENANT_ZERO_ID: v1_controller}
+    # Each agent's name and own folder, from its definition.
+    assert manifest.agents == {agent_id: ("reviewer", None)}
     assert (await world.workspace(machine_id)).id == workspace.id
     with pytest.raises(MigrationRefused) as refused:
         await world.step(
