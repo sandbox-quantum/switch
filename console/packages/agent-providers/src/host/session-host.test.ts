@@ -1900,7 +1900,7 @@ it('leaves a room turn alone when the agent posted to the room during it', async
   await until(() => expect(reply).toHaveBeenCalledOnce());
   expect(reply).toHaveBeenCalledWith({
     roomId: 'room',
-    threadId: null,
+    threadId: 'message-silent',
     body: 'I finished without replying. The turn failed: boom',
   });
 });

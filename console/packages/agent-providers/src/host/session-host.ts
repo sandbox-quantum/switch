@@ -1702,6 +1702,7 @@ export class HostedSession {
     const origin = this.commands.get(turnId)?.origin;
     if (!origin?.roomId || !origin.messageId) return;
     const roomId = origin.roomId;
+    const threadId = origin.threadId ?? origin.messageId;
     // A turn whose every post was refused ended in silence as far as the room
     // could tell: it is told that, once, unless the turn failed and says so already.
     const body =
@@ -1715,7 +1716,7 @@ export class HostedSession {
     if (body === null) return;
     await this.inbox.append({ type: 'room-reply', commandId: turnId });
     this.roomReplies.add(turnId);
-    void reply({ roomId, threadId: origin.threadId, body })
+    void reply({ roomId, threadId, body })
       .then(
         () =>
           this.publish({
