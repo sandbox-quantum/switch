@@ -81,6 +81,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     assert set(adapters) == {
         "github",
         "atlassian",
+        "cloudflare",
         "datadog",
         "linear",
         "notion",
@@ -234,6 +235,26 @@ def test_datadog_registers_cores_callback_only_where_the_server_names_it() -> No
         public, {"datadog": "core"}, SignInFlows(async_sessionmaker(), TEST_KEYRING)
     )
     assert flows.mode(CATALOG["datadog"].definition) == "core"
+
+
+def test_cloudflare_needs_no_settings_and_registers_any_loopback_port() -> None:
+    adapters = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    adapter = adapters["cloudflare"]
+    assert isinstance(adapter, OAuthAdapter)
+    client = adapter._client
+    assert isinstance(client, RegisteredClient)
+    # Cloudflare takes a loopback redirect on any port (RFC 8252).
+    assert client._request["redirect_uris"] == [
+        "http://127.0.0.1/switch-services/callback"
+    ]
+    assert client._request["scope"] == (
+        "offline_access user:read account:read zone.read dns.read "
+        "workers-scripts.read workers-routes.read workers-observability.read "
+        "dns.write workers-scripts.write workers-routes.write "
+        "workers-observability.write"
+    )
 
 
 def test_airtable_is_set_up_by_its_operators_own_client() -> None:
