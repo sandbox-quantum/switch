@@ -847,6 +847,36 @@ To connect: Connectors in Switch Console, then Atlassian. Nothing
 needs configuring on the server. To roll back, add `atlassian` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
+## Bitbucket
+
+Bitbucket Cloud is carried by Atlassian's MCP server (`https://mcp.atlassian.com/v2/mcp`);
+there is no separate Bitbucket server. It is its own catalog entry, not part of
+`atlassian`, so a person can grant an agent Jira and Confluence without
+repositories, or the reverse. The entry repeats Atlassian's sign-in (dynamic
+registration, PKCE, loopback ports 39231-39235 or Core's callback, `prompt:
+consent`, rotating refresh, identity from `api.atlassian.com/me`, 8-hour pass-through
+tokens) and names its MCP server `bitbucket`, because a session cannot hold two
+servers with one name.
+
+- **Scopes.** Read asks for the identity scopes and
+  `read:bitbucket:agent-interface`; write adds `write:bitbucket:agent-interface`.
+  No Jira, Confluence, Rovo search or Teamwork Graph scope. Atlassian's
+  supported-tools page lists the read group as reads only (repositories, files,
+  commits, pull requests, pipelines and their logs, deployments, environments),
+  so the read level is read-only at the vendor.
+- **Write** can create, update, merge, approve and comment on pull requests,
+  create branches and commits, and run a pipeline, which deploys where the
+  repository's pipeline does. Tools pass through unclassified, so the skill
+  tells the agent to confirm first and never to merge or run a pipeline unasked.
+- **Needs** a Bitbucket workspace linked to an Atlassian organization. An
+  unlinked workspace cannot be chosen at consent.
+- **Not measured here:** what Atlassian's consent screen lists for these scopes
+  alone, and whether a Jira or Confluence tool answers such a token. Connect
+  once to confirm both.
+
+To connect: Connectors in Switch Console, then Bitbucket. To roll back, add
+`bitbucket` to `DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
 ## Datadog
 
 Built from Datadog's public MCP and OAuth metadata at each of its sites, and
