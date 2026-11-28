@@ -58,7 +58,9 @@ afterEach(() => {
   for (const child of children) child.kill('SIGKILL');
   children.length = 0;
   delete process.env.FAKE_BUNDLE_FAIL;
-  rmSync(dir, { recursive: true, force: true });
+  // The fake launcher's detached child can still be writing its marker here,
+  // which Windows reports as ENOTEMPTY until it is done.
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 function template(cwd = '/work/scout', provider: 'claude' | 'codex' = 'claude') {

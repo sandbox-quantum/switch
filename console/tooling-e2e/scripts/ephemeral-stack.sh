@@ -250,8 +250,11 @@ if [ "$NEEDS_CONTROLLER" = 1 ]; then
     exit 1
   fi
 
-  mkdir -p "$WORK/agent-dir"
-  PROVIDER_ENV=(SWITCH_E2E_CONTROLLER_ID="$CONTROLLER_ID" SWITCH_E2E_AGENT_DIR="$WORK/agent-dir")
+  # Inside the controller's own workspaces folder: a directory anywhere else
+  # needs the device's leave, which a headless run has no one to give.
+  AGENT_DIR="$WORK/controller/workspaces/agent-dir"
+  mkdir -p "$AGENT_DIR"
+  PROVIDER_ENV=(SWITCH_E2E_CONTROLLER_ID="$CONTROLLER_ID" SWITCH_E2E_AGENT_DIR="$AGENT_DIR")
 fi
 
 BROWSER_ENV=()
