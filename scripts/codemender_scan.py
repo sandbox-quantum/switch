@@ -364,6 +364,7 @@ def fix_findings(findings: list[dict[str, str]], dry_run: bool) -> ScanStats:
                 "--model", "gemini-3.8-flash-cyber",
                 "fix",
                 "--yes",
+                "--bypass-warning",
                 finding_id,
             ],
             check=False,
