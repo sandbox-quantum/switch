@@ -624,7 +624,7 @@ switchCore:
   # service_connections, follow_the_conversation, switch_buddy,
   # buddy_slack_handoff, decision_routing,
   # additional_messaging_platforms (WhatsApp, Google Chat, Zulip, Signal,
-  # Matrix, Rocket.Chat, Webex), additional_agent_providers (DeepSeek
+  # Matrix, Rocket.Chat, Webex, IRC), additional_agent_providers (DeepSeek
   # Harness, Pi, GitHub Copilot, Kiro, Mistral Vibe, Goose, Qwen Code, Factory
   # Droid, Cline, Junie), hosted_awake_budgets (hosted agents v2), gateway_chats
   # (chats in the dashboard) and gateway_onboarding (getting started on Switch

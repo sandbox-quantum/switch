@@ -52,6 +52,7 @@ class _RoomService:
         ("mattermost", "archived"),
         ("discord", "deleted"),
         ("telegram", "left"),
+        ("irc", "left"),
         ("teams", "kept"),
         ("google_chat", "left"),
         ("rocketchat", "archived"),
