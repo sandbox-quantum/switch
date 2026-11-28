@@ -74,7 +74,13 @@ from switch_core.db.stores.hosted_machine_store import (
 from switch_core.db.tenant_lookup import tenants_of_cloud_machine
 from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.tenant_context import no_tenant
-from switch_core.visibility.box_provision import NAMESPACE_PREFIX, boxes_made
+from switch_core.visibility.box_provision import (
+    NAMESPACE_PREFIX,
+    _recorded_namespace,
+    boxes_made,
+    namespace_for,
+)
+from switch_core.visibility.box_removal import removal_state
 from switch_core.visibility.keyed_id import KeyedIdKey, KeyedIdKind
 
 #: How long the v1 VM, disk and snapshot are kept after a move.
@@ -484,6 +490,9 @@ class HostedMigrations:
                             instance_id=record.v1_instance_id,
                             data_volume_id=record.v1_data_volume_id,
                             instance_type=record.v1_instance_type,
+                            box_namespace=await self._box_namespace(
+                                session, machine.id, owner_id
+                            ),
                             now=now,
                         )
                     except CloudMachineConflict as error:
@@ -630,6 +639,11 @@ class HostedMigrations:
                 refusals.append("admin_stopped")
             if machine.data_volume_id is None:
                 refusals.append("no_v1_disk")
+            if record is not None and await self._box_removed(machine.id):
+                # A move rolled back past its flip named its box for removal,
+                # and that box's namespace is never issued again: another
+                # attempt would be handed it. A second try is a lead decision.
+                refusals.append("box_name_retired")
         if starting or (record is not None and record.step == "snapshot"):
             if not await self._box_allowed(machine):
                 refusals.append("box_not_allowed")
@@ -644,6 +658,30 @@ class HostedMigrations:
             # administrator's stop): stop here.
             refusals.append("freeze_replaced")
         return refusals
+
+    async def _box_namespace(
+        self, session: AsyncSession, machine_id: str, owner_id: str
+    ) -> str:
+        """The box's namespace: the one its provisions recorded, or for a box
+        not made yet, the person-keyed one it would have had."""
+        recorded = await _recorded_namespace(session, machine_id)
+        if recorded is not None:
+            return recorded
+        person = self._keyed(KeyedIdKind.USER, owner_id)
+        if person is None:
+            raise MigrationRefused("no_key", "The keyed-id key isn't loaded.")
+        return namespace_for(person)
+
+    async def _box_removed(self, machine_id: str) -> bool:
+        """Whether a box of this machine was named for removal and not
+        withdrawn: pending, claimed or gone."""
+        with no_tenant():
+            async with self._factory() as session:
+                return await removal_state(session, machine_id) in (
+                    "pending",
+                    "claimed",
+                    "gone",
+                )
 
     async def _suspended(self, owner_id: str) -> bool:
         with no_tenant():

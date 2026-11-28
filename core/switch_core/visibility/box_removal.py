@@ -2,13 +2,17 @@
 
 When Core deletes a person's box machine (`box_deleted`), it writes a durable
 `hosted.box_to_remove` entry; a revival withdraws it
-(`hosted.box_to_remove_cancelled`). From there, on the cluster:
+(`hosted.box_to_remove_cancelled`). A v1-to-v2 move rolled back past its flip
+writes one too (`flip_back`), naming the box's namespace: the row is the
+person's `vm` again, and the box, which holds the copied files, is removed
+the same way (`rolled_back_box`). From there, on the cluster:
 
 1. the box provisioner claims the removal here (`claim_removal`, its bearer),
    for a lease, and adds the namespace to the add-only `box-removals` list;
 2. the remover asks here, on its own bearer (never the reaper's), before
    deleting a listed namespace (`removal_verdict`): only a claimed, uncancelled removal
-   of a deleted machine, under the namespace Core recorded, is `removable`;
+   of a deleted box (or a rolled-back move's), under the namespace Core recorded, is
+   `removable`;
 3. the provisioner, once the namespace and its volumes are gone, confirms
    (`record_removal_gone`) and Core writes `hosted.box_removed`.
 
@@ -32,11 +36,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from sqlalchemy import func, literal_column, select, text
+from sqlalchemy import and_, func, literal_column, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
-from switch_core.db.models import CloudMachine, ServerAuditEvent
+from switch_core.db.models import CloudMachine, HostedMigration, ServerAuditEvent
 from switch_core.db.stores.hosted_machine_store import lock_machine
 from switch_core.visibility.dependencies import process_keyed_id_key
 from switch_core.visibility.keyed_id import KeyedIdKind
@@ -159,15 +163,54 @@ def _state(entries: list[ServerAuditEvent]) -> RemovalState:
     return "claimed" if _claims(entries) else "pending"
 
 
+def _named_namespace(entries: list[ServerAuditEvent]) -> str | None:
+    """The namespace the newest naming recorded, when it recorded one (a
+    migration rollback's does; `box_deleted`'s doesn't)."""
+    marks = [e for e in entries if e.action == TO_REMOVE]
+    found = (marks[-1].details or {}).get("namespace") if marks else None
+    return found if isinstance(found, str) and found else None
+
+
+def _row_removable(machine: CloudMachine | None, rolled_back: bool) -> bool:
+    """Whether the machine row stands for a box Core no longer runs: a deleted
+    box, or the box of a move rolled back, whose row is the person's `vm`
+    again (`rolled_back_box`)."""
+    if machine is None:
+        return False
+    if machine.state == "deleted" and machine.backend == "box":
+        return True
+    return machine.backend == "vm" and rolled_back
+
+
+async def rolled_back_box(session: AsyncSession, machine: CloudMachine) -> bool:
+    """Whether the machine is a `vm` again because its move was rolled back
+    past the flip: its owner's migration record is for this machine and
+    `rolled_back`. Its box, under the namespace the rollback recorded, is
+    Core's to remove."""
+    if machine.backend != "vm":
+        return False
+    record = await session.get(
+        HostedMigration, machine.owner_id, populate_existing=True
+    )
+    return (
+        record is not None
+        and record.machine_id == machine.id
+        and record.step == "rolled_back"
+    )
+
+
 def _verdict(
-    machine: CloudMachine | None, entries: list[ServerAuditEvent], namespace: str
+    machine: CloudMachine | None,
+    entries: list[ServerAuditEvent],
+    namespace: str,
+    rolled_back: bool,
 ) -> Verdict:
     state = _state(entries)
+    named = _named_namespace(entries)
     removable = (
-        machine is not None
-        and machine.state == "deleted"
-        and machine.backend == "box"
+        _row_removable(machine, rolled_back)
         and state == "claimed"
+        and (named is None or named == namespace)
         and any(
             (c.details or {}).get("namespace") == namespace for c in _claims(entries)
         )
@@ -223,14 +266,28 @@ async def claim_removal(session: AsyncSession, now: datetime) -> ClaimedRemoval 
         .where(ServerAuditEvent.action == REMOVED, _MACHINE == CloudMachine.id)
         .exists()
     )
+    rolled_back = (
+        select(HostedMigration.owner_id)
+        .where(
+            HostedMigration.machine_id == CloudMachine.id,
+            HostedMigration.owner_id == CloudMachine.owner_id,
+            HostedMigration.step == "rolled_back",
+        )
+        .exists()
+    )
     candidates = list(
         (
             await session.scalars(
                 select(CloudMachine.id)
                 .join(named, named.c.machine_id == CloudMachine.id)
                 .where(
-                    CloudMachine.state == "deleted",
-                    CloudMachine.backend == "box",
+                    or_(
+                        and_(
+                            CloudMachine.state == "deleted",
+                            CloudMachine.backend == "box",
+                        ),
+                        and_(CloudMachine.backend == "vm", rolled_back),
+                    ),
                     ~removed,
                 )
                 .order_by(named.c.at, CloudMachine.id)
@@ -248,7 +305,9 @@ async def claim_removal(session: AsyncSession, now: datetime) -> ClaimedRemoval 
         # under both locks.
         await lock_machine(session, machine_id)
         machine = await session.get(CloudMachine, machine_id, populate_existing=True)
-        if machine is None or machine.state != "deleted" or machine.backend != "box":
+        if machine is None or not _row_removable(
+            machine, await rolled_back_box(session, machine)
+        ):
             continue
         entries = await _entries(session, machine_id)
         if (
@@ -258,8 +317,11 @@ async def claim_removal(session: AsyncSession, now: datetime) -> ClaimedRemoval 
         ):
             continue
         claims = _claims(entries)
+        recorded = _named_namespace(entries)
         if claims:
             namespace = str((claims[-1].details or {}).get("namespace"))
+        elif recorded is not None:
+            namespace = recorded
         else:
             found = await removal_namespace(session, machine)
             if found is None:
@@ -322,10 +384,9 @@ async def record_removal_gone(
         raise RemovalRefused(409, "This isn't the removal's current claim.")
     if _removed(entries):
         return False
-    if (
-        machine is None
-        or machine.state != "deleted"
-        or not _named_and_not_cancelled(entries)
+    rolled_back = machine is not None and await rolled_back_box(session, machine)
+    if not _row_removable(machine, rolled_back) or not _named_and_not_cancelled(
+        entries
     ):
         raise RemovalRefused(409, "This box isn't Core's to remove.")
     await record_server_audit_event(
@@ -353,7 +414,10 @@ async def removal_verdict(
     cancelled, and `namespace` is the one the claim recorded. Already gone is
     not removable (nothing to delete)."""
     machine = await session.get(CloudMachine, machine_id, populate_existing=True)
-    return _verdict(machine, await _entries(session, machine_id), namespace)
+    rolled_back = machine is not None and await rolled_back_box(session, machine)
+    return _verdict(
+        machine, await _entries(session, machine_id), namespace, rolled_back
+    )
 
 
 async def unjustified_entries(
@@ -376,7 +440,9 @@ async def unjustified_entries(
                 continue
             unbacked.append((namespace, machine_id))
             continue
-        if not _verdict(machines.get(machine_id), found, namespace).removable:
+        machine = machines.get(machine_id)
+        rolled_back = machine is not None and await rolled_back_box(session, machine)
+        if not _verdict(machine, found, namespace, rolled_back).removable:
             unbacked.append((namespace, machine_id))
     return unbacked
 
