@@ -30,7 +30,10 @@ from switch_core.box_cluster import (
 )
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.gateway.hosted_controller import controller_session
+from switch_core.gateway.hosted_controller import (
+    box_controller_session,
+    controller_session,
+)
 from switch_core.gateway.hosted_machines import controller_settings
 from switch_core.gateway.hosted_operator_bearer import require_operator_bearer
 from switch_core.gateway.hosted_provisioner import (
@@ -225,8 +228,8 @@ WORKER_AUTH = {
     ("POST", "/hosted-controller/machines/{machine_id}/prepare"): controller_session,
     ("GET", "/hosted-controller/actions"): require_operator_bearer,
     ("POST", "/hosted-controller/actions/{action_id}/steps"): require_operator_bearer,
-    ("POST", "/hosted-controller/cluster"): controller_session,
-    ("GET", "/hosted-controller/pool"): controller_session,
+    ("POST", "/hosted-controller/cluster"): box_controller_session,
+    ("GET", "/hosted-controller/pool"): box_controller_session,
     ("GET", "/hosted-provisioner/actions/{action_id}"): provisioner_session,
     ("POST", "/hosted-provisioner/actions/{action_id}/result"): provisioner_session,
     ("POST", "/hosted-provisioner/actions/{action_id}/steps"): provisioner_session,
@@ -305,6 +308,7 @@ def _settings_values() -> dict[str, Any]:
     return {
         "allowed_tenant_ids": ["*"],
         "token": "c" * 32,
+        "box_controller_token": "b" * 32,
         "provisioner_token": "p" * 32,
         "operator_token": "o" * 32,
         "reaper_token": "r" * 32,
@@ -383,11 +387,18 @@ def test_without_credentials_every_box_route_is_refused() -> None:
 # Each hosted worker's bearer, as `_settings()` sets it.
 BEARERS = {
     controller_session: "c" * 32,
+    box_controller_session: "b" * 32,
     require_operator_bearer: "o" * 32,
     provisioner_session: "p" * 32,
     reaper_session: "r" * 32,
     remover_session: "m" * 32,
 }
+
+
+# The routes v1's controller and the box workers share (`controller_session`)
+# take the box workers' bearer too; the box-only routes refuse v1's `token`
+# once the box workers' own is configured and no move-over is open.
+ALSO_TAKES = {controller_session: {box_controller_session}}
 
 
 def test_no_workers_bearer_opens_another_workers_route() -> None:
@@ -400,7 +411,7 @@ def test_no_workers_bearer_opens_another_workers_route() -> None:
     opened = []
     for (method, path), own in WORKER_AUTH.items():
         for check, bearer in BEARERS.items():
-            if check is own:
+            if check is own or check in ALSO_TAKES.get(own, set()):
                 continue
             resp = client.request(
                 method,
