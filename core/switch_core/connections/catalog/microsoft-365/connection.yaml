@@ -1,7 +1,96 @@
+# A draft, left disabled while
+# docs/design/microsoft-365-investigation.md is read. It has no
+# auth.identity: none of Switch's identity modes can name a Work IQ
+# sign-in's account. A Work IQ token's audience is Work IQ, so Microsoft
+# Graph's /me and Entra's userinfo endpoint refuse it; the metadata names
+# no introspection endpoint, and Work IQ documents no who-am-I tool. The
+# investigation proposes reading the ID token's claims instead, which
+# waits on the maintainers.
 slug: microsoft-365
 name: Microsoft 365
 category: Productivity
-description: Work with OneDrive, Outlook, Word and Excel.
+description: Read Outlook mail and calendar, OneDrive, SharePoint and Teams, as you.
 enabled: false
+adapter: oauth
 auth:
   type: oauth
+  # Documented, not measured: Entra returns a new refresh token with each
+  # refresh but does not revoke the old one.
+  refresh: reusable
+  oauth:
+    # Measured 2026-11-26: Entra's metadata has no registration_endpoint,
+    # so each server's operator registers one multitenant Entra
+    # application (AzureADMultipleOrgs, web platform, a client secret) and
+    # saves it in MICROSOFT_365_CLIENT_CONFIG_PATH or under Connectors in
+    # the dashboard. An administrator of every tenant that connects then
+    # grants it admin consent, which every Work IQ permission requires.
+    registration: static
+    client_settings: MICROSOFT_365
+    # Core's own https callback, which the operator registers in the
+    # application. Console's loopback listener is on 127.0.0.1, and
+    # Microsoft documents ignoring the port only of a `localhost`
+    # redirect URI; whether 127.0.0.1 gets the same treatment is
+    # undocumented and a tenant run must measure it before `loopback`
+    # can join this list.
+    redirect: [core]
+    # Named, not discovered. Measured 2026-11-26: Entra's OpenID
+    # configuration lists no code_challenge_methods_supported, so
+    # discovery refuses it ("does not offer PKCE with S256"), though
+    # Entra takes S256. Named endpoints then send no RFC 8707 `resource`,
+    # which the MCP authorization spec requires and Work IQ's own
+    # protected-resource metadata declares. Measured: the token endpoint
+    # does not reject the parameter (it answers a made-up code with
+    # invalid_grant, with and without it), and Entra takes a token's
+    # audience from the scope's prefix (documented). Whether Work IQ
+    # accepts a token requested without `resource` is a tenant question;
+    # if it does not, Core must keep a `resource` with named endpoints.
+    # `organizations` because Work IQ is for work accounts only: its
+    # protected-resource metadata names this authority and no other.
+    authorization_url: https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize
+    token_url: https://login.microsoftonline.com/organizations/oauth2/v2.0/token
+    # Measured 2026-11-26: Entra answers a made-up code with
+    # invalid_grant (AADSTS9002313) even for a client id that does not
+    # exist - it judges the code before the client, so the client check
+    # passes any client.
+    unchecked: >-
+      Switch can't check the client id, secret or redirect URI with
+      Microsoft. Connect once to confirm.
+    # Measured 2026-11-26: Entra's metadata names no revocation_endpoint,
+    # and a person cannot revoke a permission an administrator consented
+    # to.
+    remove_access: >-
+      Microsoft has no way for Switch to revoke a sign-in. Ask your
+      Microsoft 365 administrator to remove Switch's consent in Microsoft
+      Entra. Until then the sign-in stays usable.
+    prompt: select_account
+# Documented, not measured: Entra's access tokens last a random 60-90
+# minutes by default, and tenants can set longer ones.
+token: { kind: pass_through, max_lifetime: 5400 }
+mcp:
+  # Work IQ is generally available since 2026-06-16; its `retrieve` tool
+  # is still in public preview. Every call spends the connecting tenant's
+  # Copilot Credits, so the tenant needs usage-based billing enabled, and
+  # a Global Administrator must have enabled Work IQ itself.
+  servers:
+    - { name: work-iq, url: "https://workiq.svc.cloud.microsoft/mcp" }
+access:
+  # Read only: WorkIQ.Act and WorkIQAgent.Ask both carry write access,
+  # and Work IQ's write policy is tenant-wide, not per app, so the
+  # read-only level has to come from the scope. Measured 2026-11-26: the
+  # server's own metadata advertises only WorkIQAgent.Ask, so whether the
+  # endpoint accepts a WorkIQ.Read token is the first thing a tenant run
+  # must settle; if it does not, there is no read-only level to offer.
+  # openid and profile make the token response carry the ID token whose
+  # oid, tid and preferred_username the proposed identity mode reads;
+  # offline_access makes it carry a refresh token. Entra documents the
+  # response's `scope` as the access token's scopes alone, so where it
+  # echoes the field at all, Switch's consent comparison judges this
+  # level not granted - the investigation asks that protocol scopes be
+  # kept out of the comparison.
+  read:
+    scopes:
+      - openid
+      - profile
+      - offline_access
+      - api://workiq.svc.cloud.microsoft/WorkIQ.Read
+tools: { mode: pass_through }
