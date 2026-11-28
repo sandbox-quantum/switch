@@ -182,24 +182,3 @@ class TestHandInOnce:
         await CollaborationCore._handle_inbound_message(bridge, _message(ref="post-2"))
 
         assert len(bridge.human.sent) == 2
-
-
-async def test_with_hosted_agents_v2_off_the_inbound_path_is_mains(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The once-only check came with hosted agents v2: with it off, a second
-    copy of a post is handed in again, as main does, and nothing is looked up."""
-    from switch_core import hosted_v2
-
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
-    rows: dict[tuple[str, str], str] = {}
-    bridge = _bridge(rows)
-
-    await CollaborationCore._handle_inbound_message(bridge, _message())
-    await CollaborationCore._handle_inbound_message(bridge, _message())
-
-    assert bridge.human.sent == [
-        (TRANSPORT_ROOM_ID, "hello"),
-        (TRANSPORT_ROOM_ID, "hello"),
-    ]
-    assert bridge._bridge_message_map_store.lookups == []

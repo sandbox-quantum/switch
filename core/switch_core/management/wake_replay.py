@@ -9,7 +9,8 @@ enrolled afresh) reconnects at `"head"`, the agent's newest own event:
 the message that woke the machine, so the stream starts just past it and the
 agent never gets it.
 
-So, for a controller on a cloud machine only, a
+So, on a server with a box cluster and for a controller on a cloud machine
+only, a
 `"head"` cursor becomes the point just before the agent's own events that
 arrived while the controller was down. A controller sends `"head"` only for an
 agent it has confirmed nothing for, so nothing it already handled is sent
@@ -38,6 +39,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.box_cluster import box_cluster_on
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.db.models import AgentController, CloudMachine, MachineWorkspace
 
@@ -65,7 +67,9 @@ async def resume_cursors_after_wake(
     missed any. Read before the opening connection is recorded, so the
     controller's own row still says how its last connection went."""
     heads = [agent_id for agent_id, cursor in resume_cursors.items() if cursor is None]
-    if not heads:
+    if not heads or not box_cluster_on():
+        # No box cluster configured: every controller starts at its head, as
+        # before boxes.
         return resume_cursors
     controller = await session.scalar(
         select(AgentController).where(

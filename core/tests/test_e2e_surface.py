@@ -75,10 +75,10 @@ def test_each_route_names_the_flags_it_is_mounted_behind() -> None:
     assert routes["GET /gateway/service-connections"] == ["service_connections"]
 
 
-def test_routes_behind_the_hosted_v2_gate_name_the_hosted_v2_flag() -> None:
-    """With v2 off the gate answers 404 before any authentication, and
-    `/feature-flags` doesn't list `hosted_v2`, so the fast lane's session probe
-    counts these routes as not mounted rather than expecting a 401."""
+def test_routes_behind_the_box_cluster_gate_name_the_box_cluster_label() -> None:
+    """Without a box cluster the gate answers 404 before any authentication,
+    and `/feature-flags` doesn't list `box_cluster`, so the fast lane's session
+    probe counts these routes as not mounted rather than expecting a 401."""
     routes = {
         entry["route"]: entry["flags"]
         for entry in json.loads(surface.render())["gatewayRoutes"]
@@ -88,7 +88,7 @@ def test_routes_behind_the_hosted_v2_gate_name_the_hosted_v2_flag() -> None:
         "POST /gateway/shared-cloud/users/{user_keyed_id}/pause",
         "PUT /gateway/tenants/{tenant_id}/hosted-people/{user_id}",
     ):
-        assert routes[route] == ["hosted_v2"], route
+        assert routes[route] == ["box_cluster"], route
     # A route with no gate keeps no flag.
     assert routes["POST /gateway/rooms"] == []
     assert routes["POST /gateway/management/agents"] == []
@@ -96,19 +96,19 @@ def test_routes_behind_the_hosted_v2_gate_name_the_hosted_v2_flag() -> None:
 
 def test_every_route_behind_the_gate_is_tagged() -> None:
     """The same gates as core's route walk: every gateway route that depends on
-    either one names `hosted_v2`, and no other route does."""
+    either one names `box_cluster`, and no other route does."""
     app = surface.gateway_app(surface._config(frozenset(surface.KNOWN_FEATURE_FLAGS)))
     gated = {
         key
         for key, route in surface._routes_by_key(app).items()
-        if surface._behind_hosted_v2(route)
+        if surface._behind_box_cluster(route)
     }
     tagged = {
         entry["route"]
         for entry in json.loads(surface.render())["gatewayRoutes"]
-        if "hosted_v2" in entry["flags"]
+        if surface.BOX_CLUSTER_LABEL in entry["flags"]
     }
-    assert gated, "no route found behind the hosted v2 gate"
+    assert gated, "no route found behind the box cluster gate"
     assert tagged == gated
 
 

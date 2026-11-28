@@ -404,42 +404,37 @@ async def test_a_session_with_no_controller_connected_is_told_so(
 
 @pytest.fixture
 def machine(monkeypatch: pytest.MonkeyPatch):
-    """The v1/v2 switch for `!reset` (sweep row 1): set v2 and what the agent's
-    controller runs on; records each database read of the machine."""
+    """For `!reset`: what the agent's controller runs on, a box or not;
+    records each database read of the machine."""
     from contextlib import asynccontextmanager
-
-    from switch_core import hosted_v2
 
     reads: list[str] = []
 
-    def _set(*, v2: bool, box: bool) -> list[str]:
-        monkeypatch.setattr(hosted_v2, "_process_on", v2)
+    def _set(*, box: bool) -> list[str]:
 
         @asynccontextmanager
         async def _session(*_a: Any, **_k: Any):
             yield object()
 
-        async def _v2_box(_session: Any, _tenant: str, controller_id: str) -> bool:
+        async def _on_box(_session: Any, _tenant: str, controller_id: str) -> bool:
             reads.append(controller_id)
             return box
 
         monkeypatch.setattr(commands, "tenant_session", _session)
-        monkeypatch.setattr(commands, "v2_box", _v2_box)
+        monkeypatch.setattr(commands, "on_box", _on_box)
         return reads
 
     return _set
 
 
-@pytest.mark.parametrize(("v2", "box"), [(False, True), (False, False), (True, False)])
 @pytest.mark.parametrize("live", [True, False])
 @pytest.mark.asyncio
 async def test_a_reset_on_a_v1_machine_or_own_computer_keeps_upstreams_ack(
-    monkeypatch: pytest.MonkeyPatch, machine, live: bool, v2: bool, box: bool
+    monkeypatch: pytest.MonkeyPatch, machine, live: bool
 ) -> None:
-    """Switch off (any controller), or on for a controller not on a box: the
-    upstream acknowledgement, no `roomTold`, and upstream's failure line. With
-    v2 off, nothing is read."""
-    reads = machine(v2=v2, box=box)
+    """A controller not on a box: the upstream acknowledgement, no
+    `roomTold`, and upstream's failure line."""
+    reads = machine(box=False)
     reply = _Reply()
     monkeypatch.setattr(commands, "_reply", reply)
 
@@ -467,7 +462,7 @@ async def test_a_reset_on_a_v1_machine_or_own_computer_keeps_upstreams_ack(
 
     await _cmd_reset(client, SimpleNamespace(room_id="!m:server"), _event(), False)
 
-    assert reads == ([] if not v2 else ["controller-1"])
+    assert reads == ["controller-1"]
     if live:
         [(_agent, frame)] = conn.session_commands
         assert "roomTold" not in frame
@@ -483,7 +478,7 @@ async def test_a_reset_on_a_v1_machine_or_own_computer_keeps_upstreams_ack(
 async def test_a_controller_backed_agent_is_sent_the_command_on_its_controllers_stream(
     monkeypatch: pytest.MonkeyPatch, machine, live: bool
 ) -> None:
-    machine(v2=True, box=True)  # a v2 box's agent host says how its reset went
+    machine(box=True)  # a v2 box's agent host says how its reset went
     reply = _Reply()
     monkeypatch.setattr(commands, "_reply", reply)
 

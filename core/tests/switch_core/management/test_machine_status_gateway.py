@@ -80,16 +80,6 @@ def test_whatever_an_old_box_sends_under_a_retired_name_never_costs_its_report(
     assert not set(RETIRED_AGENT_STATUS_FIELDS) & set(kept["agents"][0])
 
 
-def test_with_v2_off_a_report_is_kept_as_sent(monkeypatch: pytest.MonkeyPatch) -> None:
-    from switch_core import hosted_v2
-
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
-    kept = stored(_an_old_box_s_report())
-    assert kept["machine"]["gateway_daily_cap"] == 200
-    assert kept["machine"]["memory_note"] == "sustained"
-    assert kept["agents"][0]["ai_calls_today"] == 12
-
-
 def test_a_report_without_them_is_still_accepted() -> None:
     kept = stored(fixture("status_request.json"))
     assert "gateway_refused" not in kept["machine"]

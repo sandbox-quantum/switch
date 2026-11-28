@@ -462,16 +462,11 @@ async def test_the_hosted_sampler_starts_with_hosted_agents(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("on", [False, True])
-async def test_the_hosted_sampler_starts_with_hosted_agents_v2_on_or_off(
-    monkeypatch, on: bool
-):
-    """The sampler covers v1 machines and v2 boxes alike, so it starts with
-    hosted agents on and OTLP configured, whether hosted agents v2 is on or
-    off."""
-    from switch_core import hosted_v2
-
-    monkeypatch.setattr(hosted_v2, "_process_on", on)
+@pytest.mark.usefixtures("box_cluster_off")
+async def test_the_hosted_sampler_starts_without_a_box_cluster(monkeypatch):
+    """The sampler covers v1 machines as well as boxes, so it starts with
+    hosted agents on and OTLP configured even on a server with no box
+    cluster."""
     observability = start_observability(
         config=_config(
             monkeypatch,
