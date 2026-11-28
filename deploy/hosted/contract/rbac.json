@@ -1,6 +1,235 @@
 {
   "box_namespace": "^agents-(user|box)-k1-[0-9a-f]{16}$",
+  "builtin": [
+    "system:serviceaccount:kube-system:job-controller"
+  ],
   "calls": {
+    "contract-migration-operator": [
+      {
+        "group": "",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "configmaps",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "persistentvolumeclaims",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "batch",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "jobs",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "networking.k8s.io",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "networkpolicies",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "snapshot.storage.k8s.io",
+        "name": "",
+        "namespace": "",
+        "resource": "volumesnapshotcontents",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "snapshot.storage.k8s.io",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "volumesnapshots",
+        "subresource": "",
+        "verb": "create"
+      },
+      {
+        "group": "",
+        "name": "migration-manifest",
+        "namespace": "(box)",
+        "resource": "configmaps",
+        "subresource": "",
+        "verb": "delete"
+      },
+      {
+        "group": "",
+        "name": "migration-source",
+        "namespace": "(box)",
+        "resource": "persistentvolumeclaims",
+        "subresource": "",
+        "verb": "delete"
+      },
+      {
+        "group": "",
+        "name": "migration-copy-contract",
+        "namespace": "(box)",
+        "resource": "pods",
+        "subresource": "",
+        "verb": "delete"
+      },
+      {
+        "group": "batch",
+        "name": "migration-copy",
+        "namespace": "(box)",
+        "resource": "jobs",
+        "subresource": "",
+        "verb": "delete"
+      },
+      {
+        "group": "networking.k8s.io",
+        "name": "agent-egress",
+        "namespace": "(box)",
+        "resource": "networkpolicies",
+        "subresource": "",
+        "verb": "delete"
+      },
+      {
+        "group": "snapshot.storage.k8s.io",
+        "name": "migration-copy-00000006-0000-4000-8000-000000000006",
+        "namespace": "",
+        "resource": "volumesnapshotcontents",
+        "subresource": "",
+        "verb": "delete"
+      },
+      {
+        "group": "snapshot.storage.k8s.io",
+        "name": "migration-copy",
+        "namespace": "(box)",
+        "resource": "volumesnapshots",
+        "subresource": "",
+        "verb": "delete"
+      },
+      {
+        "group": "",
+        "name": "migration-manifest",
+        "namespace": "(box)",
+        "resource": "configmaps",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "(box)",
+        "namespace": "",
+        "resource": "namespaces",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "data-agents",
+        "namespace": "(box)",
+        "resource": "persistentvolumeclaims",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "migration-source",
+        "namespace": "(box)",
+        "resource": "persistentvolumeclaims",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "pv-contract-box",
+        "namespace": "",
+        "resource": "persistentvolumes",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "pv-contract-restored",
+        "namespace": "",
+        "resource": "persistentvolumes",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "apps",
+        "name": "box",
+        "namespace": "(box)",
+        "resource": "statefulsets",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "batch",
+        "name": "migration-copy",
+        "namespace": "(box)",
+        "resource": "jobs",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "networking.k8s.io",
+        "name": "agent-egress",
+        "namespace": "(box)",
+        "resource": "networkpolicies",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "networking.k8s.io",
+        "name": "default-deny",
+        "namespace": "(box)",
+        "resource": "networkpolicies",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "snapshot.storage.k8s.io",
+        "name": "migration-copy-00000006-0000-4000-8000-000000000006",
+        "namespace": "",
+        "resource": "volumesnapshotcontents",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "snapshot.storage.k8s.io",
+        "name": "migration-copy",
+        "namespace": "(box)",
+        "resource": "volumesnapshots",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "storage.k8s.io",
+        "name": "gp3",
+        "namespace": "",
+        "resource": "storageclasses",
+        "subresource": "",
+        "verb": "get"
+      },
+      {
+        "group": "",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "pods",
+        "subresource": "",
+        "verb": "list"
+      },
+      {
+        "group": "",
+        "name": "(box)",
+        "namespace": "",
+        "resource": "namespaces",
+        "subresource": "",
+        "verb": "patch"
+      }
+    ],
     "system:serviceaccount:egress-lists:egress-lists": [
       {
         "group": "",
@@ -89,6 +318,16 @@
         "resource": "secrets",
         "subresource": "",
         "verb": "patch"
+      }
+    ],
+    "system:serviceaccount:kube-system:job-controller": [
+      {
+        "group": "",
+        "name": "",
+        "namespace": "(box)",
+        "resource": "pods",
+        "subresource": "",
+        "verb": "create"
       }
     ],
     "system:serviceaccount:switch-hosted:switch-drain": [
@@ -604,6 +843,11 @@
         "subresource": "",
         "verb": "get"
       }
+    ]
+  },
+  "groups": {
+    "contract-migration-operator": [
+      "switch:migration-runners"
     ]
   },
   "names": {
