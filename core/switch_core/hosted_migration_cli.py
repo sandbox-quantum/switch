@@ -11,6 +11,8 @@ the operators list) is the actor of every audit entry. It adds no web route.
   step of the move.
 - `switch-hosted-migration manifest PERSON`: the agents the copy job copies,
   as JSON, named from Core's own record.
+- `switch-hosted-migration record PERSON`: the move's record as JSON, for the
+  cloud-side `snapshot` and `clean-up --execute` steps. Changes nothing.
 - `switch-hosted-migration rollback PERSON --operator ID [--execute]`.
 - `switch-hosted-migration clean-up PERSON --operator ID [--execute]`: after
   the rollback window, say which v1 resources may go, and record it.
@@ -47,6 +49,7 @@ from switch_core.visibility.dependencies import load_keyed_id_key
 from switch_core.visibility.hosted_migration import (
     CopyReport,
     HostedMigrations,
+    MigrationRecord,
     MigrationRefused,
     Plan,
 )
@@ -67,6 +70,8 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("person")
     manifest = commands.add_parser("manifest")
     manifest.add_argument("person")
+    record = commands.add_parser("record")
+    record.add_argument("person")
     for name in ("run", "rollback", "clean-up"):
         command = commands.add_parser(name)
         command.add_argument("person")
@@ -122,6 +127,19 @@ def read_copy_report(path: Path) -> CopyReport:
         source_volume_id=body["source_volume_id"],
         seconds=body["seconds"],
     )
+
+
+def record_body(record: MigrationRecord) -> dict[str, Any]:
+    """`record`'s JSON: exactly these seven keys, null where not set."""
+    return {
+        "machine_id": record.machine_id,
+        "owner_keyed_id": record.owner_keyed_id,
+        "step": record.step,
+        "v1_instance_id": record.v1_instance_id,
+        "v1_data_volume_id": record.v1_data_volume_id,
+        "snapshot_id": record.snapshot_id,
+        "done_at": record.done_at.isoformat() if record.done_at else None,
+    }
 
 
 def _print_plan(plan: Plan) -> None:
@@ -197,6 +215,9 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
         person = arguments.person
         if arguments.command == "plan":
             _print_plan(await migrations.plan(person))
+            return 0
+        if arguments.command == "record":
+            print(json.dumps(record_body(await migrations.record(person)), indent=2))
             return 0
         if arguments.command == "manifest":
             manifest = await migrations.copy_manifest(person)
