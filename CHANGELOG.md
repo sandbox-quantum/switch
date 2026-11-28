@@ -53,6 +53,9 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Fixed
+- **Two servers adding the same member to a room at the same moment no longer
+  fails one of them.** Creating the same chat from two replicas at once could
+  end in a duplicate-membership error instead of both finding the one room.
 - **`switch.hosted.provider_login_problems` counts only providers an agent on
   the machine runs.** Cloud machines have every provider installed, so a login
   nobody had given for a provider no agent used kept the "AI provider logins
