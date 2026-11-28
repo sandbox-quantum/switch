@@ -200,6 +200,22 @@ def test_sentry_needs_no_settings_and_registers_its_ports_and_scopes() -> None:
     assert client._request["scope"] == "org:read project:write team:write event:write"
 
 
+def test_intercom_needs_no_settings_and_registers_its_ports_and_scope() -> None:
+    adapter = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )["intercom"]
+    assert isinstance(adapter, OAuthAdapter)
+    client = adapter._client
+    assert isinstance(client, RegisteredClient)
+    assert client._request == {
+        "redirect_uris": [
+            f"http://127.0.0.1:{port}/switch-services/callback"
+            for port in (39231, 39232, 39233, 39234, 39235)
+        ],
+        "scope": "mcp",
+    }
+
+
 def test_datadog_needs_no_settings_and_registers_its_ports_and_scope() -> None:
     adapter = build_adapters(
         CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG

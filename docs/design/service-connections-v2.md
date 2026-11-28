@@ -1154,6 +1154,67 @@ To connect: Settings, Connections in Switch Console, then Sentry. Nothing
 needs configuring on the server. To roll back, add `sentry` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
+## Intercom
+
+Built from live probes and a real sign-in against intercom.com with a trial
+workspace on the US data host:
+
+- Intercom's MCP server (`mcp.intercom.com/mcp`) offers dynamic registration,
+  PKCE S256 and revocation at its token endpoint, so Core registers its
+  client and nothing is set up on the server. Registration accepts Switch's
+  exact request (client name, the five loopback redirect URIs, the `mcp`
+  scope, both grant types, `code`, no client authentication): measured.
+- Registration accepts loopback redirect URIs alone: an https redirect, a
+  port-less loopback URI, `urn:ietf:wg:oauth:2.0:oob` and the server's own
+  `/callback` are each refused as not in the allowlist (measured). A sign-in
+  can only come back to the machine Console runs on, on Atlassian's five
+  ports.
+- Consent is asked twice at every sign-in: the MCP server asks for its own
+  client first, then Intercom's sign-in authorizes the MCP server's upstream
+  app. Neither screen remembers the choice, so a reconnect clicks through
+  both again (measured, twice).
+- The protected-resource metadata lists two scopes, `mcp` and `operator`.
+  Asking for `mcp` is granted `mcp operator` (measured): every connection
+  also carries Fin's operator scope, and nothing narrower exists to ask for,
+  so the read and write levels both ask for `mcp` and the skill keeps the
+  writes behind a confirmation.
+- Measured with a real sign-in, the server lists 22 tools. Sixteen work the
+  workspace: search and read for conversations, contacts, companies,
+  audiences and help-center articles, plus the writes `create_article`,
+  `update_article`, `add_internal_note` and `submit_mcp_feedback`. Six run
+  Fin, the workspace's AI agent: `send_operator_message`,
+  `get_operator_response`, `get_proposal_details`, `apply_proposals`,
+  `reject_proposals`, `report_proposal_card_event`. No tool replies to a
+  customer as the signed-in person, so this v1 cannot answer one in the
+  owner's name, and the entry's description says so; the Operator tools
+  speak as Fin, and the skill keeps them behind a confirmation too.
+- The first access token lives 3,600 s (measured), and a refresh succeeds
+  and hands out a NEW refresh token, which replaces the old one (measured),
+  so `refresh: rotating`.
+- A sign-in cannot be identified today, measured every way the catalog
+  supports. The token answer carries no claims. The MCP host answers `/me`,
+  `/userinfo` and OIDC discovery with 404 and names no introspection
+  endpoint. The REST API's `/me` (`api.intercom.io/me`) names the admin and
+  the workspace's `app.id_code`, but answers the MCP server's OAuth tokens
+  with 401 (measured; it accepts workspace access tokens only). And none of
+  the 22 tools reads the caller - there is no `whoami`, and the server's two
+  resources are UI cards. So the entry wires `identity.mcp_tool: whoami`,
+  the shape the Sentry entry already uses, with the field names assumed to
+  match: connecting fails until Intercom adds such a tool (or until its
+  REST API starts accepting MCP tokens, for which the `identity.url`
+  variant is commented in the entry). This is the question a competing PR
+  asked in the issue and the maintainers have not answered; the PR presents
+  this matrix and proposes the `whoami` tool.
+- US-hosted workspaces only, as the issue's maintainer asked. The EU host
+  (`mcp.eu.intercom.com`) serves its own OAuth metadata (measured), but
+  signing an EU workspace in is unverified, so the entry ships one server
+  and says so.
+- Tools pass through unchanged.
+
+To connect: Settings, Connections in Switch Console, then Intercom. Nothing
+needs configuring on the server. To roll back, add `intercom` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
 ## Not yet
 
 - Shared workspace connections, and a per-workspace OAuth client: every
