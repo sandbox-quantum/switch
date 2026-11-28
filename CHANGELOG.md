@@ -990,6 +990,17 @@ version of their own to them without also giving them a release of their own.
 - **Agents can use their owner's Sentry, through the Sentry connection.** Core
   signs in through Sentry's MCP server and reads the account from its `whoami`
   tool. Agents have Sentry for up to an hour after each sign-in.
+- **The Bitbucket connection.** A person connects Bitbucket Cloud from Switch
+  Console, and a granted agent reads repositories, files, commits, pull
+  requests and pipelines, and at the write level comments on, creates, approves
+  and merges pull requests, makes branches and commits, and runs pipelines, as
+  that person. It signs in through Atlassian's MCP server, with the same
+  dynamic OAuth as the Atlassian connection, but is its own entry with its own
+  MCP server name (`bitbucket`), so granting Jira and Confluence does not give
+  an agent repositories, and the reverse. It asks only for Bitbucket scopes,
+  `read:bitbucket:agent-interface` and, for write, `write:bitbucket:agent-interface`.
+  The workspace must be linked to an Atlassian organization. Tokens last 8
+  hours, as Atlassian's do.
 - **The GitLab connection.** A person connects gitlab.com from Switch
   Console, and a granted agent works with projects, work items, merge
   requests, files and pipelines, as that person, through GitLab's MCP server. Each server's operator registers a
