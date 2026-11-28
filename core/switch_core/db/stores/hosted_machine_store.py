@@ -486,14 +486,22 @@ async def box_deleted(
     if machine.error_code != BIND_FAILED:
         machine.error_code = None
     machine.updated_at = now
-    await _box_removal_entry(session, machine, ServerAuditAction.HOSTED_BOX_TO_REMOVE)
+    await _box_removal_entry(
+        session, machine, ServerAuditAction.HOSTED_BOX_TO_REMOVE, namespace=None
+    )
 
 
 async def _box_removal_entry(
-    session: AsyncSession, machine: CloudMachine, action: ServerAuditAction
+    session: AsyncSession,
+    machine: CloudMachine,
+    action: ServerAuditAction,
+    *,
+    namespace: str | None,
 ) -> None:
     """A `hosted.box_to_remove` entry or its cancel, both with the same
-    target and details: the machine id and the owner's keyed id only."""
+    target and details: the machine id and the owner's keyed id, and the
+    box's namespace when the caller names it (a rollback does: the row is no
+    longer a box, so the namespace is fixed here)."""
     from switch_core.visibility.dependencies import process_keyed_id_key
     from switch_core.visibility.keyed_id import KeyedIdKind
 
@@ -501,6 +509,8 @@ async def _box_removal_entry(
     details: dict[str, str] = {"machine_id": machine.id}
     if key is not None:
         details["user"] = key.keyed_id(KeyedIdKind.USER, machine.owner_id)
+    if namespace is not None:
+        details["namespace"] = namespace
     await record_server_audit_event(
         session,
         actor_user_id=None,
@@ -756,7 +766,10 @@ class CloudMachineStore:
             # Its disk is in use again: withdraw `box_deleted`'s entry, in
             # this same transaction, so nobody removes a live box's disk.
             await _box_removal_entry(
-                session, machine, ServerAuditAction.HOSTED_BOX_TO_REMOVE_CANCELLED
+                session,
+                machine,
+                ServerAuditAction.HOSTED_BOX_TO_REMOVE_CANCELLED,
+                namespace=None,
             )
         await self._forget_controllers(factory, machine.id, owner_id, revoke)
         machine.state = "queued"
@@ -903,6 +916,7 @@ class CloudMachineStore:
         instance_id: str | None,
         data_volume_id: str,
         instance_type: str | None,
+        box_namespace: str,
         now: datetime,
     ) -> None:
         """The migration's rollback: the person's box, once stopped for it,
@@ -911,7 +925,9 @@ class CloudMachineStore:
         and no old v1 controller comes back: the v1 machine enrols afresh with
         a new code and the agents move back. With that code in its boot data,
         the v1 controller starts a new VM on the same disk (the controller's
-        own tests). The caller holds the locks and commits.
+        own tests). The box itself, and the copy on its disk, are named for
+        removal (`box_removal.rolled_back_box`). The caller holds the locks and
+        commits.
         """
         if (
             machine.owner_id != owner_id
@@ -923,6 +939,15 @@ class CloudMachineStore:
             raise CloudMachineConflict("The box isn't stopped for the rollback.")
         await self._forget_controllers(factory, machine.id, owner_id, revoke)
         await self._set_moving_from(factory, machine.id, hold=False)
+        # The box holds the person's copied files and is no longer theirs to
+        # run: named for removal under its namespace, fixed now, since the row
+        # stops being a box.
+        await _box_removal_entry(
+            session,
+            machine,
+            ServerAuditAction.HOSTED_BOX_TO_REMOVE,
+            namespace=box_namespace,
+        )
         machine.backend = "vm"
         machine.state = "queued"
         machine.desired_state = "running"

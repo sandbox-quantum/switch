@@ -43,6 +43,16 @@ from switch_core.gateway.cloud_controllers import (
     wake_controller_machine,
 )
 from switch_core.tenant_context import no_tenant, tenant_scope
+from switch_core.visibility import dependencies
+from switch_core.visibility.box_provision import namespace_for
+from switch_core.visibility.box_removal import (
+    RemovalRefused,
+    claim_removal,
+    record_removal_gone,
+    removal_state,
+    removal_verdict,
+    unjustified_entries,
+)
 from switch_core.visibility.hosted_migration import (
     BEFORE_FLIP,
     HELD,
@@ -1356,3 +1366,148 @@ async def test_a_release_whose_box_never_enrols_stays_released_and_rolls_back(
             )
         )
     assert placed == v1_controller
+
+
+# ── a rollback past the flip removes the box ─────────────────────────────
+
+
+async def _removal_entries(
+    factory: async_sessionmaker[AsyncSession], machine_id: str
+) -> list[ServerAuditEvent]:
+    actions = (
+        ServerAuditAction.HOSTED_BOX_TO_REMOVE,
+        ServerAuditAction.HOSTED_BOX_REMOVAL_CLAIMED,
+        ServerAuditAction.HOSTED_BOX_REMOVED,
+    )
+    with no_tenant():
+        async with factory() as session:
+            rows = await session.scalars(
+                select(ServerAuditEvent)
+                .where(ServerAuditEvent.action.in_([a.value for a in actions]))
+                .order_by(ServerAuditEvent.occurred_at, ServerAuditEvent.id)
+            )
+            return [
+                e for e in rows if (e.details or {}).get("machine_id") == machine_id
+            ]
+
+
+@pytest.fixture
+def process_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The box provisioner and remover read the process's keyed-id key."""
+    monkeypatch.setitem(dependencies._process_key, "key", KEY)
+
+
+@pytest.mark.usefixtures("process_key")
+async def test_a_rollback_past_the_flip_names_the_box_and_the_remover_takes_it(
+    session_factory: async_sessionmaker[AsyncSession], people: dict[str, Any]
+) -> None:
+    """The copied files sit on the box's disk: the rollback names the box for
+    removal under its namespace, the provisioner claims it for the row that's
+    a `vm` again, the remover's check passes for that namespace only, and
+    the provisioner's confirmation is accepted."""
+    world = World(session_factory)
+    ada, op = people["ada"], people["op"].id
+    machine_id, _v1, _agent = await world.v1_machine(ada)
+    await world.to_held(ada, machine_id, op)
+    await world.migrations.rollback(ada.id, operator_id=op, execute=True)
+
+    namespace = namespace_for(KEY.keyed_id(KeyedIdKind.USER, ada.id))
+    [named] = await _removal_entries(session_factory, machine_id)
+    assert named.action == ServerAuditAction.HOSTED_BOX_TO_REMOVE
+    assert (named.details or {})["namespace"] == namespace
+    assert (await world.machine(machine_id)).backend == "vm"
+
+    now = datetime.now(UTC)
+    with no_tenant():
+        async with session_factory() as session:
+            claimed = await claim_removal(session, now)
+            await session.commit()
+    assert claimed is not None
+    assert (claimed.machine_id, claimed.namespace) == (machine_id, namespace)
+    with no_tenant():
+        async with session_factory() as session:
+            assert (await removal_verdict(session, machine_id, namespace)).removable
+            other = f"{namespace}-other"
+            assert not (await removal_verdict(session, machine_id, other)).removable
+            assert await record_removal_gone(
+                session, machine_id, claimed.claim_token, now
+            )
+            await session.commit()
+            assert await removal_state(session, machine_id) == "gone"
+
+
+@pytest.mark.usefixtures("process_key")
+async def test_a_rollback_before_the_flip_names_no_box(
+    session_factory: async_sessionmaker[AsyncSession], people: dict[str, Any]
+) -> None:
+    world = World(session_factory)
+    ada, op = people["ada"], people["op"].id
+    machine_id, _v1, _agent = await world.v1_machine(ada)
+    await world.step(ada, op)
+    await world.migrations.rollback(ada.id, operator_id=op, execute=True)
+    assert await _removal_entries(session_factory, machine_id) == []
+
+
+@pytest.mark.usefixtures("process_key")
+async def test_a_second_move_is_refused_while_the_box_is_named_and_after_it_is_gone(
+    session_factory: async_sessionmaker[AsyncSession], people: dict[str, Any]
+) -> None:
+    """The removed box's namespace is never issued again, and a second move of
+    the same machine would be handed it: refused, pending or gone."""
+    world = World(session_factory)
+    ada, op = people["ada"], people["op"].id
+    machine_id, _v1, _agent = await world.v1_machine(ada)
+    await world.to_held(ada, machine_id, op)
+    await world.migrations.rollback(ada.id, operator_id=op, execute=True)
+    await world.reports(machine_id, "ready")
+
+    plan = await world.migrations.plan(ada.id)
+    assert "box_name_retired" in plan.refusals
+    with pytest.raises(MigrationRefused) as refused:
+        await world.migrations.run(ada.id, operator_id=op, execute=True)
+    assert refused.value.code == "box_name_retired"
+
+    now = datetime.now(UTC)
+    with no_tenant():
+        async with session_factory() as session:
+            claimed = await claim_removal(session, now)
+            assert claimed is not None
+            await record_removal_gone(session, machine_id, claimed.claim_token, now)
+            await session.commit()
+    assert "box_name_retired" in (await world.migrations.plan(ada.id)).refusals
+    machine = await world.machine(machine_id)
+    assert (machine.backend, machine.stop_reason) == ("vm", None)
+
+
+@pytest.mark.usefixtures("process_key")
+async def test_a_vm_row_without_a_rolled_back_move_is_never_removed(
+    session_factory: async_sessionmaker[AsyncSession], people: dict[str, Any]
+) -> None:
+    """The remover only ever takes a rolled-back move's box: once the move's
+    record is anything but `rolled_back` (its move went on), the row is a
+    plain `vm`, and even a claim already made doesn't make it removable,
+    confirmable or backed."""
+    world = World(session_factory)
+    ada, op = people["ada"], people["op"].id
+    machine_id, _v1, _agent = await world.v1_machine(ada)
+    await world.to_held(ada, machine_id, op)
+    await world.migrations.rollback(ada.id, operator_id=op, execute=True)
+    now = datetime.now(UTC)
+    with no_tenant():
+        async with session_factory() as session:
+            claimed = await claim_removal(session, now)
+            await session.commit()
+    assert claimed is not None
+    namespace = claimed.namespace
+    await _set_step(session_factory, ada, "freezing")
+
+    with no_tenant():
+        async with session_factory() as session:
+            assert not (await removal_verdict(session, machine_id, namespace)).removable
+            assert await unjustified_entries(session, [(namespace, machine_id)]) == [
+                (namespace, machine_id)
+            ]
+            with pytest.raises(RemovalRefused):
+                await record_removal_gone(session, machine_id, claimed.claim_token, now)
+            # Nor is it claimed again, once its lease is over.
+            assert await claim_removal(session, now + timedelta(hours=1)) is None
