@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
@@ -687,11 +687,21 @@ async def check_my_account_deletion(
         OrganizationAdminNotices, Depends(get_organization_admin_notices)
     ],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    mode: Literal["delete", "reset"] = "delete",
 ) -> AccountDeletionCheck:
     """What `DELETE /auth/me` would refuse with now, for the Gateway to say so
     before the caller types their email rather than after. Changes nothing,
     and the deletion checks again when it runs: someone else can be made an
-    admin, or stop being one, in between."""
+    admin, or stop being one, in between.
+
+    With `mode=reset`, what `POST /auth/me/reset-test-account` would refuse
+    with instead (404 where resets are off). The reset tears down the
+    account's cloud machine and disconnects the messaging apps of the
+    workspaces it purges, so neither stops it, as both stop a deletion."""
+    if mode == "reset" and not config.gateway_allow_test_account_reset:
+        raise HTTPException(
+            status_code=404, detail="Test-account reset is not enabled on this server."
+        )
     user = await user_store.get(session, caller.id)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
@@ -714,6 +724,15 @@ async def check_my_account_deletion(
     workspaces = await _workspaces_to_delete(
         deletion, session_factory, user_store, user.id
     )
+    if mode == "reset":
+        reset = AccountReset(
+            session_factory=session_factory,
+            purge=request.app.state.organization_purge,
+            deletion=deletion,
+        )
+        return AccountDeletionCheck(
+            refusal=await reset.refusal(user, workspaces, keep_login=False)
+        )
     return AccountDeletionCheck(
         refusal=await deletion.refusal(session, user, workspaces)
     )

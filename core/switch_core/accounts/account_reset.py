@@ -60,11 +60,34 @@ if TYPE_CHECKING:
     from switch_core.organization_admin_notices import AdminChange
 
 
+@dataclass(frozen=True)
+class _ResetPlan:
+    """What a reset would do, once nothing refuses it."""
+
+    plans: list[PurgePlan]
+    alone: dict[str, set[str]]
+    remaining: list[Workspace]
+    deleted_by_purge: bool
+
+
 @dataclass
 class AccountReset:
     session_factory: async_sessionmaker[AsyncSession]
     purge: OrganizationPurge
     deletion: AccountDeletion
+
+    async def refusal(
+        self, user: User, workspaces: list[Workspace], *, keep_login: bool
+    ) -> str | None:
+        """What `reset` would refuse with now, or None when it would go ahead.
+        Changes nothing. A cloud machine is no refusal: the reset tears it
+        down. Nor is a messaging app the purge can disconnect, in a workspace
+        it purges."""
+        try:
+            await self._plan(user, workspaces, keep_login=keep_login)
+        except AccountDeletionRefused as refused:
+            return str(refused)
+        return None
 
     async def reset(
         self,
@@ -81,6 +104,57 @@ class AccountReset:
         login is kept. Raises `AccountDeletionRefused`, before anything
         changes, for what can't be wiped now, and `ResetWaiting` while a
         cloud machine is still being torn down: asking again finishes it."""
+        planned = await self._plan(user, workspaces, keep_login=keep_login)
+        plans, alone = planned.plans, planned.alone
+        remaining, deleted_by_purge = planned.remaining, planned.deleted_by_purge
+        if not deleted_by_purge:
+            try:
+                teardown = await self.purge.tear_down_machines_of(
+                    user.id, {w.id for w in workspaces}
+                )
+            except PurgeRefused as refused:
+                raise AccountDeletionRefused(str(refused)) from None
+            _finished(teardown, user.id)
+
+        request = f"Test-account reset by user {user.id}"
+        # shortcut: a sole organization purged before workspaces in a shared one
+        # leaves a half-reset account if the second step waits; a retry finishes.
+        for plan in plans:
+            try:
+                outcome = await self.purge.run(plan, request)
+            except PurgeRefused as refused:
+                raise AccountDeletionRefused(str(refused)) from None
+            _finished(outcome, user.id)
+        if alone:
+            try:
+                outcome = await self.purge.purge_workspaces(alone, request)
+            except PurgeRefused as refused:
+                raise AccountDeletionRefused(str(refused)) from None
+            _finished(outcome, user.id)
+        if keep_login:
+            # So the person is asked about their team and the license again.
+            await session.execute(
+                update(User)
+                .where(User.id == user.id)
+                .values(
+                    # SQL NULL; a plain None would store JSON null in the JSONB column.
+                    team_survey=null(),
+                    team_survey_answered_at=None,
+                    license_accepted_version=None,
+                    license_accepted_at=None,
+                )
+            )
+            await session.commit()
+            return []
+        if deleted_by_purge:
+            return []
+        return await self.deletion.delete(session, user, remaining, actor_id=user.id)
+
+    async def _plan(
+        self, user: User, workspaces: list[Workspace], *, keep_login: bool
+    ) -> _ResetPlan:
+        """What the reset would purge and delete. Reads only; raises
+        `AccountDeletionRefused` for what can't be wiped now."""
         by_organization: dict[str, list[Workspace]] = defaultdict(list)
         for workspace in workspaces:
             if workspace.role == FORMER_MEMBER or workspace.id == TENANT_ZERO_ID:
@@ -140,48 +214,12 @@ class AccountReset:
             if reason is not None:
                 raise AccountDeletionRefused(reason)
         await self._check_installs(sorted(purged))
-        if not deleted_by_purge:
-            try:
-                teardown = await self.purge.tear_down_machines_of(
-                    user.id, {w.id for w in workspaces}
-                )
-            except PurgeRefused as refused:
-                raise AccountDeletionRefused(str(refused)) from None
-            _finished(teardown, user.id)
-
-        request = f"Test-account reset by user {user.id}"
-        # shortcut: a sole organization purged before workspaces in a shared one
-        # leaves a half-reset account if the second step waits; a retry finishes.
-        for plan in plans:
-            try:
-                outcome = await self.purge.run(plan, request)
-            except PurgeRefused as refused:
-                raise AccountDeletionRefused(str(refused)) from None
-            _finished(outcome, user.id)
-        if alone:
-            try:
-                outcome = await self.purge.purge_workspaces(alone, request)
-            except PurgeRefused as refused:
-                raise AccountDeletionRefused(str(refused)) from None
-            _finished(outcome, user.id)
-        if keep_login:
-            # So the person is asked about their team and the license again.
-            await session.execute(
-                update(User)
-                .where(User.id == user.id)
-                .values(
-                    # SQL NULL; a plain None would store JSON null in the JSONB column.
-                    team_survey=null(),
-                    team_survey_answered_at=None,
-                    license_accepted_version=None,
-                    license_accepted_at=None,
-                )
-            )
-            await session.commit()
-            return []
-        if deleted_by_purge:
-            return []
-        return await self.deletion.delete(session, user, remaining, actor_id=user.id)
+        return _ResetPlan(
+            plans=plans,
+            alone=alone,
+            remaining=remaining,
+            deleted_by_purge=deleted_by_purge,
+        )
 
     async def _sole_plan(self, user: User, organization_id: str) -> PurgePlan | None:
         """The purge plan for an organization nobody but `user` is in, or

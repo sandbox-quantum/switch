@@ -70,7 +70,7 @@ export default function DeleteAccountDialog({ open, email, mode, onClose }: Prop
     setCheck({ state: "checking" });
     setTyped("");
     setError(null);
-    accountDeletionRefusal()
+    accountDeletionRefusal(mode)
       .then((reason) => {
         if (current) setCheck(reason === null ? { state: "clear" } : { state: "refused", reason });
       })
@@ -80,7 +80,7 @@ export default function DeleteAccountDialog({ open, email, mode, onClose }: Prop
     return () => {
       current = false;
     };
-  }, [open]);
+  }, [open, mode]);
 
   const matches = typed.trim().toLowerCase() === email.toLowerCase();
   const canConfirm = (check.state === "clear" || check.state === "unchecked") && matches;
