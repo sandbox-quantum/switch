@@ -1,7 +1,72 @@
 slug: bitbucket
 name: Bitbucket
 category: Source control
-description: Work with Bitbucket repositories and pull requests.
-enabled: false
+description: Read Bitbucket Cloud repositories, pull requests and pipelines, and comment on or change them, as you.
+enabled: true
+publisher: Atlassian
+links:
+  documentation: https://developer.atlassian.com/cloud/rovo-mcp/
+  support: https://support.atlassian.com/bitbucket-cloud/
+  privacy: https://www.atlassian.com/legal/privacy-policy
+adapter: oauth
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    # Bitbucket Cloud has no server of its own: Atlassian's MCP server
+    # carries it, with the same sign-in as the atlassian entry. Atlassian
+    # offers no client to configure: Core registers one itself.
+    registration: dynamic
+    # As for atlassian: Console's listener by default, on a port registered
+    # with the client (Atlassian matches the port exactly), or Core's own
+    # callback where the server names it and the site's admin has allow-listed
+    # it. A client is registered per redirect, so changing it reconnects every
+    # Bitbucket connection on that server once.
+    redirect: [loopback, core]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Without it, consenting to a product's scopes alone fails after Accept.
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.atlassian.com/me
+    account_id: account_id
+    label: email
+# Atlassian's MCP access tokens live 8 hours, and Atlassian offers no way to
+# ask for a shorter one or to revoke one alone, so an agent's copy may outlive
+# its grant by up to that long. Agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  # Named bitbucket, not atlassian: a session cannot hold two MCP servers with
+  # one name, and a person may grant an agent both connections.
+  servers:
+    - { name: bitbucket, url: "https://mcp.atlassian.com/v2/mcp" }
+access:
+  # Only Bitbucket's scopes, beyond the identity ones consent needs: no Jira,
+  # Confluence, Rovo search or Teamwork Graph. Atlassian's tool list names
+  # read_bitbucket as repositories, files, commits, pull requests, pipelines,
+  # deployments and environments, all reads, so this level is read-only at the
+  # vendor. executeWrite and executeDestructive are still listed on the server;
+  # discover shows no write operation for a token without the write scope.
+  # Pipeline step logs are in it: a log can hold what a build printed.
+  # Not measured here: what the consent screen shows for these scopes alone,
+  # and whether a Jira or Confluence tool answers a token that has them.
+  read:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:bitbucket:agent-interface
+  # write_bitbucket adds creating, updating, merging, approving and commenting
+  # on pull requests, tasks, branches, commits, and running a pipeline. A
+  # pipeline run is a deployment where the repository's pipeline deploys.
+  write:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:bitbucket:agent-interface
+      - write:bitbucket:agent-interface
+# An oauth entry's tools pass through until they are classified.
+tools: { mode: pass_through }

@@ -20,7 +20,6 @@ PLACEHOLDERS = {
     "amplitude",
     "azure-devops",
     "bigquery",
-    "bitbucket",
     "box",
     "calendly",
     "canva",
@@ -56,6 +55,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "github",
         "airtable",
         "atlassian",
+        "bitbucket",
         "datadog",
         "google-workspace",
         "gitlab",
@@ -66,6 +66,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "bitbucket",
         "datadog",
         "github",
         "gitlab",
@@ -78,6 +79,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["bitbucket"].skill_files
     assert "SKILL.md" in CATALOG["datadog"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
@@ -242,6 +244,56 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_bitbucket_entry_asks_only_for_bitbucket_on_atlassians_server():
+    definition = CATALOG["bitbucket"].definition
+    atlassian = CATALOG["atlassian"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback", "core"],
+    )
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    assert oauth.prompt == "consent"
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        8 * 3600,
+    )
+    # The same vendor server as atlassian, under a name of its own: a session
+    # cannot hold two MCP servers with one name.
+    assert definition.mcp is not None and atlassian.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("bitbucket", "https://mcp.atlassian.com/v2/mcp")
+    ]
+    assert definition.mcp.servers[0].url == atlassian.mcp.servers[0].url
+    assert definition.mcp.servers[0].name != atlassian.mcp.servers[0].name
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.atlassian.com/me"
+    assert definition.access is not None and definition.access.write is not None
+    identity = ["read:me", "read:account", "email", "offline_access"]
+    assert definition.access.read.scopes == [
+        *identity,
+        "read:bitbucket:agent-interface",
+    ]
+    assert definition.access.write.scopes == [
+        *identity,
+        "read:bitbucket:agent-interface",
+        "write:bitbucket:agent-interface",
+    ]
+    # Bitbucket and nothing else: no Jira, Confluence, Rovo search or
+    # Teamwork Graph scope at either level.
+    every = set(definition.access.write.scopes)
+    assert not any(
+        product in scope
+        for scope in every
+        for product in ("jira", "confluence", ":rovo:", ":twg")
+    )
+    assert definition.tools.mode == "pass_through"
 
 
 def test_the_shipped_sentry_entry_signs_in_as_its_mcp_server_requires():
