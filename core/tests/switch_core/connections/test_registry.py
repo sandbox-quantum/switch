@@ -83,6 +83,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
         "atlassian",
         "datadog",
         "linear",
+        "bitbucket",
         "notion",
         "sentry",
     }
@@ -234,6 +235,24 @@ def test_datadog_registers_cores_callback_only_where_the_server_names_it() -> No
         public, {"datadog": "core"}, SignInFlows(async_sessionmaker(), TEST_KEYRING)
     )
     assert flows.mode(CATALOG["datadog"].definition) == "core"
+
+
+def test_bitbucket_needs_no_settings_and_registers_its_ports_and_scopes() -> None:
+    adapters = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    adapter = adapters["bitbucket"]
+    assert isinstance(adapter, OAuthAdapter)
+    client = adapter._client
+    assert isinstance(client, RegisteredClient)
+    assert client._request["redirect_uris"] == [
+        f"http://127.0.0.1:{port}/switch-services/callback"
+        for port in (39231, 39232, 39233, 39234, 39235)
+    ]
+    assert client._request["scope"] == (
+        "read:me read:account email offline_access read:bitbucket:agent-interface "
+        "write:bitbucket:agent-interface"
+    )
 
 
 def test_airtable_is_set_up_by_its_operators_own_client() -> None:
