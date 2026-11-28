@@ -251,6 +251,11 @@ if [ "$NEEDS_CONTROLLER" = 1 ]; then
   fi
 
   mkdir -p "$WORK/agent-dir"
+  # The agent directory is outside the controller's workspaces folder, which
+  # the controller refuses unless this device allows it.
+  node "$REPO/console/packages/agent-controller/dist/cli.mjs" allow --every-agent \
+    --directory "$WORK/agent-dir" --data-dir "$WORK/controller" \
+    || { echo "could not allow the agent directory on the agent controller" >&2; exit 1; }
   PROVIDER_ENV=(SWITCH_E2E_CONTROLLER_ID="$CONTROLLER_ID" SWITCH_E2E_AGENT_DIR="$WORK/agent-dir")
 fi
 
