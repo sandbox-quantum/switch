@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,8 @@ INSTANCE = "i-0123456789abcdef0"
 VOLUME = "vol-0123456789abcdef0"
 ROOT = "vol-0aaaaaaaaaaaaaaa0"
 SNAPSHOT = "snap-0123456789abcdef0"
+NOW = datetime(2026, 12, 1, 12, 0, tzinfo=UTC)
+DONE = NOW - timedelta(days=8)
 
 
 def _tags(**tags: str) -> list[dict[str, str]]:
@@ -183,13 +186,14 @@ def record(**overrides: Any) -> mc.Record:
         "v1_instance_id": INSTANCE,
         "v1_data_volume_id": VOLUME,
         "snapshot_id": None,
+        "done_at": None,
     }
     fields.update(overrides)
     return mc.Record(**fields)
 
 
 def cleaned(**overrides: Any) -> mc.Record:
-    return record(**{"step": "cleaned", "snapshot_id": SNAPSHOT, **overrides})
+    return record(**{"step": "cleaned", "snapshot_id": SNAPSHOT, "done_at": DONE, **overrides})
 
 
 def cloud(ec2: FakeEc2, said: list[str] | None = None) -> mc.MigrationCloud:
@@ -200,6 +204,7 @@ def cloud(ec2: FakeEc2, said: list[str] | None = None) -> mc.MigrationCloud:
         sleep=lambda _s: None,
         clock=lambda: float(next(ticks)),
         say=(said.append if said is not None else lambda _l: None),
+        now=lambda: NOW,
     )
 
 
@@ -239,12 +244,27 @@ def test_the_record_is_read_exactly_as_core_prints_it(tmp_path: Path) -> None:
         _body(v1_data_volume_id="vol-../../x"),
         _body(snapshot_id="snapshot"),
         _body(v1_instance_id=7),
+        _body(done_at="yesterday"),
+        _body(done_at="2026-11-20T12:00:00"),
         ["m-1"],
     ],
 )
 def test_anything_else_is_refused(tmp_path: Path, body: object) -> None:
     with pytest.raises(mc.Refused):
         mc.read_record(_record_file(tmp_path, body))
+
+
+def test_the_record_carries_its_done_time(tmp_path: Path) -> None:
+    body = _body(step="cleaned", done_at=DONE.isoformat())
+    assert mc.read_record(_record_file(tmp_path, body)).done_at == DONE
+
+
+def test_the_record_can_be_piped_in(monkeypatch) -> None:
+    import io
+
+    raw = json.dumps(_body()).encode()
+    monkeypatch.setattr(mc.sys, "stdin", type("In", (), {"buffer": io.BytesIO(raw)})())
+    assert mc.read_record(Path("-")) == record()
 
 
 def test_a_record_too_large_to_be_cores_is_refused(tmp_path: Path) -> None:
@@ -443,6 +463,19 @@ def test_only_a_cleaned_move_is_cleaned_up(step: str | None) -> None:
     assert ec2.calls == []
 
 
+@pytest.mark.parametrize(
+    "done_at", [None, NOW - timedelta(days=6, hours=23), NOW + timedelta(days=1)]
+)
+def test_clean_up_refuses_inside_the_rollback_window_whatever_the_step_says(
+    done_at: datetime | None,
+) -> None:
+    ec2 = FakeEc2()
+    ec2.add_snapshot()
+    with pytest.raises(mc.Refused, match="rollback window"):
+        cloud(ec2).clean_up(cleaned(done_at=done_at), execute=True)
+    assert ec2.calls == []
+
+
 def test_one_wrong_resource_stops_the_clean_up_before_anything_is_deleted() -> None:
     ec2 = FakeEc2()
     ec2.add_snapshot(Tags=snapshot_tags(machine=OTHER_MACHINE))
@@ -511,7 +544,8 @@ def test_the_clean_up_command_fails_on_a_leftover(tmp_path: Path, capsys) -> Non
     ec2 = FakeEc2()
     ec2.add_snapshot()
     ec2.root_deleted_on_termination = False
-    body = _body(step="cleaned", snapshot_id=SNAPSHOT)
+    done = datetime.now(UTC) - timedelta(days=8)
+    body = _body(step="cleaned", snapshot_id=SNAPSHOT, done_at=done.isoformat())
     assert mc.run(_arguments(tmp_path, "clean-up", body, True), ec2) == 3
     assert ROOT in capsys.readouterr().out
 

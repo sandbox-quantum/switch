@@ -2,15 +2,16 @@
 on the v1 machine's cloud resources, which Core can't reach.
 
 Run on an operator's machine with the migration role's AWS credentials, from
-Core's own record of the move (`switch-hosted-migration record PERSON`, saved
-as a file):
+Core's own record of the move (`switch-hosted-migration record PERSON`), piped
+in fresh at run time with `--record -`, or saved as a file:
 
 - `snapshot --record FILE --installation-id ID [--execute]`: once the move is
   `frozen`, snapshot the v1 machine's data disk, tagged as this person's
   migration copy, wait until the snapshot is complete, read it back and print
   its id for `switch-hosted-migration run PERSON --snapshot-id`.
 - `clean-up --record FILE --installation-id ID [--execute]`: once Core records
-  the move `cleaned` (the rollback window has passed), terminate the v1
+  the move `cleaned` and the record's own `done_at` is more than the rollback
+  window ago, terminate the v1
   instance, delete its data disk and the migration snapshot, and read back that
   each is gone.
 
@@ -31,6 +32,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +73,8 @@ RECORD_KEYS = frozenset(
 MAX_RECORD_BYTES = 4096
 
 #: How long `snapshot` waits for EC2 to finish the snapshot, and between reads.
+#: Core's rollback window: the v1 resources are kept this long after the move.
+ROLLBACK_WINDOW = timedelta(days=7)
 SNAPSHOT_WAIT_SECONDS = 4 * 3600
 TERMINATE_WAIT_SECONDS = 15 * 60
 POLL_SECONDS = 15
@@ -88,11 +92,13 @@ class Record:
     v1_instance_id: str | None
     v1_data_volume_id: str | None
     snapshot_id: str | None
+    done_at: datetime | None
 
 
 def read_record(path: Path) -> Record:
-    """Core's record of the move, exactly as `record` prints it."""
-    raw = path.read_bytes()
+    """Core's record of the move, exactly as `record` prints it. `-` reads it
+    from standard input, so the runbook can pipe it fresh from Core."""
+    raw = sys.stdin.buffer.read(MAX_RECORD_BYTES + 1) if str(path) == "-" else path.read_bytes()
     if len(raw) > MAX_RECORD_BYTES:
         raise Refused("The record is too large to be Core's record.")
     try:
@@ -115,6 +121,14 @@ def read_record(path: Path) -> Record:
     for key, pattern in checks:
         if body[key] is not None and not pattern.match(body[key]):
             raise Refused(f"The record's {key} isn't a valid id.")
+    done_at = None
+    if body["done_at"] is not None:
+        try:
+            done_at = datetime.fromisoformat(body["done_at"])
+        except ValueError:
+            raise Refused("The record's done_at isn't a time.") from None
+        if done_at.tzinfo is None:
+            raise Refused("The record's done_at has no time zone.")
     return Record(
         machine_id=body["machine_id"],
         owner_keyed_id=body["owner_keyed_id"],
@@ -122,6 +136,7 @@ def read_record(path: Path) -> Record:
         v1_instance_id=body["v1_instance_id"],
         v1_data_volume_id=body["v1_data_volume_id"],
         snapshot_id=body["snapshot_id"],
+        done_at=done_at,
     )
 
 
@@ -158,6 +173,7 @@ class MigrationCloud:
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
         say: Callable[[str], None] = print,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         if not INSTALLATION_ID.match(installation_id):
             raise Refused("--installation-id isn't a valid installation id.")
@@ -166,6 +182,7 @@ class MigrationCloud:
         self._sleep = sleep
         self._clock = clock
         self._say = say
+        self._now = now
 
     # ── the tags each kind of resource must carry ───────────────────────
 
@@ -353,6 +370,9 @@ class MigrationCloud:
                 f"The move is at {record.step or 'not started'}, not cleaned: the v1 "
                 "resources stay until Core records the clean-up."
             )
+        # The person's only v1 copy goes: not on the step alone.
+        if record.done_at is None or self._now() < record.done_at + ROLLBACK_WINDOW:
+            raise Refused("The rollback window hasn't passed by the record's own done time.")
         if record.v1_instance_id is None or record.v1_data_volume_id is None:
             raise Refused("The record names no v1 disk or instance.")
         if record.snapshot_id is None:
