@@ -89,6 +89,14 @@ class HostedControllerSettings(BaseModel):
     # operator routes also take the controller's `token`. Only with
     # `operator_token` set.
     operator_routes_accept_controller_until: datetime | None = None
+    # The box workers' own bearer (scaler, cluster watch, restart and drain
+    # workers), separate from v1's controller `token`. Accepted on every
+    # controller route; the box-only ones (`/pool`, `/cluster`) take nothing
+    # else once `box_routes_accept_controller_until` has passed.
+    box_controller_token: SecretStr | None = Field(default=None, min_length=32)
+    # The move-over from `token` on the box-only controller routes: until this
+    # time (UTC) they also take it. Only with `box_controller_token` set.
+    box_routes_accept_controller_until: datetime | None = None
     agent_api_endpoint: str
 
     @field_validator("allowed_tenant_ids", "allowed_user_ids", mode="before")
@@ -129,6 +137,7 @@ class HostedControllerSettings(BaseModel):
                 ("operator_token_previous", self.operator_token_previous),
                 ("reaper_token", self.reaper_token),
                 ("remover_token", self.remover_token),
+                ("box_controller_token", self.box_controller_token),
             )
             if value is not None
         ]
@@ -159,10 +168,18 @@ class HostedControllerSettings(BaseModel):
             )
         if self.operator_token_previous is not None and self.operator_token is None:
             raise ValueError("operator_token_previous needs operator_token")
+        if (
+            self.box_routes_accept_controller_until is not None
+            and self.box_controller_token is None
+        ):
+            raise ValueError(
+                "box_routes_accept_controller_until needs box_controller_token"
+            )
         latest = datetime.now(UTC) + OPERATOR_OVERLAP_MAX
         for name in (
             "operator_token_previous_until",
             "operator_routes_accept_controller_until",
+            "box_routes_accept_controller_until",
         ):
             until = getattr(self, name)
             if until is None:
@@ -322,6 +339,7 @@ def load_hosted_settings(
             "operator_token_previous",
             "reaper_token",
             "remover_token",
+            "box_controller_token",
         )
         if getattr(settings, name) is not None
     ]
@@ -345,7 +363,8 @@ def load_hosted_settings(
 def log_operator_overlaps(
     settings: HostedControllerSettings | None, now: datetime | None = None
 ) -> list[str]:
-    """At start: one INFO per open operator-bearer overlap, with its end, and
+    """At start: one INFO per open bearer overlap (the operator API's, and the
+    box routes' move-over from the controller's `token`), with its end, and
     one WARN per lapsed one still in the config, so platform tidies it. Never
     a bearer. Returns the overlap names it logged, for tests."""
     if settings is None:
@@ -357,6 +376,10 @@ def log_operator_overlaps(
         (
             "operator_routes_accept_controller_until",
             settings.operator_routes_accept_controller_until,
+        ),
+        (
+            "box_routes_accept_controller_until",
+            settings.box_routes_accept_controller_until,
         ),
     ):
         if until is None:

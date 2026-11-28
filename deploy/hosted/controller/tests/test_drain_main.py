@@ -15,12 +15,15 @@ def env(tmp_path, monkeypatch):
     ca = tmp_path / "core-ca.crt"
     ca.write_text("a CA\n")
     token = tmp_path / "bearer"
-    token.write_text("op-token\n")
+    token.write_text("controller-token\n")
+    operator = tmp_path / "operator-bearer"
+    operator.write_text("op-token\n")
     box_map = tmp_path / "box-map"
     box_map.mkdir()
     return {
         "SWITCH_DRAIN_CORE_URL": "https://core.example",
         "SWITCH_DRAIN_CORE_TOKEN_FILE": str(token),
+        "SWITCH_DRAIN_OPERATOR_TOKEN_FILE": str(operator),
         "SWITCH_DRAIN_BOX_MAP": str(box_map),
         "SWITCH_DRAIN_PAUSE_IMAGE": IMAGE,
         "SWITCH_DRAIN_CORE_CA": str(ca),
@@ -65,12 +68,28 @@ def test_anything_off_refuses_to_start(env, key, value):
         dm.config_from_env(env)
 
 
+def test_the_operator_bearer_file_is_required_and_never_the_controllers(env, tmp_path):
+    missing = {k: v for k, v in env.items() if k != "SWITCH_DRAIN_OPERATOR_TOKEN_FILE"}
+    with pytest.raises(dm.DrainConfigError, match="OPERATOR_TOKEN_FILE is not set"):
+        dm.config_from_env(missing)
+    same = tmp_path / "same"
+    same.write_text("controller-token\n")
+    with pytest.raises(dm.DrainConfigError, match="not the controller's"):
+        dm.config_from_env({**env, "SWITCH_DRAIN_OPERATOR_TOKEN_FILE": str(same)})
+    with pytest.raises(dm.DrainConfigError, match="not a file"):
+        dm.config_from_env({**env, "SWITCH_DRAIN_OPERATOR_TOKEN_FILE": str(tmp_path / "nope")})
+    empty = tmp_path / "empty"
+    empty.write_text("  \n")
+    with pytest.raises(dm.DrainConfigError, match="can't be read, or is empty"):
+        dm.config_from_env({**env, "SWITCH_DRAIN_OPERATOR_TOKEN_FILE": str(empty)})
+
+
 def test_the_cluster_client_uses_the_pods_own_token_and_core_the_bearer_file(env, monkeypatch):
     read = []
 
     def fake_read(path):
         read.append(str(path))
-        return "t"
+        return "controller" if "operator" not in str(path) else "operator"
 
     monkeypatch.setattr(dm, "read_token", fake_read)
     monkeypatch.setattr(dm.ssl, "create_default_context", lambda cafile=None: None)
@@ -78,12 +97,11 @@ def test_the_cluster_client_uses_the_pods_own_token_and_core_the_bearer_file(env
 
     monkeypatch.setattr(da.ssl, "create_default_context", lambda cafile=None: None)
     worker = dm.build(env)
-    assert read == [env["SWITCH_DRAIN_CORE_TOKEN_FILE"]]  # checked once at start
+    # Each checked once at start.
+    assert read == [env["SWITCH_DRAIN_CORE_TOKEN_FILE"], env["SWITCH_DRAIN_OPERATOR_TOKEN_FILE"]]
     read.clear()
     worker.kube._token()
     assert read == [str(dm.SA_DIR / "token")]  # `switch-drain`'s projected token, nothing else
-    worker.core._api()
-    assert read[-1] == env["SWITCH_DRAIN_CORE_TOKEN_FILE"]
 
 
 def test_a_box_map_that_fails_to_read_keeps_the_last_good_one(tmp_path):
@@ -117,7 +135,7 @@ def test_an_empty_token_file_refuses_to_start_without_showing_it(env, caplog):
 
 
 def test_the_worker_is_told_its_own_node(env, monkeypatch):
-    monkeypatch.setattr(dm, "read_token", lambda path: "t")
+    monkeypatch.setattr(dm, "read_token", lambda path: str(path))
     import switch_hosted_controller.drain_actions as da
 
     monkeypatch.setattr(da.ssl, "create_default_context", lambda cafile=None: None)

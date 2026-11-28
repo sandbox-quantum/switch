@@ -122,12 +122,97 @@ router = APIRouter(prefix="/hosted-controller")
 QUEUED_TIMEOUT = timedelta(minutes=10)
 
 
+def _now() -> datetime:
+    """The clock the box routes' overlap is checked against (tests replace it)."""
+    return datetime.now(UTC)
+
+
+def _bearer_is(supplied: str, value: str | None) -> bool:
+    if value is None:
+        return False
+    return secrets.compare_digest(supplied.encode(), ("Bearer " + value).encode())
+
+
+def which_controller_bearer(
+    settings: HostedControllerSettings, supplied: str
+) -> Literal["box", "controller"] | None:
+    """Which controller bearer `supplied` is: the box workers' own
+    (`box_controller_token`), v1's controller's (`token`), or neither. Both are
+    compared on every call, so timing doesn't say which matched."""
+    box_value = getattr(settings, "box_controller_token", None)
+    box = _bearer_is(
+        supplied, None if box_value is None else box_value.get_secret_value()
+    )
+    controller = _bearer_is(supplied, settings.token.get_secret_value())
+    if box:
+        return "box"
+    if controller:
+        return "controller"
+    return None
+
+
+def box_routes_take_controller_token(
+    settings: HostedControllerSettings, now: datetime
+) -> bool:
+    """Whether the box-only routes still take v1's controller `token`: always
+    while no `box_controller_token` is configured (a box cluster not moved over
+    yet works as before), and until `box_routes_accept_controller_until`
+    once one is. Past that, refused, whether or not it's still in the file."""
+    if getattr(settings, "box_controller_token", None) is None:
+        return True
+    until = settings.box_routes_accept_controller_until
+    if until is None:
+        return False
+    if now < until:
+        return True
+    box_overlap_log.lapsed(until)
+    return False
+
+
+class _BoxOverlapLog:
+    """Per process: when the box routes' overlap was last logged as used, and
+    which lapse has been warned about. Only times, never a bearer."""
+
+    def __init__(self) -> None:
+        self._used_at: datetime | None = None
+        self._lapsed: set[datetime] = set()
+
+    def used(self, now: datetime) -> None:
+        if self._used_at is not None and now - self._used_at < timedelta(minutes=1):
+            return
+        self._used_at = now
+        logger.info(
+            "Box route call accepted on the controller's token "
+            "(box_routes_accept_controller_until)"
+        )
+
+    def lapsed(self, until: datetime) -> None:
+        if until in self._lapsed:
+            return
+        self._lapsed.add(until)
+        logger.warning(
+            "Box routes' move-over lapsed at %s and the controller's token is now "
+            "refused there; remove box_routes_accept_controller_until from the "
+            "hosted controller config",
+            until.isoformat(),
+        )
+
+    def reset(self) -> None:
+        self._used_at = None
+        self._lapsed.clear()
+
+
+box_overlap_log = _BoxOverlapLog()
+
+
 async def controller_session(
     request: Request,
     settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
     factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
 ) -> AsyncIterator[AsyncSession]:
-    """Authenticate the operator controller, on a session with no tenant bound.
+    """Authenticate a cloud controller, on a session with no tenant bound: v1's
+    controller (`token`) or the box workers (`box_controller_token`), both of
+    which list, prepare and report on machines.
 
     A cloud machine belongs to its owner rather than to a workspace, so this
     session reads machines and nothing scoped; what a machine runs in each
@@ -135,10 +220,31 @@ async def controller_session(
     credential is never accepted as a user or agent credential on other routes.
     """
     supplied = request.headers.get("authorization", "")
-    if not secrets.compare_digest(
-        supplied, "Bearer " + settings.token.get_secret_value()
-    ):
+    if which_controller_bearer(settings, supplied) is None:
         _refuse(request, supplied)
+    with no_tenant():
+        async with factory() as session:
+            yield session
+
+
+async def box_controller_session(
+    request: Request,
+    settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
+    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
+) -> AsyncIterator[AsyncSession]:
+    """`controller_session` for the box-only routes (`/pool`, `/cluster`): the
+    box workers' own bearer, and v1's controller `token` only while
+    `box_routes_take_controller_token`. A refused `token` is logged as such
+    (a worker still on the old bearer), in the server log only."""
+    supplied = request.headers.get("authorization", "")
+    now = _now()
+    which = which_controller_bearer(settings, supplied)
+    if which == "controller" and not box_routes_take_controller_token(settings, now):
+        _refuse(request, supplied, reason="controller_token")
+    if which is None:
+        _refuse(request, supplied)
+    if which == "controller" and getattr(settings, "box_controller_token", None):
+        box_overlap_log.used(now)
     with no_tenant():
         async with factory() as session:
             yield session
@@ -693,7 +799,7 @@ async def machines(
 
 @router.get("/pool", dependencies=[Depends(require_hosted_v2)])
 async def pool(
-    session: Annotated[AsyncSession, Depends(controller_session)],
+    session: Annotated[AsyncSession, Depends(box_controller_session)],
 ) -> dict:
     """The warm pool's boxes, for the box scaler (hosted agents v2): each
     pool box's id, the namespace Core issued (null until it's made), its
@@ -1261,7 +1367,7 @@ async def _capped_body(request: Request, cap: int) -> bytes:
 @router.post("/cluster", dependencies=[Depends(require_hosted_v2)])
 async def cluster_report(
     request: Request,
-    _session: Annotated[AsyncSession, Depends(controller_session)],
+    _session: Annotated[AsyncSession, Depends(box_controller_session)],
     factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict:

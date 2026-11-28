@@ -7,6 +7,7 @@ import json
 import logging
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -505,6 +506,9 @@ def _mounts(tmp_path: Path) -> tuple[dict[str, str], Path]:
         "KUBERNETES_SERVICE_HOST": "10.100.0.1",
         "SWITCH_HOSTED_WORKERS_CORE_URL": URL,
         "SWITCH_HOSTED_WORKERS_CORE_TOKEN_FILE": str(_write(tmp_path / "core-token", TOKEN)),
+        "SWITCH_HOSTED_WORKERS_OPERATOR_TOKEN_FILE": str(
+            _write(tmp_path / "operator-token", "operator-" + TOKEN)
+        ),
         "SWITCH_HOSTED_WORKERS_BOX_MAP": str(_box_map(tmp_path, {M1: NS1})),
     }
     return env, sa
@@ -771,6 +775,60 @@ def test_a_first_read_that_fails_touches_no_box(tmp_path: Path) -> None:
     workers = Workers(FakeCore([_running(M1)]), kube, read, SCALER)
     workers.run_round()
     assert workers.boxes == {} and kube.order == []
+
+
+def test_the_restart_worker_needs_the_operator_bearer_and_never_the_controllers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(box_scaler.ssl, "create_default_context", lambda cafile=None: None)
+    monkeypatch.setattr(restart_actions.ssl, "create_default_context", lambda cafile=None: None)
+    env, sa = _mounts(tmp_path)
+    missing = {k: v for k, v in env.items() if k != "SWITCH_HOSTED_WORKERS_OPERATOR_TOKEN_FILE"}
+    with pytest.raises(WorkersConfigError, match="OPERATOR_TOKEN_FILE is not set"):
+        build(missing, sa)
+    same = {
+        **env,
+        "SWITCH_HOSTED_WORKERS_OPERATOR_TOKEN_FILE": env["SWITCH_HOSTED_WORKERS_CORE_TOKEN_FILE"],
+    }
+    with pytest.raises(WorkersConfigError, match="not the controller's"):
+        build(same, sa)
+    gone = {**env, "SWITCH_HOSTED_WORKERS_OPERATOR_TOKEN_FILE": str(tmp_path / "nope")}
+    with pytest.raises(WorkersConfigError, match="operator token could not be read"):
+        build(gone, sa)
+    # With the restart worker off, it isn't needed.
+    off = {**missing, "SWITCH_HOSTED_WORKERS_RESTART": "0"}
+    workers, _ = build(off, sa)
+    assert workers.restart is None
+
+
+def test_the_restart_worker_sends_the_operator_bearer_and_the_scaler_the_controllers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Built from the environment, each FreshCore reads its own file on every call."""
+    made: list[tuple[str, str]] = []
+
+    def record(kind: str):
+        def make(url: str, token: str, context: object = None) -> object:
+            made.append((kind, token))
+            return SimpleNamespace(machines=lambda: [], open_actions=lambda: [])
+
+        return make
+
+    monkeypatch.setattr(box_scaler.ssl, "create_default_context", lambda cafile=None: None)
+    monkeypatch.setattr(restart_actions.ssl, "create_default_context", lambda cafile=None: None)
+    monkeypatch.setattr(workers_main, "CoreApi", record("controller"))
+    monkeypatch.setattr(workers_main, "RestartCoreApi", record("operator"))
+    env, sa = _mounts(tmp_path)
+    workers, _ = build(env, sa)
+    workers.core.machines()
+    workers.restart.core.open_actions()
+    _write(Path(env["SWITCH_HOSTED_WORKERS_OPERATOR_TOKEN_FILE"]), "operator-renewed")
+    workers.restart.core.open_actions()
+    assert made == [
+        ("controller", TOKEN),
+        ("operator", "operator-" + TOKEN),
+        ("operator", "operator-renewed"),
+    ]
 
 
 def test_the_mount_setting_is_no_longer_needed(

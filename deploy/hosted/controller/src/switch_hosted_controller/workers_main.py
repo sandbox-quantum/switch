@@ -26,8 +26,14 @@ Where things come from (the Deployment):
 - Kubernetes: the pod's service account (`SA_DIR`). Its token is read with
   `read_token` on every call, since the projected token rotates hourly.
 - Core: `SWITCH_HOSTED_WORKERS_CORE_URL`, https with no user, password, query
-  or fragment, and the controller token in the Secret file named by
-  `SWITCH_HOSTED_WORKERS_CORE_TOKEN_FILE`, read on every call.
+  or fragment, and the box workers' controller bearer (Core's
+  `box_controller_token`; v1's `token` until it's set) in the Secret file named by
+  `SWITCH_HOSTED_WORKERS_CORE_TOKEN_FILE`, read on every call. With the
+  restart worker on, the operator API's own bearer, for its two operator
+  routes (`/actions`), in the file named by
+  `SWITCH_HOSTED_WORKERS_OPERATOR_TOKEN_FILE`, read on every call: required,
+  and a different bearer from the controller's, since Core takes the
+  controller's there only until its move-over window ends.
   `SWITCH_HOSTED_WORKERS_CORE_CA`, when set, is the only CA trusted for Core.
 - The box map: the `box-map` Secret in `switch-hosted`, read through the API
   by name every round (the account's `get` on that one name; no list or
@@ -99,6 +105,7 @@ logger = logging.getLogger(__name__)
 PREFIX = "SWITCH_HOSTED_WORKERS_"
 ENV_CORE_URL = PREFIX + "CORE_URL"
 ENV_CORE_TOKEN_FILE = PREFIX + "CORE_TOKEN_FILE"
+ENV_OPERATOR_TOKEN_FILE = PREFIX + "OPERATOR_TOKEN_FILE"
 ENV_CORE_CA = PREFIX + "CORE_CA"
 ENV_BOX_MAP = PREFIX + "BOX_MAP"
 ENV_INTERVAL = PREFIX + "INTERVAL_SECONDS"
@@ -592,6 +599,27 @@ class Workers:
             stop.wait(max(0.0, min(wait, next_round - clock())))
 
 
+def operator_token_file(env: Mapping[str, str], controller_token: str) -> Path | None:
+    """The operator bearer's file, for the restart worker's operator routes: required with the
+    restart worker on (None with it off), readable, and not the controller's bearer."""
+    if not switches_from_env(env)["restart"]:
+        return None
+    if not env.get(ENV_OPERATOR_TOKEN_FILE, "").strip():
+        raise WorkersConfigError(f"{ENV_OPERATOR_TOKEN_FILE} is not set")
+    path = Path(env[ENV_OPERATOR_TOKEN_FILE].strip())
+    try:
+        same = read_token(path) == controller_token
+    except (OSError, ValueError) as exc:
+        raise WorkersConfigError(
+            f"the operator token could not be read ({type(exc).__name__})"
+        ) from None
+    if same:
+        raise WorkersConfigError(
+            f"{ENV_OPERATOR_TOKEN_FILE} must hold the operator's bearer, not the controller's"
+        )
+    return path
+
+
 def build(env: Mapping[str, str], sa_dir: Path = SA_DIR) -> tuple[Workers, float]:
     """Everything from the environment and the mounts, refused whole if anything is wrong."""
     for key in (ENV_CORE_URL, ENV_CORE_TOKEN_FILE):
@@ -600,11 +628,13 @@ def build(env: Mapping[str, str], sa_dir: Path = SA_DIR) -> tuple[Workers, float
     interval = interval_from_env(env)
     url, token_file = env[ENV_CORE_URL].strip(), Path(env[ENV_CORE_TOKEN_FILE])
     try:
-        read_token(token_file)
+        controller_token = read_token(token_file)
     except (OSError, ValueError) as exc:
         raise WorkersConfigError(
             f"the controller token could not be read ({type(exc).__name__})"
         ) from None
+    operator_file = operator_token_file(env, controller_token)
+    del controller_token
     core_context = core_tls_context(env)
     sa_token, sa_ca = sa_dir / "token", sa_dir / "ca.crt"
     try:
@@ -624,7 +654,9 @@ def build(env: Mapping[str, str], sa_dir: Path = SA_DIR) -> tuple[Workers, float
         kube,
         kube.box_map,
         env,
-        restart_core=FreshCore(url, token_file, RestartCoreApi, core_context),
+        restart_core=None
+        if operator_file is None
+        else FreshCore(url, operator_file, RestartCoreApi, core_context),
         restart_kube=InClusterRestartKubeApi(server, sa_token, str(sa_ca)),
     )
     return workers, interval

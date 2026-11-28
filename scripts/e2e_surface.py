@@ -62,7 +62,10 @@ from switch_core.gateway.auth import (
     get_current_user_in_transaction,
 )
 from switch_core.gateway.changes import get_socket_caller
-from switch_core.gateway.hosted_controller import controller_session
+from switch_core.gateway.hosted_controller import (
+    box_controller_session,
+    controller_session,
+)
 from switch_core.hosted_v2 import (
     HOSTED_V2_FLAG,
     require_hosted_v2,
@@ -176,7 +179,7 @@ def _dependency_calls(dependant: Dependant) -> Iterator[Callable[..., Any]]:
 # The hosted controller's machine routes take the operator controller's bearer
 # token instead, and are never reachable with a session.
 OPERATOR_TOKEN_DEPENDENCIES: frozenset[Callable[..., Any]] = frozenset(
-    {controller_session}
+    {controller_session, box_controller_session}
 )
 
 # The hosted agents v2 gate, as core's route walk (`test_hosted_v2_route_walk`)

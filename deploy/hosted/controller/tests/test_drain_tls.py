@@ -25,6 +25,7 @@ from switch_hosted_controller.drain_main import FreshDrainCore, config_from_env
 pytestmark = pytest.mark.skipif(shutil.which("openssl") is None, reason="needs openssl")
 
 TOKEN = "TOKEN-CANARY-drain-never-sent"
+OPERATOR_TOKEN = "OPERATOR-CANARY-drain-never-sent"
 
 
 def _handler(seen: list[str | None], redirect_to: str | None):
@@ -141,19 +142,24 @@ def test_with_the_core_ca_set_a_server_signed_by_another_ca_never_gets_the_beare
     url, seen = impostor
     token = tmp_path / "bearer"
     token.write_text(TOKEN)
+    operator = tmp_path / "operator-bearer"
+    operator.write_text(OPERATOR_TOKEN)
     box_map = tmp_path / "box-map"
     box_map.mkdir()
     config = config_from_env(
         {
             "SWITCH_DRAIN_CORE_URL": url,
             "SWITCH_DRAIN_CORE_TOKEN_FILE": str(token),
+            "SWITCH_DRAIN_OPERATOR_TOKEN_FILE": str(operator),
             "SWITCH_DRAIN_CORE_CA": str(pki["core_ca"][1]),
             "SWITCH_DRAIN_BOX_MAP": str(box_map),
             "SWITCH_DRAIN_PAUSE_IMAGE": "registry.example/pause@sha256:" + "e" * 64,
             "SWITCH_DRAIN_OWN_NODE": "ip-10-0-0-20.region-x.compute.internal",
         }
     )
-    core = FreshDrainCore(config["core_url"], config["token_file"], config["context"])
+    core = FreshDrainCore(
+        config["core_url"], config["token_file"], config["context"], config["operator_token_file"]
+    )
     for call in (core.open_actions, core.machines):
         with pytest.raises(RuntimeError):
             call()
@@ -165,3 +171,59 @@ def test_a_server_signed_by_cores_ca_is_accepted(pki, tmp_path) -> None:
     for url in _serve(pki["signed_by_core"], seen):
         assert DrainCoreApi(url, TOKEN, context=_core_context(pki)).open_actions() == []
     assert seen == [f"Bearer {TOKEN}"]
+
+
+def test_each_core_route_gets_its_own_bearer_read_fresh(pki, tmp_path) -> None:
+    """The drain's machine list goes on the controller's bearer, its drains (`/actions`) on the
+    operator's, each read from its file on every call, so a renewed one goes on the next call."""
+    seen: list[tuple[str, str | None]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def _answer(self) -> None:
+            seen.append((self.path.split("?")[0], self.headers.get("Authorization")))
+            body = json.dumps({"actions": [], "machines": []}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_GET = do_POST = _answer
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    cert = pki["signed_by_core"]
+    ctx.load_cert_chain(str(cert[1]), str(cert[0]))
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    controller, operator = tmp_path / "controller", tmp_path / "operator"
+    controller.write_text("controller-1")
+    operator.write_text("operator-1")
+    try:
+        core = FreshDrainCore(
+            f"https://127.0.0.1:{server.server_address[1]}",
+            controller,
+            _core_context(pki),
+            operator,
+        )
+        action = "0f1e2d3c-4b5a-4968-8776-5a4b3c2d1e0f"
+        core.machines()
+        core.open_actions()
+        core.step(action, "claimed", "running")
+        controller.write_text("controller-2")
+        operator.write_text("operator-2")
+        core.machines()
+        core.open_actions()
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert seen == [
+        ("/gateway/hosted-controller/machines", "Bearer controller-1"),
+        ("/gateway/hosted-controller/actions", "Bearer operator-1"),
+        (f"/gateway/hosted-controller/actions/{action}/steps", "Bearer operator-1"),
+        ("/gateway/hosted-controller/machines", "Bearer controller-2"),
+        ("/gateway/hosted-controller/actions", "Bearer operator-2"),
+    ]
