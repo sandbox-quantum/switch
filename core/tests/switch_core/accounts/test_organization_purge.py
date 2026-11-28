@@ -662,6 +662,8 @@ async def test_a_purge_with_a_box_machine_finishes_once_its_box_is_at_zero(
             # Read only for a missing box, never on a `stopped` report.
             config=None,  # type: ignore[arg-type]
             settings=None,  # type: ignore[arg-type]
+            # No box bearer is configured here, so `token` sees every machine.
+            scope=None,
         )
 
     second = await purge.run(await purge.plan(organization_id), "TICKET-4")

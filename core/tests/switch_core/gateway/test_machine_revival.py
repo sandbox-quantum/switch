@@ -544,6 +544,8 @@ async def _report_stopped(
             # Read only for a missing box, never on a `stopped` report.
             config=None,  # type: ignore[arg-type]
             settings=None,  # type: ignore[arg-type]
+            # No box bearer is configured here, so `token` sees every machine.
+            scope=None,
         )
 
 
