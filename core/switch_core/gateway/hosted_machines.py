@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -21,6 +22,8 @@ from switch_core.db.stores.hosted_machine_store import (
     MACHINE_PAUSED,
     MACHINE_STOPPED_BY_ADMIN,
     MACHINE_TURNED_OFF,
+    BoxRetired,
+    BoxServesAnotherWorkspace,
     CloudMachineConflict,
     CloudMachineStore,
     admin_stopped,
@@ -429,20 +432,40 @@ async def owned_machines(
     }
 
 
-@router.post("/ensure")
+# `response_model=None`: it answers a JSON body, or the refusal's own (`BoxServesAnotherWorkspace`).
+@router.post("/ensure", response_model=None)
 async def ensure(
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     settings: Annotated[HostedControllerSettings | None, Depends(hosted_settings)],
-) -> dict:
+) -> dict | JSONResponse:
     try:
         machine, workspace = await ensure_machine(
             session, factory, user.id, config, settings
         )
     except MachineUnavailable as error:
         raise HTTPException(503, str(error)) from None
+    except BoxServesAnotherWorkspace as error:
+        # A box serves one workspace: Console says which, by name only, to its
+        # own member (the claim names it only then).
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": str(error),
+                "code": error.code,
+                **(
+                    {"workspace_name": error.workspace_name}
+                    if error.workspace_name
+                    else {}
+                ),
+            },
+        )
+    except BoxRetired as error:
+        # The claim retired the owner's box: that stands, the claim doesn't.
+        await session.commit()
+        raise HTTPException(409, str(error)) from None
     except CloudMachineConflict as error:
         raise HTTPException(409, str(error)) from None
     # The person opening hosted agents starts a v2 box start's clock.

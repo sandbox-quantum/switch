@@ -106,6 +106,7 @@ const {
   createRoom,
   deleteBridge,
   deleteRoom,
+  CloudMachineInOtherWorkspaceError,
   ensureCloudMachine,
   fetchAuthConfig,
   probeGateway,
@@ -2770,6 +2771,50 @@ describe('sign-up support', () => {
     await expect(ensureCloudMachine(SERVER)).rejects.toThrow(
       new Error('Cloud machines are not offered here.')
     );
+  });
+
+  it('raises a box that serves another workspace as its own refusal, with that workspace’s name', async () => {
+    const detail =
+      "Your cloud box already serves another workspace. Each person's box can serve one workspace for now.";
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(
+        409,
+        JSON.stringify({ detail, code: 'box_one_workspace', workspace_name: ' Research ' })
+      )
+    );
+    const refusal = await ensureCloudMachine(SERVER).catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(CloudMachineInOtherWorkspaceError);
+    expect(refusal).toMatchObject({
+      name: 'CloudMachineInOtherWorkspaceError',
+      message: detail,
+      workspaceName: 'Research',
+    });
+  });
+
+  it('leaves the other workspace unnamed when the refusal does not name it', async () => {
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(409, JSON.stringify({ detail: 'In use.', code: 'box_one_workspace' }))
+    );
+    await expect(ensureCloudMachine(SERVER)).rejects.toMatchObject({
+      name: 'CloudMachineInOtherWorkspaceError',
+      workspaceName: null,
+    });
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(
+        409,
+        JSON.stringify({ detail: 'In use.', code: 'box_one_workspace', workspace_name: '  ' })
+      )
+    );
+    await expect(ensureCloudMachine(SERVER)).rejects.toMatchObject({ workspaceName: null });
+  });
+
+  it('raises any other coded refusal as the server’s explanation, as before', async () => {
+    fetchMock.mockResolvedValueOnce(
+      errorResponse(409, JSON.stringify({ detail: 'None free.', code: 'no_machine_free' }))
+    );
+    const refusal = await ensureCloudMachine(SERVER).catch((error: unknown) => error);
+    expect(refusal).not.toBeInstanceOf(CloudMachineInOtherWorkspaceError);
+    expect(refusal).toEqual(new Error('None free.'));
   });
 });
 
