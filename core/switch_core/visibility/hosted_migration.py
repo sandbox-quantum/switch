@@ -186,6 +186,14 @@ class Manifest:
     namespace: str | None  # the box's, `agents-user-<keyed id>`
     snapshot_id: str | None
     workspaces: list[tuple[str, list[str]]]  # (tenant id, agent ids)
+    # Each workspace's row id on the machine: the key of its seat on the v1
+    # disk (`.switch-controllers.json`), so the copy job finds the seat
+    # without guessing. The row outlives the flip.
+    seat_keys: dict[str, str] = field(default_factory=dict)
+    # Each workspace's v1 controller, which the seat map on the v1 disk names
+    # beside the seat key. The disk is the person's own input, so the copy
+    # job takes a seat only when both match Core's record.
+    v1_controller_ids: dict[str, str] = field(default_factory=dict)
 
 
 class HostedMigrations:
@@ -250,10 +258,25 @@ class HostedMigrations:
                 machine_id = record.machine_id
                 snapshot_id = record.snapshot_id
         workspaces = []
+        seat_keys: dict[str, str] = {}
+        v1_controller_ids: dict[str, str] = {}
         for plan_tenant, agent_ids in await self._agents_by_workspace(
             machine_id, owner_id
         ):
             workspaces.append((plan_tenant, agent_ids))
+            async with tenant_session(self._factory, plan_tenant) as scoped:
+                row = await workspace_on(scoped, machine_id)
+                if row is None:
+                    raise MigrationRefused(
+                        "target_mismatch", "A workspace left the box during the move."
+                    )
+                if row.moving_from_controller_id is None:
+                    raise MigrationRefused(
+                        "target_mismatch",
+                        "A workspace on the box has no v1 controller to copy from.",
+                    )
+                seat_keys[plan_tenant] = row.id
+                v1_controller_ids[plan_tenant] = row.moving_from_controller_id
         person = self._keyed(KeyedIdKind.USER, owner_id)
         return Manifest(
             machine_id=machine_id,
@@ -261,6 +284,8 @@ class HostedMigrations:
             namespace=None if person is None else f"{NAMESPACE_PREFIX}{person}",
             snapshot_id=snapshot_id,
             workspaces=workspaces,
+            seat_keys=seat_keys,
+            v1_controller_ids=v1_controller_ids,
         )
 
     # ── the move ─────────────────────────────────────────────────────────
