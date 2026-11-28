@@ -2,15 +2,15 @@ import type {
   ProviderSubscriptionUsageSnapshot,
   SubscriptionUsageCredit,
 } from '@switch-console/agent-providers';
-import { RefreshCw } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import {
   PopoverClose,
   PopoverContent,
   PopoverDescription,
   PopoverTitle,
-} from '@renderer/lib/ui/popover';
+} from '@switch-console/chat-ui/primitives/popover';
+import { RefreshCw } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { cn } from '@renderer/utils/utils';
 import type { AgentProviderDefinition } from '@shared/core/providers/agent-provider-registry';
 import {

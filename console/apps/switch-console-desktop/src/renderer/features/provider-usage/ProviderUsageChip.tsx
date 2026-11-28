@@ -1,7 +1,7 @@
 import type { ProviderSubscriptionUsageSnapshot } from '@switch-console/agent-providers';
+import { PopoverTrigger } from '@switch-console/chat-ui/primitives/popover';
 import { LoaderCircle, TriangleAlert } from 'lucide-react';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
-import { PopoverTrigger } from '@renderer/lib/ui/popover';
 import { cn } from '@renderer/utils/utils';
 import type { AgentProviderDefinition } from '@shared/core/providers/agent-provider-registry';
 import {

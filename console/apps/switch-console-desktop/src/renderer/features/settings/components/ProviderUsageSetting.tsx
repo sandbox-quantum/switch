@@ -1,5 +1,5 @@
+import { Switch } from '@switch-console/chat-ui/primitives/switch';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
-import { Switch } from '@renderer/lib/ui/switch';
 import { SettingRow } from './SettingRow';
 
 export function ProviderUsageSetting() {

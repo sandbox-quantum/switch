@@ -1,9 +1,9 @@
+import { Popover, PopoverTrigger } from '@switch-console/chat-ui/primitives/popover';
 import { RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { Popover, PopoverTrigger } from '@renderer/lib/ui/popover';
 import { cn } from '@renderer/utils/utils';
 import { agentProviders } from '@shared/core/providers/agent-provider-registry';
 import { layoutUsageChips, ROSTER_CHIP_WIDTH } from './format-usage';
