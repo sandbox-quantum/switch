@@ -13,42 +13,33 @@
 export const WORKSPACE_PARAM = 'workspace';
 
 /**
- * Where a workspace's or an organization's settings live in the dashboard. In
- * its new layout (`gateway_v2`) both are under `/settings`, which opens on the
- * page you last had open there, or else General. Today's layout, and every
- * server from before the new one, has them at `/workspace` and
- * `/organization`. The new layout redirects those too, but `/workspace` lands
- * on its Users page.
+ * Where a workspace's or an organization's settings live in the dashboard:
+ * under `/settings`, which opens on the page you last had open there, or else
+ * General.
  */
-export function settingsPagePath(
-  link: 'workspace-settings' | 'organization-settings',
-  newLayout: boolean
-): string {
-  if (link === 'workspace-settings') return newLayout ? 'settings' : 'workspace';
-  return newLayout ? 'settings/org' : 'organization';
+export function settingsPagePath(link: 'workspace-settings' | 'organization-settings'): string {
+  return link === 'workspace-settings' ? 'settings' : 'settings/org';
 }
 
 /**
  * The dashboard pages where the deployment's connector apps are set up.
- * `organization-settings`: the new layout (`gateway_v2`) on a server that says
- * who may manage them (`can_manage_connector_apps` on its session).
- * `platform`: the new layout on a server from before that, which keeps them
- * under Platform. `old-layout`: today's layout, on any server.
+ * `organization-settings`: on a server that says who may manage them
+ * (`can_manage_connector_apps` on its session). `platform`: on a server from
+ * before that, which keeps them under Platform.
  */
-export type ConnectorAppsPage = 'organization-settings' | 'platform' | 'old-layout';
+export type ConnectorAppsPage = 'organization-settings' | 'platform';
 
 /** Where `page` is on the dashboard. */
 export function connectorAppsPagePath(page: ConnectorAppsPage): string {
-  if (page === 'organization-settings') return 'settings/org/connector-apps';
-  return page === 'platform' ? 'platform/connectors' : 'connectors';
+  return page === 'organization-settings' ? 'settings/org/connector-apps' : 'platform/connectors';
 }
 
-/** A room's page, in either layout. */
+/** A room's page. */
 export function roomPagePath(roomId: string): string {
   return `rooms/${roomId}`;
 }
 
-/** An agent's page, in either layout. */
+/** An agent's page. */
 export function agentPagePath(agentId: string): string {
   return `agents/${agentId}`;
 }

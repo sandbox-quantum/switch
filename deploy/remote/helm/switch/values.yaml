@@ -628,8 +628,8 @@ switchCore:
   # Harness, Pi, GitHub Copilot, Kiro, Mistral Vibe, Goose, Qwen Code, Factory
   # Droid, Cline, Junie), hosted_awake_budgets (hosted agents v2), gateway_chats
   # (chats in the dashboard) and gateway_onboarding (getting started on Switch
-  # Cloud from the dashboard). gateway_v2, agent_chats, group_chats and
-  # agent_management are still accepted but always on. Some flags need others on
+  # Cloud from the dashboard). agent_chats, group_chats and agent_management
+  # are still accepted but always on. Some flags need others on
   # too, or switch-core refuses to start: decision_routing needs
   # follow_the_conversation, and gateway_onboarding needs gateway_chats,
   # switch_buddy and hosted_agents.

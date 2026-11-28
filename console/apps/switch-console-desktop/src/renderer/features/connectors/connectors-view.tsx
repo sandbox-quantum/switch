@@ -77,7 +77,6 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
   const { navigate } = useNavigate();
   const flags = useServerFeatureFlags(serverId);
   const access = connectorsPageAccess(flags);
-  const gatewayV2 = flags?.flags.gateway_v2 === true;
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const person: Person = {
@@ -120,7 +119,6 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
       workspaceId={workspaceId}
       person={person}
       servesDashboard={servesDashboard}
-      gatewayV2={gatewayV2}
     />
   );
 });
@@ -135,7 +133,7 @@ type Person = Omit<ConnectorViewer, 'appSetUp'>;
  * profile opened because the service was just connected is this page's own
  * business, kept here and dropped as soon as the person moves on.
  *
- * Where the server serves the dashboard, in either layout, it is asked who
+ * Where the server serves the dashboard, it is asked who
  * sets up its connector apps, and the catalog waits for the answer rather
  * than offering Set up to the wrong people meanwhile. An answer that cannot
  * be read leaves Set up to the operator alone, as on a server that does not
@@ -146,14 +144,12 @@ function Connectors({
   workspaceId,
   person,
   servesDashboard,
-  gatewayV2,
 }: {
   serverId: string;
   workspaceId: string;
   person: Person;
   /** The server serves the web dashboard, where its connector apps are set up. */
   servesDashboard: boolean;
-  gatewayV2: boolean;
 }) {
   const catalog = useConnectorCatalog(workspaceId);
   const management = useConnectorAppManagement(workspaceId, servesDashboard);
@@ -165,7 +161,6 @@ function Connectors({
     appSetUp: connectorAppSetUp({
       operator: person.operator,
       servesDashboard,
-      gatewayV2,
       canManage: answer?.canManage ?? null,
       inDashboard: answer?.inDashboard ?? null,
     }),
