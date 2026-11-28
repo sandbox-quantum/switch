@@ -66,6 +66,14 @@ import {
   roomInstructionsNote,
   roomInstructionsUnreadNote,
 } from './told-room-instructions';
+import {
+  buildRoomResourceSnapshot,
+  readToldRoomResources,
+  recordToldRoomResources,
+  roomResourcesNote,
+  roomResourcesUnreadNote,
+  type RoomResourceSnapshot,
+} from './told-room-resources';
 import { startVendorClis } from './vendor-cli';
 import {
   CALL_TIMEOUT_MS,
@@ -145,7 +153,16 @@ export type SharedHostBox = {
 };
 
 /** How long a session sits idle before its host parks, unless the environment says otherwise. */
-const roomInstructionsAnswerSchema = z.object({ instructions: z.string() });
+const roomInstructionsAnswerSchema = z.object({
+  instructions: z.string(),
+  resources: z
+    .object({
+      documents: z.array(z.record(z.string(), z.unknown())).default([]),
+      references: z.array(z.record(z.string(), z.unknown())).default([]),
+      packages: z.array(z.record(z.string(), z.unknown())).default([]),
+    })
+    .optional(),
+});
 
 const PARK_AFTER_MS = 24 * 60 * 60 * 1000;
 
@@ -818,23 +835,44 @@ export async function runSharedHost(
       toldRooms = rooms;
       await recordToldRoomInstructions(options.root, rooms);
     };
+    let toldResources = await readToldRoomResources(options.root);
+    const roomResourcesTold = async (rooms: Record<string, RoomResourceSnapshot>): Promise<void> => {
+      toldResources = rooms;
+      await recordToldRoomResources(options.root, rooms);
+    };
     /**
-     * What to tell the conversation about a room's instructions before its
-     * message, and the instructions to record as told once the message runs
-     * (null when they could not be read, so the next message tries again).
+     * What to tell the conversation about a room's instructions and resources
+     * before its message, and the records to save once the message runs.
      */
     const roomInstructionsFor = async (
       roomId: string
-    ): Promise<{ note: string | null; instructions: string | null }> => {
-      if (!parentChannel || !options.roomConnection) return { note: null, instructions: null };
-      if (!startedHere()) toldRooms = {};
+    ): Promise<{
+      note: string | null;
+      instructions: string | null;
+      resourcesNote: string | null;
+      resourcesSnapshot: RoomResourceSnapshot | null;
+    }> => {
+      if (!parentChannel || !options.roomConnection)
+        return { note: null, instructions: null, resourcesNote: null, resourcesSnapshot: null };
+      if (!startedHere()) {
+        toldRooms = {};
+        toldResources = {};
+      }
       try {
-        const { instructions } = roomInstructionsAnswerSchema.parse(
+        const answer = roomInstructionsAnswerSchema.parse(
           await parentChannel.ask({ type: 'room-instructions', roomId })
         );
+        let resourcesNote: string | null = null;
+        let resourcesSnapshot: RoomResourceSnapshot | null = null;
+        if (answer.resources) {
+          resourcesSnapshot = buildRoomResourceSnapshot(answer.resources);
+          resourcesNote = roomResourcesNote(roomId, resourcesSnapshot, toldResources[roomId]);
+        }
         return {
-          note: roomInstructionsNote(roomId, instructions, toldRooms[roomId]),
-          instructions,
+          note: roomInstructionsNote(roomId, answer.instructions, toldRooms[roomId]),
+          instructions: answer.instructions,
+          resourcesNote,
+          resourcesSnapshot,
         };
       } catch (error) {
         executionSignal.throwIfAborted();
@@ -842,7 +880,12 @@ export async function runSharedHost(
         console.warn(
           `Could not read room ${roomId}'s instructions for session ${options.session.sessionId} (${reason}); the session is told to read them itself.`
         );
-        return { note: roomInstructionsUnreadNote(roomId, reason), instructions: null };
+        return {
+          note: roomInstructionsUnreadNote(roomId, reason),
+          instructions: null,
+          resourcesNote: roomResourcesUnreadNote(roomId, reason),
+          resourcesSnapshot: null,
+        };
       }
     };
     /**
@@ -1022,6 +1065,7 @@ export async function runSharedHost(
       if (command.body.type === 'session.reset' && status?.status === 'applied') {
         await instructionsTold();
         await roomInstructionsTold({});
+        await roomResourcesTold({});
       }
       return status ?? 'The host did not record the command.';
     };
@@ -1054,7 +1098,9 @@ export async function runSharedHost(
           }
         }
         const room = await roomInstructionsFor(event.roomId);
-        const preface = [instructionsNote, room.note].filter((note) => note !== null);
+        const preface = [instructionsNote, room.note, room.resourcesNote].filter(
+          (note): note is string => note !== null
+        );
         const snapshot = host!.snapshot();
         const command = roomCommand({
           agentId,
@@ -1078,6 +1124,8 @@ export async function runSharedHost(
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)
             await roomInstructionsTold({ ...toldRooms, [event.roomId]: room.instructions });
+          if (room.resourcesSnapshot !== null)
+            await roomResourcesTold({ ...toldResources, [event.roomId]: room.resourcesSnapshot });
         }
         await inbox.acknowledge(event);
       }
