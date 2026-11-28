@@ -22,6 +22,7 @@ interface WorkspaceLayoutProps {
   contentClassName: string | undefined;
   /** The strip across the top of the window, above the card: search and docs. */
   topBar: ReactNode;
+  bottomBar?: ReactNode;
 }
 
 export function WorkspaceLayout({
@@ -31,6 +32,7 @@ export function WorkspaceLayout({
   banner,
   contentClassName,
   topBar,
+  bottomBar,
 }: WorkspaceLayoutProps) {
   const { leftPanelRef, syncLeftOpenFromPanel, isLeftOpen } = useWorkspaceLayoutContext();
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
@@ -39,36 +41,37 @@ export function WorkspaceLayout({
   });
 
   return (
-    <ResizablePanelGroup
-      id="workspace-outer"
-      orientation="horizontal"
-      className="h-full w-full overflow-hidden"
-      defaultLayout={defaultLayout}
-      onLayoutChanged={onLayoutChanged}
-    >
-      <ResizablePanel
-        id="workspace-left"
-        panelRef={leftPanelRef}
-        defaultSize={LEFT_PANEL_DEFAULT_SIZE}
-        minSize={LEFT_SIDEBAR_MIN_SIZE}
-        maxSize={LEFT_SIDEBAR_MAX_SIZE}
-        collapsedSize="0%"
-        onResize={syncLeftOpenFromPanel}
-        collapsible
+    <div className="flex h-full w-full flex-col overflow-hidden">
+      <ResizablePanelGroup
+        id="workspace-outer"
+        orientation="horizontal"
+        className="min-h-0 w-full flex-1 overflow-hidden"
+        defaultLayout={defaultLayout}
+        onLayoutChanged={onLayoutChanged}
       >
-        {leftSidebar}
-      </ResizablePanel>
-      <ResizableHandle
-        // The gutter and the panel's radius already separate sidebar from
-        // content, so the handle carries no line of its own — it only shows
-        // one while the pointer is on it, to say the edge can be dragged.
-        className={cn(
-          'items-center justify-center bg-transparent transition-colors hover:bg-[var(--hair)]',
-          isLeftOpen ? 'flex' : 'hidden'
-        )}
-      />
-      <ResizablePanel id="workspace-main" minSize={MAIN_PANEL_MIN_SIZE}>
-        {/* The panel is an inset card on the window's material rather than a
+        <ResizablePanel
+          id="workspace-left"
+          panelRef={leftPanelRef}
+          defaultSize={LEFT_PANEL_DEFAULT_SIZE}
+          minSize={LEFT_SIDEBAR_MIN_SIZE}
+          maxSize={LEFT_SIDEBAR_MAX_SIZE}
+          collapsedSize="0%"
+          onResize={syncLeftOpenFromPanel}
+          collapsible
+        >
+          {leftSidebar}
+        </ResizablePanel>
+        <ResizableHandle
+          // The gutter and the panel's radius already separate sidebar from
+          // content, so the handle carries no line of its own — it only shows
+          // one while the pointer is on it, to say the edge can be dragged.
+          className={cn(
+            'items-center justify-center bg-transparent transition-colors hover:bg-[var(--hair)]',
+            isLeftOpen ? 'flex' : 'hidden'
+          )}
+        />
+        <ResizablePanel id="workspace-main" minSize={MAIN_PANEL_MIN_SIZE}>
+          {/* The panel is an inset card on the window's material rather than a
             pane butted against the sidebar: the gutter and the radius separate
             the two, in place of a divider. Flush to the sidebar on the left,
             8px away on the other three sides. The hairline is a spread shadow
@@ -81,25 +84,27 @@ export function WorkspaceLayout({
             the traffic lights instead of behind them. The sidebar's empty top
             strip was what kept them clear; without it the card was drawing its
             own corner under the close button. */}
-        <div
-          className={cn(
-            'relative flex h-full w-full flex-col overflow-hidden pr-2 pb-2 [-webkit-app-region:drag]',
-            // The top bar is the gap above the card, and clears the macOS window
-            // buttons itself.
-            isLeftOpen ? 'pl-px' : 'pl-2'
-          )}
-        >
-          {topBar}
-          <div className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-[var(--panel-radius)] shadow-[0_0_0_0.5px_var(--hair)] [-webkit-app-region:no-drag]">
-            {banner}
-            <div className={cn('relative min-h-0 w-full flex-1', contentClassName)}>
-              {mainContent}
-              {persistentLayer}
+          <div
+            className={cn(
+              'relative flex h-full w-full flex-col overflow-hidden pr-2 pb-2 [-webkit-app-region:drag]',
+              // The top bar is the gap above the card, and clears the macOS window
+              // buttons itself.
+              isLeftOpen ? 'pl-px' : 'pl-2'
+            )}
+          >
+            {topBar}
+            <div className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-[var(--panel-radius)] shadow-[0_0_0_0.5px_var(--hair)] [-webkit-app-region:no-drag]">
+              {banner}
+              <div className={cn('relative min-h-0 w-full flex-1', contentClassName)}>
+                {mainContent}
+                {persistentLayer}
+              </div>
             </div>
           </div>
-        </div>
-      </ResizablePanel>
-    </ResizablePanelGroup>
+        </ResizablePanel>
+      </ResizablePanelGroup>
+      {bottomBar}
+    </div>
   );
 }
 

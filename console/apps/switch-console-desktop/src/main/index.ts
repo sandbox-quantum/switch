@@ -41,6 +41,8 @@ import { deleteUnusedLocations } from './core/locations/store';
 import { localServerService } from './core/managed-switch-server/local-server-service';
 import { remoteServerService } from './core/managed-switch-server/remote-server-service';
 import { serverVersionChoice } from './core/managed-switch-server/server-version';
+import { providerUsageService } from './core/provider-usage/instance';
+import { providerLoginRunner } from './core/providers/provider-login';
 import { initializeHostReachability } from './core/remote-hosts/host-reachability-startup';
 import { hostReachabilityService } from './core/remote-hosts/production-host-reachability';
 import {
@@ -148,9 +150,20 @@ app.on('window-all-closed', () => {
   }
 });
 
+function createWorkspaceWindow(): BrowserWindow {
+  const window = createMainWindow();
+  const stopUsage = () => providerUsageService.setActive(false);
+  window.webContents.on('did-start-navigation', ({ isMainFrame, isSameDocument }) => {
+    if (isMainFrame && !isSameDocument) stopUsage();
+  });
+  window.webContents.on('render-process-gone', stopUsage);
+  window.once('closed', stopUsage);
+  return window;
+}
+
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
-    createMainWindow();
+    createWorkspaceWindow();
   }
 });
 
@@ -187,6 +200,27 @@ void app.whenReady().then(async () => {
   locationSettingsService.initialize();
   appService.initialize();
   await appSettingsService.initialize();
+  providerUsageService.setEnabled(
+    (await appSettingsService.get('interface')).showProviderUsageBar === true
+  );
+  const stopUsageLogin = providerLoginRunner.onExit((result) =>
+    providerUsageService.handleLoginExit(result)
+  );
+  const stopUsageDependencies = localDependencyManager.onStatusUpdated.subscribe(() =>
+    providerUsageService.handleDependenciesChanged()
+  );
+  const stopUsageSettings = appSettingsService.onChanged.subscribe((key) => {
+    if (key === 'interface')
+      void appSettingsService.get(key).then(
+        (settings) => providerUsageService.setEnabled(settings.showProviderUsageBar === true),
+        () => providerUsageService.setEnabled(false)
+      );
+  });
+  app.once('before-quit', () => {
+    stopUsageLogin();
+    stopUsageDependencies();
+    stopUsageSettings();
+  });
 
   // After the settings store, which owns the consent gate every event asks
   // before it is sent, and never before the database it is read from.
@@ -334,16 +368,17 @@ void app.whenReady().then(async () => {
     log.info('powerMonitor: system resumed — refreshing SSH connections');
     sshConnectionManager.handleSystemResume();
     hostReachabilityService.handleSystemResume();
+    providerUsageService.handleSystemResume();
   });
 
   setupAppProtocol(join(app.getAppPath(), 'out', 'renderer'));
   if (import.meta.env.DEV) setupDevRendererCsp(process.env.ELECTRON_RENDERER_URL!);
   setupApplicationMenu();
-  createMainWindow();
+  const window = createWorkspaceWindow();
   // A deeplink that launched the app (cold start) is buffered until the
   // renderer has loaded its event subscribers, then delivered. The short delay
   // lets React mount and attach the listener after the page finishes loading.
-  getMainWindow()?.webContents.on('did-finish-load', () => {
+  window.webContents.on('did-finish-load', () => {
     setTimeout(() => flushPendingDeeplink(), 1000);
   });
 
@@ -372,6 +407,7 @@ app.on('before-quit', (event) => {
   controlService.dispose();
   stopAutoMigration();
   stopResourceSampler();
+  providerUsageService.dispose();
   featureFlagsService.stop();
   localServerService.dispose();
   remoteServerService.dispose();

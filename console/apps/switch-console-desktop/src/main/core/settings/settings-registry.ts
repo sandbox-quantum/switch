@@ -35,6 +35,8 @@ export const SETTINGS_DEFAULTS = {
   interface: {
     sessionHoverAction: 'delete' as const,
     autoRightSidebarBehavior: false,
+    showProviderUsageBar: false,
+    usagePercentageDisplay: 'used' as const,
   },
   browserPreview: {
     enabled: true,

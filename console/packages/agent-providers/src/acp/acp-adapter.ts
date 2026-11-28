@@ -83,13 +83,21 @@ export async function acpInitialize(
 /** A provider's sign-in check, run the way its hooks say, always tidying up the process. */
 export async function checkAcpSignIn(
   hooks: AcpProviderHooks,
-  input: SignInCheckInput
+  input: SignInCheckInput,
+  signal?: AbortSignal
 ): Promise<ProviderReadiness> {
   let client: StdioJsonRpcClient | undefined;
   let cleanup: (() => Promise<void>) | undefined;
+  let stopping: Promise<void> | undefined;
+  const abort = () => {
+    if (client) stopping ??= client.dispose().catch(() => {});
+  };
+  signal?.throwIfAborted();
+  signal?.addEventListener('abort', abort, { once: true });
   const handshake = async () => {
     const { cleanup: tidy, ...launch } = await hooks.launch(input);
     cleanup = tidy;
+    signal?.throwIfAborted();
     client = new StdioJsonRpcClient({
       ...launch,
       cwd: input.cwd,
@@ -118,7 +126,8 @@ export async function checkAcpSignIn(
       `${hooks.label} started but has no sign-in check. If its sessions fail, sign in on the execution machine with ${loginCommandOf(hooks, input.binaryPath)}.`
     );
   } finally {
-    await client?.dispose();
+    signal?.removeEventListener('abort', abort);
+    await (stopping ?? client?.dispose());
     try {
       await cleanup?.();
     } catch {

@@ -35,6 +35,7 @@ export type AgentProviderDefinition = {
    * `newAgentPermissions`.
    */
   newAgentAutoMode: boolean;
+  supportsSubscriptionUsage: boolean;
 };
 
 type Catalogue = {

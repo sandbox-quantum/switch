@@ -50,6 +50,12 @@ beforeAll(() => {
     label: 'Dummy',
     defaultBinary: 'dummy-agent',
     loginCommand: 'dummy-agent login',
+    readSubscriptionUsage: async () => ({
+      providerId: 'dummy',
+      status: 'ok',
+      windows: [],
+      updatedAt: null,
+    }),
   });
   setAgentProviderCatalogue(
     buildAgentProviderCatalogue(pluginRegistry.getAll(), [...PROVIDER_RUNTIMES, dummyRuntime])
@@ -72,6 +78,7 @@ describe('a provider added as a plugin and a runtime', () => {
       // Its plugin does not say it lacks the CLI's own auto mode.
       supportsAutoMode: true,
       newAgentAutoMode: true,
+      supportsSubscriptionUsage: true,
     });
     expect(knownAgentTypeForProvider('dummy')).toBe('dummy');
   });

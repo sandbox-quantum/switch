@@ -40,6 +40,8 @@ export const defaultAgentSchema = z
 export const interfaceSettingsSchema = z.object({
   sessionHoverAction: z.enum(['delete', 'archive']),
   autoRightSidebarBehavior: z.boolean(),
+  showProviderUsageBar: z.boolean().default(false),
+  usagePercentageDisplay: z.enum(['used', 'remaining']).default('used'),
 });
 
 export const changesViewModeSchema = z.object({

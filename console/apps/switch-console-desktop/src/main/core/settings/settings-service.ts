@@ -1,4 +1,4 @@
-import { isDeepEqual } from '@switch-console/shared';
+import { Emitter, isDeepEqual } from '@switch-console/shared';
 import type { IInitializable } from '@switch-console/shared';
 import { eq } from 'drizzle-orm';
 import { db } from '@main/db/client';
@@ -13,6 +13,12 @@ export { AppSettingsKeys } from '@shared/core/app-settings';
 
 export class SettingsStore implements IInitializable {
   private cache: Partial<AppSettings> = {};
+  readonly onChanged = new Emitter<AppSettingsKey>();
+
+  private didWrite(key: AppSettingsKey): void {
+    delete this.cache[key];
+    this.onChanged.emit(key);
+  }
 
   private async readRaw(key: AppSettingsKey): Promise<unknown> {
     const [row] = await db.select().from(appSettings).where(eq(appSettings.key, key)).execute();
@@ -106,12 +112,12 @@ export class SettingsStore implements IInitializable {
       await this.storeRaw(key, validated);
     }
 
-    delete this.cache[key];
+    this.didWrite(key);
   }
 
   async reset<K extends AppSettingsKey>(key: K): Promise<void> {
     await this.deleteRow(key);
-    delete this.cache[key];
+    this.didWrite(key);
   }
 
   async resetField<K extends AppSettingsKey>(key: K, field: keyof AppSettings[K]): Promise<void> {
@@ -126,7 +132,7 @@ export class SettingsStore implements IInitializable {
     } else {
       await this.storeRaw(key, delta);
     }
-    delete this.cache[key];
+    this.didWrite(key);
   }
 
   async getAll(): Promise<AppSettings> {

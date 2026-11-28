@@ -1,4 +1,4 @@
-import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
+import { checkAcpSignIn, createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import { answerFormElicitations, FORM_ELICITATION_CAPABILITIES } from '../acp/elicitation';
 import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
 import type { AcpSessionModes } from '../acp/protocol';
@@ -14,6 +14,7 @@ import {
   antigravitySignedIn,
   isLegacyAntigravityRuntime,
 } from './runtime';
+import { readAntigravitySubscriptionUsage } from './subscription-usage';
 
 /**
  * The modes to try for each runtime mode, best first. `agy acp` offers
@@ -83,6 +84,10 @@ export const antigravityAcp: AcpProviderHooks = {
   launch: antigravityLaunch,
   loginCommand: AGY_LOGIN,
   loginCommandFor: antigravityLoginCommand,
+  readSubscriptionUsage: (input) =>
+    readAntigravitySubscriptionUsage(input, (check) =>
+      checkAcpSignIn(antigravityAcp, check, check.signal)
+    ),
   // agy 1.5 connects to HTTP MCP servers, headers included, without declaring
   // `mcpCapabilities.http`.
   mcpCapabilities: { http: true },

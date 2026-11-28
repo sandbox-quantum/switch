@@ -13,6 +13,12 @@ import { requireProvider } from '@shared/core/providers/agent-provider-registry'
 import { providerLoginExitChannel, providerLoginLineChannel } from '@shared/events/appEvents';
 import { localDependencyManager } from '../dependencies/dependency-managers';
 
+interface LoginExit {
+  providerId: string;
+  exitCode: number | null;
+  error: string | null;
+}
+
 /**
  * Runs a provider's own sign-in command on this computer, one attempt at a
  * time, relaying what it writes.
@@ -24,6 +30,12 @@ import { localDependencyManager } from '../dependencies/dependency-managers';
  */
 class ProviderLoginRunner {
   private current: { attemptId: string; child: ChildProcess } | null = null;
+  private readonly exitListeners = new Set<(event: LoginExit) => void>();
+
+  onExit(listener: (event: LoginExit) => void): () => void {
+    this.exitListeners.add(listener);
+    return () => this.exitListeners.delete(listener);
+  }
 
   start(providerId: string): { attemptId: string } {
     requireProvider(providerId);
@@ -64,6 +76,7 @@ class ProviderLoginRunner {
       if (this.current?.attemptId === attemptId) this.current = null;
       if (error) log.warn('A provider sign-in command failed', { provider: providerId, error });
       events.emit(providerLoginExitChannel, { attemptId, exitCode, error });
+      for (const listener of this.exitListeners) listener({ providerId, exitCode, error });
     };
     child.once('error', (error) => end(null, `Could not run ${loginCommand}: ${error.message}`));
     child.once('exit', (code, signal) =>

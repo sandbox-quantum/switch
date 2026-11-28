@@ -35,7 +35,7 @@ export function antigravityLoginCommand(binaryPath: string): string {
  * opens the editor (and would take `acp` for a folder to open) rather than
  * serving ACP.
  */
-function isAntigravityIdeLauncher(binaryPath: string): boolean {
+export function isAntigravityIdeLauncher(binaryPath: string): boolean {
   const name = basename(binaryPath.replaceAll('\\', '/')).toLowerCase();
   return /^antigravity(\.(exe|cmd|bat))?$/.test(name);
 }

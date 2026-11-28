@@ -41,6 +41,7 @@ describe('buildAgentProviderCatalogue', () => {
         knownAgentType: 'beta',
         supportsAutoMode: true,
         newAgentAutoMode: true,
+        supportsSubscriptionUsage: false,
       },
       expect.objectContaining({ id: 'alpha', loginCommand: 'alpha login' }),
     ]);
