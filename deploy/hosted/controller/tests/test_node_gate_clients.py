@@ -26,7 +26,8 @@ DIGEST = "sha256:" + "a" * 64
 RAW = {
     "python_image": f"123.dkr.ecr.eu-west-3.amazonaws.com/check-python:3.12@{DIGEST}",
     "alpine_image": f"123.dkr.ecr.eu-west-3.amazonaws.com/check-alpine@{DIGEST}",
-    "server_ip": "10.0.0.10",
+    "server_host": "switch-core.example.net",
+    "server_cidrs": ["10.0.0.0/28"],
     "proxy_host": "squid.egress-proxy.svc",
     "proxy_namespace": "egress-proxy",
     "proxy_port": 3128,
@@ -57,7 +58,12 @@ def cfg(**changes):
     [
         {"python_image": "python:3.12"},  # a tag, not a digest
         {"alpine_image": "alpine@sha256:" + "a" * 63},  # every pin is 64 characters
-        {"server_ip": "10.0.0.10; rm"},
+        {"server_ip": "10.0.0.10"},  # replaced by server_host and server_cidrs
+        {"server_host": "switch-core.example.net; rm"},
+        {"server_host": "10.0.0.10"},
+        {"server_cidrs": ["10.0.0.0/8"]},
+        {"server_cidrs": ["8.8.8.0/24"]},
+        {"server_cidrs": []},
         {"proxy_port": 0},
         {"proxy_port": "3128"},
         {"proxy_namespace": "Egress_Proxy"},
@@ -172,7 +178,8 @@ def test_the_namespace_binds_only_the_fixed_role_and_walls_egress():
         {"kind": "ServiceAccount", "name": "switch-node-gate", "namespace": "switch-node-gate"}
     ]
     egress = objs["NetworkPolicy/agent-egress"]["spec"]["egress"]
-    assert egress[1]["to"] == [{"ipBlock": {"cidr": "10.0.0.10/32"}}]
+    assert egress[1]["to"] == [{"ipBlock": {"cidr": "10.0.0.0/28"}}]
+    assert egress[1]["ports"] == [{"protocol": "TCP", "port": 443}]
     assert egress[2]["to"][0]["namespaceSelector"]["matchLabels"] == {
         "kubernetes.io/metadata.name": "egress-proxy"
     }

@@ -42,8 +42,9 @@ TOKEN = "claim-token-0123456789abcdef"
 CA = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
 SETTINGS = '{"permissions": {}}'
 RAW_CONFIG = {
-    "server_ip": "10.0.0.10",
-    "server_url": "https://10.0.0.10",
+    "server_host": "switch-core.example.net",
+    "server_cidrs": ["10.0.0.0/28"],
+    "server_url": "https://switch-core.example.net",
     "image": "registry.example/hosted-agents-box@sha256:" + "a" * 64,
     "storage_class": "gp3",
     "proxy_host": "squid.egress-proxy.svc",
@@ -564,7 +565,21 @@ def test_endless_conflicts_end_as_box_map_failed():
     [
         {"image": "registry.example/box:latest"},
         {"image": "registry.example/box@sha256:" + "a" * 12},
-        {"server_url": "http://10.0.0.10"},
+        {"server_url": "http://switch-core.example.net"},
+        {"server_url": "https://switch-core.example.net:8443"},
+        {"server_url": "https://another.example.net"},
+        {"server_host": "10.0.0.10"},
+        {"server_host": "Switch-Core.example.net"},
+        {"server_cidrs": []},
+        {"server_cidrs": ["0.0.0.0/0"]},
+        {"server_cidrs": ["10.0.0.0/16"]},
+        {"server_cidrs": ["8.8.8.0/24"]},
+        {"server_cidrs": ["169.254.0.0/24"]},
+        {"server_cidrs": ["10.0.0.5/28"]},
+        {"server_cidrs": ["10.0.0.0/28", "10.0.0.0/28"]},
+        {"server_cidrs": ["10.0.0.0/28"] * 5},
+        {"server_cidrs": "10.0.0.0/28"},
+        {"server_ip": "10.0.0.10"},
         {"ceiling": 0},
         {"sizes": {"standard": {"disk": "15Gi"}}},
         {"zones": []},
@@ -725,11 +740,18 @@ def test_the_operator_builds_exactly_the_ticked_template():
     template v2.3 (93c93f78…) rendered with `kubectl create --dry-run=client -o json` and the fixed
     render values (fixture sha256 7293ce26…), with the same
     two placeholders as before swapped in: the AWS account id for 123456789012 and the server address for
-    10.0.0.10. Every one of the 14 objects must be equal, field for field."""
+    10.0.0.10. Core is now reached by name, so the render's three server values are read as the
+    name and its range: `NO_PROXY` and the URL carry the host, the policy's route its ranges.
+    Every one of the 14 objects must be equal, field for field."""
 
-    rendered = json.loads(
-        (Path(__file__).parent / "fixtures" / "box-template-split-v2.3-render.json").read_text()
-    )["items"]
+    text = (Path(__file__).parent / "fixtures" / "box-template-split-v2.3-render.json").read_text()
+    text = (
+        text.replace('"10.0.0.10,.svc,', '"switch-core.example.net,.svc,')
+        .replace('"https://10.0.0.10"', '"https://switch-core.example.net"')
+        .replace('"10.0.0.10/32"', '"10.0.0.0/28"')
+    )
+    assert "10.0.0.10" not in text
+    rendered = json.loads(text)["items"]
     config = config_from(
         {
             **RAW_CONFIG,
@@ -2647,3 +2669,36 @@ def test_a_removals_list_not_made_yet_is_read_as_empty():
     )
     BoxOperator(core, NoRemovals(), cfg()).run_once()
     assert result(core)[2] == "done"
+
+
+# ── Core by name: the direct route out and NO_PROXY ─────────────────────────
+
+
+def test_the_box_policy_routes_out_directly_only_to_the_listed_ranges_on_443():
+    """Core reached by name behind a private endpoint with an address per zone: one route out to each listed
+    range, on 443 only, and no other address. If the name ever resolved elsewhere, that connection is blocked:
+    the policy names ranges, never the host, so a wrong name fails closed."""
+    config = cfg(server_cidrs=["10.0.1.0/28", "10.0.2.0/28"])
+    objects = {(o["kind"], o["metadata"]["name"]): o for _, o in box_objects(action(), config)}
+    egress = objects[("NetworkPolicy", "agent-egress")]["spec"]["egress"]
+    direct = [rule for rule in egress if any("ipBlock" in peer for peer in rule["to"])]
+    assert direct == [
+        {
+            "to": [{"ipBlock": {"cidr": "10.0.1.0/28"}}, {"ipBlock": {"cidr": "10.0.2.0/28"}}],
+            "ports": [{"protocol": "TCP", "port": 443}],
+        }
+    ]
+    assert "switch-core.example.net" not in json.dumps(objects[("NetworkPolicy", "agent-egress")])
+
+
+def test_no_proxy_holds_the_host_so_core_never_goes_through_the_proxy():
+    pod = next(o for _, o in box_objects(action(), cfg()) if o["kind"] == "StatefulSet")["spec"][
+        "template"
+    ]["spec"]
+    for container in pod["containers"]:
+        env = {e["name"]: e.get("value") for e in container.get("env", [])}
+        assert env["NO_PROXY"] == env["no_proxy"]
+        assert env["NO_PROXY"].split(",")[0] == "switch-core.example.net"
+    controller = next(c for c in pod["containers"] if c["name"] == "controller")
+    switch_server = {e["name"]: e.get("value") for e in controller["env"]}["SWITCH_SERVER"]
+    assert switch_server == "https://switch-core.example.net"
