@@ -10,7 +10,7 @@ be one of the organization's: one elsewhere is answered 404, as one that
 does not exist.
 
 Mounted with the rest of agent management (`wiring.mount_gateway_routes`),
-so only where it is on. With hosted agents v2 on and the hosted config's
+so only where it is on. With the hosted config's
 `management_tenant_ids` set, a workspace agent management doesn't serve is
 left out of the listing and refused for removals, as its own routes refuse it.
 """

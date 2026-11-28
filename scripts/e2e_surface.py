@@ -15,13 +15,13 @@ so the surface it reads is a committed snapshot:
     controller's operator token (`operator-token`), or nothing (`none`). The
     gate requires each route that takes nothing to be listed with a reason;
   - the feature flags it is mounted behind, found by building the app with
-    each flag off in turn, plus `hosted_v2` for a route behind the hosted
-    agents v2 gate (`require_hosted_v2`, `require_hosted_v2_here`). Those
-    routes are always mounted, but with v2 off the gate answers 404, as a
-    route that doesn't exist, before any authentication; `/feature-flags`
-    lists `hosted_v2` only with v2 on. The fast lane probes every `session`
-    route whose flags the deployment has on, and expects a 401 without a
-    session.
+    each flag off in turn, plus `box_cluster` for a route behind the box
+    cluster gate (`require_box_cluster`, `require_box_cluster_here`). Those
+    routes are always mounted, but on a server with no box cluster configured
+    the gate answers 404, as a route that doesn't exist. `box_cluster` is a
+    label here, not a feature flag: `/feature-flags` never lists it, so the
+    fast lane, which probes every `session` route whose flags the deployment
+    has on and expects a 401 without a session, never probes these.
 
 Every setting comes from this script, never from the environment, so a
 developer's `.env` (which `just` exports) cannot change what it writes.
@@ -50,6 +50,7 @@ from fastapi.routing import APIRoute, APIWebSocketRoute
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 from starlette.routing import Route
 
+from switch_core.box_cluster import require_box_cluster, require_box_cluster_here
 from switch_core.bridges.agent.operations import declared_operations
 from switch_core.config import SwitchConfig
 from switch_core.feature_flags import KNOWN_FEATURE_FLAGS, without_flag
@@ -65,11 +66,6 @@ from switch_core.gateway.changes import get_socket_caller
 from switch_core.gateway.hosted_controller import (
     box_controller_session,
     controller_session,
-)
-from switch_core.hosted_v2 import (
-    HOSTED_V2_FLAG,
-    require_hosted_v2,
-    require_hosted_v2_here,
 )
 from switch_core.management.wiring import mount_gateway_routes
 
@@ -182,18 +178,20 @@ OPERATOR_TOKEN_DEPENDENCIES: frozenset[Callable[..., Any]] = frozenset(
     {controller_session, box_controller_session}
 )
 
-# The hosted agents v2 gate, as core's route walk (`test_hosted_v2_route_walk`)
-# finds it. A route behind it is served only with v2 on, so it is listed as
-# mounted behind the `hosted_v2` flag.
-HOSTED_V2_GATES: frozenset[Callable[..., Any]] = frozenset(
-    {require_hosted_v2, require_hosted_v2_here}
+# The box cluster gate, as core's route walk (`test_box_route_walk`) finds it. A
+# route behind it is served only on a server with a box cluster configured, so it
+# is listed as behind the `box_cluster` label, which no deployment's
+# `/feature-flags` lists.
+BOX_CLUSTER_LABEL = "box_cluster"
+BOX_CLUSTER_GATES: frozenset[Callable[..., Any]] = frozenset(
+    {require_box_cluster, require_box_cluster_here}
 )
 
 
-def _behind_hosted_v2(route: Route | APIWebSocketRoute) -> bool:
+def _behind_box_cluster(route: Route | APIWebSocketRoute) -> bool:
     if not isinstance(route, (APIRoute, APIWebSocketRoute)):
         return False
-    return bool(set(_dependency_calls(route.dependant)) & HOSTED_V2_GATES)
+    return bool(set(_dependency_calls(route.dependant)) & BOX_CLUSTER_GATES)
 
 
 def _auth(route: Route | APIWebSocketRoute) -> str:
@@ -253,8 +251,8 @@ def gateway_routes() -> list[dict[str, Any]]:
             if key not in without:
                 gated_by[key].append(flag)
     for key, route in routes.items():
-        if _behind_hosted_v2(route):
-            gated_by[key].append(HOSTED_V2_FLAG)
+        if _behind_box_cluster(route):
+            gated_by[key].append(BOX_CLUSTER_LABEL)
     return [
         {"route": key, "auth": _auth(routes[key]), "flags": sorted(gated_by[key])}
         for key in sorted(routes)

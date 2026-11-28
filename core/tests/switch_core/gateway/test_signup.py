@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
+from switch_core.box_cluster import box_cluster_on
 from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, CloudMachine, TenantMember, User
 from switch_core.db.stores.hosted_machine_store import (
@@ -35,7 +36,6 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_machines import MACHINES_DISABLED
 from switch_core.gateway.hosted_machines import router as machine_router
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.keys import Keyring
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
@@ -56,10 +56,10 @@ def _hosted_settings(tenants: list[str] | None) -> HostedControllerSettings:
     return HostedControllerSettings(
         # None here means every workspace, said explicitly ("*"): with hosted
         # agents v2 on, an unset list is nobody.
-        allowed_tenant_ids=(["*"] if process_hosted_v2() else None)
+        allowed_tenant_ids=(["*"] if box_cluster_on() else None)
         if tenants is None
         else tenants,
-        allowed_user_ids=["*"] if process_hosted_v2() else None,
+        allowed_user_ids=["*"] if box_cluster_on() else None,
         token="t" * 32,
         agent_api_endpoint="https://switch.example.com/api/agent",
     )
@@ -82,6 +82,10 @@ async def signup_app(session_factory):
         gateway_oidc_provider_label=None,
         gateway_oidc_login_options=[],
         hosted_launch_capacity=2,
+        hosted_launch_capacity_per_workspace=0,
+        hosted_pool_size=0,
+        hosted_provisions_per_minute=5,
+        hosted_box_ceiling=50,
         hosted_agents_enabled=True,
         gateway_onboarding_enabled=False,
         keyring=TEST_KEYRING,

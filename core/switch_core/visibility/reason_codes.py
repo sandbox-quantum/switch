@@ -11,11 +11,9 @@ from enum import StrEnum
 
 
 class StopReason(StrEnum):
-    MEMORY_GUARD = "memory_guard"
     BOX_RESTARTED = "box_restarted"
     BOX_MOVED = "box_moved"
     WAITING_TOO_LONG = "waiting_too_long"
-    DAILY_CAP_REACHED = "daily_cap_reached"
     # A workspace budget (`usage_budgets`, checked by `BudgetGuard`) is used up.
     BUDGET_REACHED = "budget_reached"
     PAUSED_BY_SWITCH = "paused_by_switch"

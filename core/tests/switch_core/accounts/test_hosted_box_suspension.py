@@ -40,6 +40,7 @@ from tests.switch_core.gateway.test_cloud_controller_machines import (
     _prepare,
 )
 from tests.switch_core.gateway.test_machine_revival import _claim
+from tests.switch_core.hosted_machine_helpers import no_revoke
 from tests.switch_core.management.harness import (
     Harness,
     add_member,
@@ -174,6 +175,9 @@ async def test_while_suspended_nothing_starts_wakes_or_enrols_the_box(
                     owner_id=owner.id,
                     capacity=5,
                     now=datetime.now(UTC),
+                    revoke=no_revoke,
+                    per_workspace=0,
+                    pool_pick=None,
                 )
             assert str(refused.value) == MACHINE_SUSPENDED
             await session.rollback()
@@ -254,7 +258,7 @@ async def test_a_v1_machine_is_left_to_the_suspensions_own_refusals(
     """A v1 machine's controller is already refused and disconnected by the
     suspension; its machine row isn't touched, exactly as before."""
     owner = await add_member(harness.session_factory, "ada")
-    machine = await _claim(harness.session_factory, owner)  # a `vm`
+    machine = await _claim(harness.session_factory, owner, backend="vm")
     async with harness.session_factory() as session:
         before = await CloudMachineStore().get(session, machine.id)
         assert before is not None

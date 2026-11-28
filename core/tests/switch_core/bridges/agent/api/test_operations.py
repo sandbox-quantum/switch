@@ -372,19 +372,14 @@ async def test_an_agent_cannot_name_the_key_in_its_own_arguments() -> None:
     assert "client_txn_id" in str(excinfo.value)
 
 
-@pytest.mark.parametrize(("v2", "status"), [(True, 503), (False, 400)])
 async def test_a_post_while_the_agents_client_is_not_running_yet_is_a_503(
-    monkeypatch: pytest.MonkeyPatch, v2: bool, status: int
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Just after Core starts, before the agent's client is up: the host sends
-    the post again rather than taking it as refused. With hosted agents
-    v2 off, upstream's 400, as for any ValueError."""
+    the post again rather than taking it as refused."""
     from fastapi import HTTPException
 
-    from switch_core import hosted_v2
     from switch_core.bridges.agent.api import operations as api_operations
-
-    monkeypatch.setattr(hosted_v2, "_process_on", v2)
     from switch_core.bridges.agent.protocol.agent_core import AgentClientNotRunning
 
     async def not_yet(**_kwargs: object) -> object:
@@ -407,4 +402,4 @@ async def test_a_post_while_the_agents_client_is_not_running_yet_is_a_503(
             body={"body": "hi"},
             connection_id="conn-9",
         )
-    assert excinfo.value.status_code == status
+    assert excinfo.value.status_code == 503

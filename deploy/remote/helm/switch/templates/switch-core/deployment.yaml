@@ -118,19 +118,12 @@ spec:
             - name: HOSTED_IDLE_STOP_MINUTES
               value: {{ .Values.switchCore.hostedIdleStopMinutes | quote }}
             {{- end }}
+            {{- /* hostedBoxProvisioning no longer turns anything on in switch-core,
+                   which runs hosted agents only with a box cluster (the hosted
+                   controller config's provisioner_token). It still decides
+                   whether hostedPoolSize is passed, so values written for it
+                   render as before. */}}
             {{- if eq (toString .Values.switchCore.hostedBoxProvisioning) "true" }}
-            {{- if not .Values.switchCore.hostedControllerSecret }}
-            {{- fail "switchCore.hostedBoxProvisioning needs switchCore.hostedControllerSecret: hosted agents v2 runs boxes through the hosted controller config." }}
-            {{- end }}
-            {{- if le (int .Values.switchCore.hostedLaunchCapacity) 0 }}
-            {{- fail "switchCore.hostedBoxProvisioning needs switchCore.hostedLaunchCapacity above 0: with 0 no box is ever made." }}
-            {{- end }}
-            {{- if not (and (has "hosted_agents" .Values.switchCore.featureFlags.enabled) (has "agent_management" .Values.switchCore.featureFlags.enabled)) }}
-            {{- fail "switchCore.hostedBoxProvisioning needs \"hosted_agents\" and \"agent_management\" in switchCore.featureFlags.enabled: without them no box is ever made." }}
-            {{- end }}
-            {{- if not .Values.switchCore.visibilityKeyedIdKeySecret }}
-            {{- fail "switchCore.hostedBoxProvisioning needs switchCore.visibilityKeyedIdKeySecret: without the keyed-id key the Hosted area and the box operator's actions can't work." }}
-            {{- end }}
             {{- with .Values.switchCore.hostedPoolSize }}
             {{- $pool := int . }}
             {{- $ceiling := int (default 50 $.Values.switchCore.hostedBoxCeiling) }}
@@ -143,8 +136,6 @@ spec:
             - name: HOSTED_POOL_SIZE
               value: {{ . | quote }}
             {{- end }}
-            - name: HOSTED_BOX_PROVISIONING
-              value: "true"
             {{- end }}
             {{- with .Values.switchCore.hostedProvisionsPerMinute }}
             - name: HOSTED_PROVISIONS_PER_MINUTE

@@ -3211,16 +3211,24 @@ class TestBudgetRoutes:
         assert [r.action for r in rows] == ["budget.created"]
 
     @pytest.mark.usefixtures("hosted_v2_on")
-    async def test_the_daily_ai_cap_is_set_as_a_budget_and_nudges_after_commit(
+    async def test_a_daily_ai_cap_can_t_be_set_but_an_old_one_still_reads(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """The admin sets the daily AI cap; the route bumps the
-        workspace's hosted controllers and nudges them only after the commit.
-        Changing it to anything but a day is refused."""
+        """The daily AI cap is gone: a new `hosted_ai_calls` budget is refused.
+        One a workspace set before it went still lists and can be removed."""
         _, token = await self._admin(session_factory, "daily-cap-admin")
+        async with tenant_session(session_factory, TENANT_A) as session:
+            old = await BudgetStore().create(
+                session,
+                tenant_id=TENANT_A,
+                agent_id=None,
+                metric=UsageMetric.HOSTED_AI_CALLS,
+                model="",
+                amount_limit=300,
+                period_hours=24,
+            )
+            await session.commit()
         app = _app(session_factory)
-        nudged: list[tuple[str, str, int]] = []
-        app.state.assignment_nudge = lambda t, c, r: nudged.append((t, c, r))
         async with _client(app, token) as client:
             created = await client.post(
                 f"/tenants/{TENANT_A}/budgets",
@@ -3232,90 +3240,14 @@ class TestBudgetRoutes:
                     "period_hours": 24,
                 },
             )
-            assert created.status_code == 201, created.text
-            budget_id = created.json()["id"]
-            stretched = await client.put(
-                f"/tenants/{TENANT_A}/budgets/{budget_id}",
-                json={"amount_limit": 300, "period_hours": 720},
-            )
-            lowered = await client.put(
-                f"/tenants/{TENANT_A}/budgets/{budget_id}",
-                json={"amount_limit": 200, "period_hours": 24},
-            )
-            weekly = await client.post(
-                f"/tenants/{TENANT_A}/budgets",
-                json={
-                    "agent_id": None,
-                    "metric": "hosted_ai_calls",
-                    "model": "",
-                    "amount_limit": 300,
-                    "period_hours": 168,
-                },
-            )
-        assert stretched.status_code == 422
-        assert lowered.status_code == 200
-        assert weekly.status_code == 422
-        # No hosted controllers in this workspace here: nothing to nudge, and no error.
-        assert nudged == []
-
-    async def test_with_v2_off_its_budgets_are_refused_and_nothing_is_audited(
-        self,
-        session_factory: async_sessionmaker[AsyncSession],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The v1/v2 switch: with hosted agents v2 off, the daily
-        AI cap and awake-time budgets don't exist (422, as an unknown metric
-        before v2), a v1 budget is made as before with no Activity entry or
-        nudge, and the audit log is upstream's, with no name keys."""
-        from switch_core import hosted_v2
-        from switch_core.db.audit import AuditAction, record_audit_event
-
-        monkeypatch.setattr(hosted_v2, "_process_on", False)
-        user_id, token = await self._admin(session_factory, "budget-v2-off")
-        app = _app(session_factory)
-        nudged: list[tuple[str, str, int]] = []
-        app.state.assignment_nudge = lambda t, c, r: nudged.append((t, c, r))
-        terms = {"agent_id": None, "model": "", "amount_limit": 300, "period_hours": 24}
-        async with _client(app, token) as client:
-            refused = [
-                await client.post(
-                    f"/tenants/{TENANT_A}/budgets", json={**terms, "metric": metric}
-                )
-                for metric in ("hosted_ai_calls", "awake_minutes")
-            ]
-            made = await client.post(
-                f"/tenants/{TENANT_A}/budgets", json={**terms, "metric": "turns"}
-            )
-            async with tenant_session(session_factory, TENANT_A) as session:
-                await record_audit_event(
-                    session,
-                    tenant_id=TENANT_A,
-                    actor_user_id=user_id,
-                    action=AuditAction.MEMBER_ROLE_CHANGED,
-                    target_type="user",
-                    target_id=user_id,
-                    details={},
-                )
-                await session.commit()
-            audit = await client.get(f"/tenants/{TENANT_A}/audit-events")
-        for response in refused:
-            assert response.status_code == 422, response.text
-            assert response.json()["detail"][0]["loc"] == ["body", "metric"]
-        assert made.status_code == 201, made.text
-        assert await self._budget_audit(session_factory) == []
-        assert nudged == []
-        assert audit.status_code == 200, audit.text
-        # Upstream's entry exactly: no name keys at all.
-        [entry] = audit.json()
-        assert set(entry) == {
-            "id",
-            "occurred_at",
-            "actor_user_id",
-            "action",
-            "target_type",
-            "target_id",
-            "details",
-        }
+            listed = await client.get(f"/tenants/{TENANT_A}/budgets")
+            removed = await client.delete(f"/tenants/{TENANT_A}/budgets/{old.id}")
+        assert created.status_code == 422, created.text
+        assert listed.status_code == 200, listed.text
+        assert [(b["metric"], b["amount_limit"]) for b in listed.json()] == [
+            ("hosted_ai_calls", 300)
+        ]
+        assert removed.status_code == 204, removed.text
 
     async def test_with_v2_on_the_audit_log_names_the_workspaces_members(
         self,
@@ -3324,10 +3256,10 @@ class TestBudgetRoutes:
     ) -> None:
         """The v1/v2 switch: with hosted agents v2 on, each entry carries the
         member names over HTTP, not just in the handler's return value."""
-        from switch_core import hosted_v2
+        from switch_core import box_cluster
         from switch_core.db.audit import AuditAction, record_audit_event
 
-        monkeypatch.setattr(hosted_v2, "_process_on", True)
+        monkeypatch.setattr(box_cluster, "_process_on", True)
         user_id, token = await self._admin(session_factory, "audit-v2-on")
         async with _client(_app(session_factory), token) as client:
             async with tenant_session(session_factory, TENANT_A) as session:

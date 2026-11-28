@@ -1,50 +1,52 @@
-# Switch Cloud machines on EC2
+# Switch Cloud machines
 
-A Switch Cloud machine is an EC2 VM, one per user whatever workspaces they
-use it in, that runs the standard `switch-agent-controller`, the program a
-laptop or an SSH host runs agents with, once per workspace. The user's managed
-agents placed on it run there, each as a Linux user of its own. Each machine
-has a retained, encrypted EBS data disk.
+Every new Switch Cloud machine is a box. Hosted agents v1, where a machine is
+an EC2 VM the v1 hosted controller runs (`chart/`, `machine/`, `terraform/`),
+is frozen: a person who already has a v1 machine keeps it, running, waking and
+managed as before, and no new v1 machine is made. The rest of this section
+describes boxes.
 
-This directory holds what runs the machines:
+A box is a Kubernetes StatefulSet named `box` in a
+namespace of its own (`agents-user-<keyed id>`) on the box cluster, one per
+user whatever workspaces they use it in. It runs the standard
+`switch-agent-controller`, the program a laptop or an SSH host runs agents
+with, in box mode (`--box` and the image's `/etc/switch/box` marker). The user's managed agents placed on it run there, each as a Linux
+user of its own. Each box keeps its agents' disk on a volume (a PVC) that
+sleeping never touches.
 
-- `controller/`: the hosted controller, a Python service on the existing EKS
-  cluster that creates, starts, stops and deletes the VMs and their disks. It
-  keeps desired and observed state in SQLite, behind an exclusive
-  reconciliation lock. Operator commands queue desired state for it; it exposes
-  no web API.
-- `machine/`: the machine image and its boot. See [its README](machine/README.md)
-  for how a machine enrolls its controller and starts.
-- `terraform/`: a separate VPC, a private subnet with NAT egress and no inbound
-  access, the machines' one instance role, which holds no permissions, and an
-  IRSA role for the hosted controller.
-- `chart/`: the hosted controller's chart: a digest-pinned image, one replica
-  with a Recreate rollout, a private retained volume for its database, and no
-  exposed port.
+This directory holds what runs the boxes:
 
-Machines never join the cluster. They reach Switch over its public,
-authenticated HTTPS API, as any agent controller does.
+- `controller/`: the hosted controller package. Its box operator makes a
+  user's box from one fixed template when Core asks; its box scaler scales the
+  box to match the state Core wants and reports back; its egress lists, node
+  gate, placer and remover keep each box to its own network allowances,
+  machines and lifetime.
+- `box/image/`: the box image and the controller update image.
+- `contract/`: what the deployment repository checks its cluster manifests
+  against.
+
+The box cluster's own manifests and policies live in the deployment
+repository. Boxes reach Switch over its public, authenticated HTTPS API, as any
+agent controller does.
 
 ## How a user gets a machine
 
 Picking "Switch Cloud" in Switch Console claims the user's machine
-(`POST /gateway/hosted-machines/ensure`), or joins it from this workspace when
-the user already has one, and creates a managed agent on the machine's
-controller for this workspace once it has reported. A machine serves up to 8
-workspaces. Self sign-up claims one too, so it warms
-while the user signs in. The hosted controller polls Core for the machines that
-should exist, creates the data volume, and launches the VM with a bundle as its
-user data. The machine runs one agent controller per workspace seated on it,
-and the bundle (version 5) lists them in Core's order, each under its seat key
-with either the controller it enrolled as or a one-time enrollment code. The
-machine enrolls each controller with its code, and their status reports are
-its heartbeat from then on. The machine sleeps only once every controller on it reports no session,
-and its disk is retained only once no workspace has an agent on it. An
-instance's user data is set when it launches:
-when a controller must enroll again or a workspace joins the machine, the hosted controller stops the instance if it is running, terminates
-it and launches a new one with the new bundle, on the same data volume. A
-bundle that only names the controllers enrolled with the codes the instance
-already holds does not replace the instance.
+(`POST /gateway/hosted-machines/ensure`) and creates a managed agent on the
+machine's controller for this workspace once it has reported. Someone who
+already has a live v1 machine is served by it, as before, and never gets a box.
+Anyone else gets a box; on a server with no box cluster (no `provisioner_token`
+in the hosted controller config, or no keyed-id key) the claim says "Hosted
+agents aren't available here yet." With a warm pool (`HOSTED_POOL_SIZE`), the claim takes a box made
+ahead of time; otherwise Core writes a provision action and the box operator
+makes the box (`HOSTED_BOX_PROVISIONING`, capped by
+`HOSTED_PROVISIONS_PER_MINUTE` and `HOSTED_BOX_CEILING`). A box is given only to
+someone who presses start: neither sign-up nor sign-in claims one when a warm
+pool is configured. The box scaler gives the box a one-time enrollment code from Core and starts
+it; the controller enrolls with it, and its status reports are the machine's
+heartbeat from then on. The machine sleeps only once every controller on it
+reports no session, and its disk is retained only once no workspace has an
+agent on it.
 
 Provider logins are given to the machine on demand from Switch Console, sealed
 to its controller's own key: Core relays only ciphertext.
@@ -316,25 +318,25 @@ stays until you delete it.
 
 ## Machine lifecycle
 
-When the last managed agent leaves a user's machine, its instance is
-terminated and its disk kept for `HOSTED_DISK_RETENTION_DAYS`. A new agent in
-that time starts the machine again on the kept disk; after it, the disk is
-deleted and the machine with it.
+When the last managed agent leaves a user's machine, its box is scaled to
+zero, or a v1 machine's instance terminated, and its disk kept for
+`HOSTED_DISK_RETENTION_DAYS`. A new agent in that time starts the machine again
+on the kept disk; after it, the disk is deleted and the machine with it.
 
 An idle machine is put to sleep after `HOSTED_IDLE_STOP_MINUTES`: its
 controller reports no running session and nothing kept it active. A message
 addressed to one of its agents wakes it, and the room is told so. A machine its
 owner stopped stays stopped.
 
-A machine installs security updates every day and reboots itself within 7 days
-of one that needs a reboot, a new kernel say, even while sessions run
-([machine/README.md](machine/README.md), "Security updates and reboots"). The
-instance stays running for EC2 and the hosted controller; its controllers stop
-reporting for the minute or two the reboot takes.
+A box is never rebooted by the agent; a new box image is rolled out by the
+platform. A v1 machine installs security updates every day and reboots itself
+within 7 days of one that needs a reboot, a new kernel say, even while sessions
+run ([machine/README.md](machine/README.md), "Security updates and reboots");
+its controllers stop reporting for the minute or two the reboot takes.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `HOSTED_LAUNCH_CAPACITY` | 0 | Machines at once, at most 100. 0 disables. |
+| `HOSTED_LAUNCH_CAPACITY` | 0 | Boxes at once, at most 100. 0 disables. v1 machines are not counted. |
 | `HOSTED_IDLE_STOP_MINUTES` | 30 | Idle minutes before a machine sleeps. 0 disables. At most 1440. |
 | `HOSTED_DISK_RETENTION_DAYS` | 7 | Days a disk is kept after its last agent leaves. 1–90. |
 

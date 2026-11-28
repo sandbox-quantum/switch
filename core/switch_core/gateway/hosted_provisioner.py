@@ -33,6 +33,7 @@ from fastapi import Path as PathParam
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.box_cluster import box_cluster_on
 from switch_core.config import SwitchConfig
 from switch_core.db.models import CloudMachine
 from switch_core.db.stores import hosted_pool_store
@@ -46,7 +47,6 @@ from switch_core.visibility.box_provision import (
     ProvisionRefused,
     action_is_open,
     box_allowed,
-    box_provisioning_on,
     claim_provision,
     record_pool_box_gone,
     record_provision_result,
@@ -228,7 +228,7 @@ async def _claim_once(
     async def is_blocked(machine_id: str) -> bool:
         # The gates again, at claim: provisioning turned off, or
         # the owner paused, turned off or off the lists since Core asked.
-        if not box_provisioning_on(config):
+        if not box_cluster_on():
             return True
         machine = await session.get(CloudMachine, machine_id)
         return machine is None or not await box_allowed(
@@ -238,10 +238,7 @@ async def _claim_once(
     async def pool_blocked(pool_box_id: str) -> bool:
         # A pool box has no person: only the server's switches gate it, and
         # it must still be the `requested` row this action is for.
-        if (
-            not box_provisioning_on(config)
-            or getattr(config, "hosted_pool_size", 0) <= 0
-        ):
+        if not box_cluster_on() or getattr(config, "hosted_pool_size", 0) <= 0:
             return True
         row = await hosted_pool_store.get(session, pool_box_id)
         return row is None or row.state != "requested"

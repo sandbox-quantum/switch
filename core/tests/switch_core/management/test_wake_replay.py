@@ -270,24 +270,11 @@ async def test_a_revived_box_counts_from_shortly_before_it_was_started(
     assert _bodies(events) == ["the one that revived it"]
 
 
-async def test_a_controller_on_its_owners_own_computer_starts_at_its_head(
+@pytest.mark.usefixtures("box_cluster_off")
+async def test_without_a_box_cluster_a_cloud_machine_starts_at_its_head(
     harness: Harness,
 ) -> None:
-    controller, agent_id, room_id = await _setup(harness)
-    await _set_last_seen(harness, controller.controller_id, _ago(minutes=40))
-    seq = await _ask(harness, agent_id, room_id, "while the laptop was shut")
-
-    attached, events = await _reconnect(harness, controller, {agent_id: "head"}, 2)
-
-    assert attached["from_seq"] == seq
-    assert events == []
-
-
-async def test_with_hosted_agents_v2_off_it_starts_at_its_head(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from switch_core import hosted_v2
-
+    """No box cluster configured (v1 as it runs today): no replay."""
     controller, agent_id, room_id = await _setup(harness)
     await _on_cloud_machine(harness, controller, last_seen_at=_ago(minutes=40))
     async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
@@ -298,7 +285,19 @@ async def test_with_hosted_agents_v2_off_it_starts_at_its_head(
         )
         await session.commit()
     seq = await _ask(harness, agent_id, room_id, "v1 as before")
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
+
+    attached, events = await _reconnect(harness, controller, {agent_id: "head"}, 2)
+
+    assert attached["from_seq"] == seq
+    assert events == []
+
+
+async def test_a_controller_on_its_owners_own_computer_starts_at_its_head(
+    harness: Harness,
+) -> None:
+    controller, agent_id, room_id = await _setup(harness)
+    await _set_last_seen(harness, controller.controller_id, _ago(minutes=40))
+    seq = await _ask(harness, agent_id, room_id, "while the laptop was shut")
 
     attached, events = await _reconnect(harness, controller, {agent_id: "head"}, 2)
 

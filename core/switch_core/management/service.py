@@ -39,6 +39,7 @@ from switch_core.agent_icon import (
     normalise_icon_url,
 )
 from switch_core.archived_workspace import WORKSPACE_ARCHIVED, is_archived
+from switch_core.box_cluster import box_cluster_on, controller_backend, on_box
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.controller_presence import (
@@ -82,7 +83,6 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
-from switch_core.db.stores.budget_store import hosted_daily_cap
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
@@ -93,7 +93,6 @@ from switch_core.gateway.cloud_controllers import (
     wake_controller_machine,
 )
 from switch_core.gateway.known_agents import KnownAgent, provider_known_agent
-from switch_core.hosted_v2 import controller_backend, process_hosted_v2, v2_box
 from switch_core.management import reason_codes, tokens
 from switch_core.management.bindings import binding_of
 from switch_core.management.device_identity import device_hash, is_device_id
@@ -129,7 +128,6 @@ from switch_core.providers.registry import (
 from switch_core.user_changes import MACHINE, MANAGED_AGENT, UserChangePublisher
 from switch_core.visibility.awake_usage import (
     record_awake_minutes,
-    record_hosted_ai_calls,
 )
 from switch_core.visibility.stop_reason_sources import (
     ReasonSignals,
@@ -139,25 +137,6 @@ from switch_core.visibility.stop_reason_sources import (
 
 _INSTALLS = TemplateInstallStore()
 logger = logging.getLogger(__name__)
-
-# Controllers whose old free-text memory note has been dropped, so each is
-# logged once per Core process rather than on every report.
-_OLD_NOTE_DROPPED: set[str] = set()
-
-
-def _note_dropped(controller_id: str) -> None:
-    """Count an older controller's dropped free-text memory note: its id only,
-    never the text, once per controller."""
-    if controller_id in _OLD_NOTE_DROPPED:
-        return
-    _OLD_NOTE_DROPPED.add(controller_id)
-    logger.info(
-        "Controller %s sent an old free-text memory note; it was dropped, not "
-        "stored (%d controllers so far)",
-        controller_id,
-        len(_OLD_NOTE_DROPPED),
-    )
-
 
 OPERATION_LEASE = timedelta(minutes=5)
 # An operation still open this long after it was created is expired rather
@@ -416,20 +395,25 @@ class ManagementService:
         which is left to it: the new one is a device of its own. The rows are
         locked until the caller commits.
 
-        With hosted agents v2 on, a Switch Cloud machine's controller (kind
-        `ec2`, every v2 box's) is never taken over, whatever device id is
-        sent: a box enrolls again only after its controller was revoked or
-        lost, and v2's own path (`_move_placed`, under the box's revocation
-        and removal rules) is the only one that moves its agents."""
-        if same_device is None or (process_hosted_v2() and kind == "ec2"):
+        A box's controller is never taken over, whatever device id is sent: a
+        box enrolls again only after its controller was revoked or lost, and
+        the box's own path (`_move_placed`, under the box's revocation and
+        removal rules) is the only one that moves its agents. A v1 machine's
+        controller (kind `ec2` too) is taken over as before boxes: hosted
+        agents v1 is frozen, not changed."""
+        if same_device is None:
             return None
-        twins = await self.controllers.lock_same_device(
-            session,
-            tenant_id,
-            owner_id=owner_id,
-            kind=kind,
-            device_hash=same_device,
-        )
+        twins = [
+            twin
+            for twin in await self.controllers.lock_same_device(
+                session,
+                tenant_id,
+                owner_id=owner_id,
+                kind=kind,
+                device_hash=same_device,
+            )
+            if not (twin.kind == "ec2" and await on_box(session, tenant_id, twin.id))
+        ]
         if not twins:
             return None
         leases = await self.leases(session)
@@ -703,8 +687,8 @@ class ManagementService:
             replaced = workspace.controller_id
             workspace.controller_id = controller.id
             # The code is spent: forget the encrypted copy kept for retried
-            # prepares. A v2 box's only: a v1 machine keeps it, as upstream.
-            if process_hosted_v2() and machine is not None and machine.backend == "box":
+            # prepares. A box's only: a v1 machine keeps it, as upstream.
+            if machine is not None and machine.backend == "box":
                 workspace.enrollment_code_encrypted = None
                 workspace.enrollment_code_revision = None
             # A box enrolling while an operator moves the machine from v1 takes
@@ -838,23 +822,13 @@ class ManagementService:
             session, principal.tenant_id, controller.id
         )
         archived = await is_archived(session, principal.tenant_id)
-        assignment: dict[str, Any] = {
+        return {
             "revision": controller.assignment_revision,
             "agents": [
                 assignment_entry(row, agent, workspace_archived=archived)
                 for row, agent in rows
             ],
         }
-        if controller.kind == "ec2" and await v2_box(
-            session, principal.tenant_id, controller.id
-        ):
-            # The workspace's daily AI cap for this box's gateway,
-            # or null with none set. A person's own computer never gets one.
-            # With hosted agents v2 off, absent, as before v2.
-            assignment["gateway_daily_cap"] = await hosted_daily_cap(
-                session, principal.tenant_id
-            )
-        return assignment
 
     async def assignment_revision(
         self, session: AsyncSession, principal: ControllerPrincipal
@@ -888,43 +862,30 @@ class ManagementService:
         not on every report: free disk and memory, and the times a report and
         its provider checks were taken, move on every one of them.
         """
-        # The v1/v2 switch: with v2 off, the report is stored as before v2, with
-        # no read of the bound agents, no lock on the previous report and every
-        # field kept as sent.
-        v2 = process_hosted_v2()
         status = report.model_dump(mode="json", exclude_unset=True)
-        if report.machine._dropped_old_note:
-            _note_dropped(principal.controller_id)
-        bound_clients: dict[str, str] = {}
-        previous_seen_at: datetime | None = None
-        previous_status: dict[str, Any] | None = None
         seen_at = self.now()
-        if v2:
-            # A session state is kept only for agents bound to this controller,
-            # so a box can't set "Resting" or "Running" on anyone else's agent.
-            # (Each agent's view reads only its own controller's report anyway.)
-            bound_clients = {
-                agent.id: agent.client_id
-                for _row, agent in await self.definitions.list_for_controller(
-                    session, principal.tenant_id, principal.controller_id
-                )
-            }
-            for entry in status.get("agents", []):
-                if entry.get("agent_id") not in bound_clients and "session" in entry:
-                    entry.pop("session")
-                    # Not an error a box can cause by accident: worth a look.
-                    logger.warning(
-                        "Controller %s reported a session state for agent %s, "
-                        "which is not bound to it; the state was dropped",
-                        principal.controller_id,
-                        entry.get("agent_id"),
-                    )
-            (
-                previous_seen_at,
-                previous_status,
-            ) = await self.controllers.lock_previous_report(
+        # A session state is kept only for agents bound to this controller,
+        # so a box can't set "Resting" or "Running" on anyone else's agent.
+        # (Each agent's view reads only its own controller's report anyway.)
+        bound_clients = {
+            agent.id: agent.client_id
+            for _row, agent in await self.definitions.list_for_controller(
                 session, principal.tenant_id, principal.controller_id
             )
+        }
+        for entry in status.get("agents", []):
+            if entry.get("agent_id") not in bound_clients and "session" in entry:
+                entry.pop("session")
+                # Not an error a box can cause by accident: worth a look.
+                logger.warning(
+                    "Controller %s reported a session state for agent %s, "
+                    "which is not bound to it; the state was dropped",
+                    principal.controller_id,
+                    entry.get("agent_id"),
+                )
+        previous_seen_at, _ = await self.controllers.lock_previous_report(
+            session, principal.tenant_id, principal.controller_id
+        )
         controller = await self._principal_controller(session, principal)
         before = _status_signature(controller.status)
         new_status = status
@@ -975,28 +936,17 @@ class ManagementService:
                 new_status.get("providers", []),
                 report.controller.started_at,
             )
-        on_v2_box = controller.kind == "ec2" and await v2_box(
+        on_a_box = controller.kind == "ec2" and await on_box(
             session, principal.tenant_id, controller.id
         )
-        if stored and on_v2_box:
+        if stored and on_a_box:
             # Hosted agents' awake time, for usage and awake-time budgets.
-            # With hosted agents v2 off, not recorded, as before v2.
             await record_awake_minutes(
                 session,
                 tenant_id=principal.tenant_id,
                 previous_seen_at=previous_seen_at,
                 seen_at=seen_at,
                 agents=status.get("agents", []),
-                bound=bound_clients,
-            )
-            # AI calls, as the day's rise, per agent (display only).
-            await record_hosted_ai_calls(
-                session,
-                tenant_id=principal.tenant_id,
-                previous_seen_at=previous_seen_at,
-                seen_at=seen_at,
-                previous_status=previous_status,
-                status=status,
                 bound=bound_clients,
             )
         await session.commit()
@@ -1007,11 +957,11 @@ class ManagementService:
         return {
             "assignment_revision": revision,
             "report_within_s": self.settings.status_interval_seconds,
-            # v2's "waiting too long" limit, for a v2 box only; absent for any
-            # other controller and with v2 off, as before v2 (sweep row 6).
+            # The "waiting too long" limit, for a box only; absent for any
+            # other controller.
             **(
                 {"wait_limit_seconds": self.settings.wait_limit_seconds}
-                if on_v2_box
+                if on_a_box
                 else {}
             ),
             "controller_release": controller_release_view(
@@ -1037,8 +987,8 @@ class ManagementService:
         that lands in between finds the new connection named there, or finds
         the earlier one while this process still holds only that one.
 
-        With hosted agents v2 off, a v2 box's controller can't reconnect."""
-        _refuse_box_while_v2_off(
+        Without a box cluster, a box's controller can't reconnect."""
+        _refuse_box_without_cluster(
             await _controller_backend(
                 session, principal.tenant_id, principal.controller_id
             )
@@ -1472,8 +1422,7 @@ class ManagementService:
                 # Already revoked for good: nothing to do.
                 return
             # Revoked by a pause or turn-off: the owner's removal now wins, so
-            # no resume may wake its box again. Whatever the switch says,
-            # so a removal while v2 is off still holds once it's on again.
+            # no resume may wake its box again.
             await self._revoke(session, tenant_id, locked.id)
             await session.commit()
             return
@@ -1787,9 +1736,9 @@ class ManagementService:
     async def own_sealed_login(
         self, session: AsyncSession, principal: ControllerPrincipal, provider: str
     ) -> dict[str, Any]:
-        """The controller's sealed login for `provider`, as it opens it. With
-        hosted agents v2 off, never to a v2 box's controller."""
-        _refuse_box_while_v2_off(
+        """The controller's sealed login for `provider`, as it opens it. Without
+        a box cluster, never to a box's controller."""
+        _refuse_box_without_cluster(
             await _controller_backend(
                 session, principal.tenant_id, principal.controller_id
             )
@@ -1836,8 +1785,7 @@ class ManagementService:
                     controllers[controller.id] = controller
         if templates is None:
             templates = await _INSTALLS.templates_of_agents(session, [agent.id])
-        v2 = process_hosted_v2()
-        if signals is None and v2:
+        if signals is None:
             signals = await load_reason_signals(
                 session,
                 tenant_id,
@@ -1852,10 +1800,6 @@ class ManagementService:
             self.state_of(controller, leases) if controller is not None else None,
             templates.get(agent.id),
         )
-        if not v2 or signals is None:
-            # With hosted agents v2 off, no reason and nothing read for it, as
-            # upstream (sweep row 22).
-            return view
         # Why it stopped: a fixed code and times, worked out by Core.
         provider = (row.definition or {}).get("provider")
         view["stop_reason"] = agent_stop_reason(
@@ -1883,17 +1827,13 @@ class ManagementService:
             session, [agent.id for _, agent in rows]
         )
         # The reasons' signals for every agent at once: four queries, not four
-        # per agent. None with hosted agents v2 off: no reasons then.
-        signals = (
-            await load_reason_signals(
-                session,
-                tenant_id,
-                [agent.id for _, agent in rows],
-                controller_ids=list(controllers),
-                owner_ids=[owner_id],
-            )
-            if process_hosted_v2()
-            else None
+        # per agent.
+        signals = await load_reason_signals(
+            session,
+            tenant_id,
+            [agent.id for _, agent in rows],
+            controller_ids=list(controllers),
+            owner_ids=[owner_id],
         )
         return [
             await self._view(
@@ -2770,11 +2710,12 @@ def _status_signature(status: dict[str, Any] | None) -> dict[str, Any] | None:
 _controller_backend = controller_backend
 
 
-def _refuse_box_while_v2_off(backend: str | None) -> None:
-    """The v1/v2 switch: with hosted agents v2 off, a v2 box's controller is
-    refused: no enrolment, no token, no reconnect, no sealed login, no
-    placement. A v1 machine's, and a person's own computer's, as before."""
-    if backend == "box" and not process_hosted_v2():
+def _refuse_box_without_cluster(backend: str | None) -> None:
+    """Without a box cluster, a box's controller is refused: no enrolment, no
+    token, no reconnect, no sealed login, no placement. A person's own
+    computer's never is. The reason code stays `hosted_v2_off`: released box
+    controllers read it as "keep the given login", never as withdrawn."""
+    if backend == "box" and not box_cluster_on():
         from switch_core.providers.hosted import NOT_AVAILABLE
 
         raise ManagementError(403, reason_codes.HOSTED_V2_OFF, NOT_AVAILABLE)
@@ -2783,10 +2724,7 @@ def _refuse_box_while_v2_off(backend: str | None) -> None:
 async def _machine_code_lifetime(
     session: AsyncSession, workspace: MachineWorkspace
 ) -> timedelta:
-    """15 minutes for a v2 box's code; upstream's 30 for a v1
-    machine's, and for any with v2 off, with nothing read (sweep row 18)."""
-    if not process_hosted_v2():
-        return tokens.V1_MACHINE_ENROLLMENT_CODE_LIFETIME
+    """15 minutes for a box's code; upstream's 30 for a v1 machine's."""
     backend = await session.scalar(
         select(CloudMachine.backend).where(CloudMachine.id == workspace.machine_id)
     )
@@ -2798,11 +2736,11 @@ async def _machine_code_lifetime(
 async def _refuse_for_box(
     session: AsyncSession, backend: str | None, owner_id: str, tenant_id: str
 ) -> None:
-    """The v1/v2 switch at a controller's doors: with v2 off a box is refused
-    (`hosted_v2_off`); with it on, a box is refused while its owner is paused or
-    turned off. Pause and turn-off are v2 powers over boxes, so a v1 machine and
-    a person's own computer are never refused here."""
-    _refuse_box_while_v2_off(backend)
+    """A box at a controller's doors: refused without a box cluster
+    (`hosted_v2_off`), and while its owner is paused or turned off. Pause and
+    turn-off are powers over boxes, so a person's own computer is never refused
+    here."""
+    _refuse_box_without_cluster(backend)
     if backend == "box":
         await _refuse_if_blocked(session, owner_id, tenant_id)
 
@@ -2812,9 +2750,7 @@ async def _refuse_while_migrating(
 ) -> None:
     """No login is given to a machine an operator is moving from v1 to a v2
     box, until the move is done: 409 `migration_in_progress` (the migration
-    design). With hosted agents v2 off there is no move, as before v2."""
-    if not process_hosted_v2():
-        return
+    design)."""
     machine_id = await session.scalar(
         select(MachineWorkspace.machine_id).where(
             MachineWorkspace.tenant_id == tenant_id,
@@ -2842,10 +2778,7 @@ async def _refuse_if_blocked(
     session: AsyncSession, owner_id: str, tenant_id: str
 ) -> None:
     """Refuse a cloud box's controller work for an owner an operator paused, or
-    a workspace admin turned off here. With hosted agents v2
-    off, nothing to refuse, as before v2."""
-    if not process_hosted_v2():
-        return
+    a workspace admin turned off here."""
     from switch_core.visibility.hosted_access import block_reason_in
     from switch_core.visibility.reason_codes import StopReason
 

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Render the switch chart with hosted agents v2 off and on, and check it.
+"""Render the switch chart with and without hosted agents' values, and check it.
 
-Off (the default), switch-core gets no HOSTED_BOX_PROVISIONING. On, with the
-values deploy/remote/helm/switch/values-hosted-v2.example.yaml shows, it gets
-HOSTED_BOX_PROVISIONING and the keyed-id key's path. On without one of the
-values v2 needs, the chart refuses to render and names the missing value:
-these are the promises the chart README's "Hosted agents v2" section makes; a
-render that breaks one fails here, before a cluster finds out.
+switch-core decides whether it runs hosted agents from the hosted controller
+config (its provisioner_token), never from the chart, so no render sets
+HOSTED_BOX_PROVISIONING any more. `hostedBoxProvisioning` is still accepted:
+values that set it render, and with it true the warm pool's size is passed, as
+before. With the values deploy/remote/helm/switch/values-hosted-v2.example.yaml
+shows, switch-core gets the keyed-id key's path. These are the promises the
+chart README's "Hosted agents" section makes; a render that breaks one fails
+here, before a cluster finds out.
 
 Needs `helm` on PATH and PyYAML. Run from the repo root:
 
@@ -68,13 +70,19 @@ def core_env(docs: list[dict[str, Any]]) -> dict[str, Any]:
     return {e["name"]: e.get("value", e.get("valueFrom")) for e in container["env"]}
 
 
-def test_off_by_default_sets_no_v2() -> None:
-    env = core_env(render())
-    assert "HOSTED_BOX_PROVISIONING" not in env
+def test_no_render_sets_the_old_switch() -> None:
+    """switch-core no longer reads HOSTED_BOX_PROVISIONING: no render sets it,
+    whatever `hostedBoxProvisioning` says."""
+    for args in (
+        [],
+        list(ON),
+        [*ON, "--set", "switchCore.hostedBoxProvisioning=false"],
+    ):
+        assert "HOSTED_BOX_PROVISIONING" not in core_env(render(*args)), args
 
 
-#: What only hosted agents v2 adds to switch-core's pod. With v2 off, none of it
-#: may appear, so the default render is the same as before v2.
+#: What only hosted agents' values add to switch-core's pod. Without them, none
+#: of it may appear.
 V2_ENV = (
     "HOSTED_BOX_PROVISIONING",
     "HOSTED_PROVISIONS_PER_MINUTE",
@@ -103,7 +111,7 @@ def core_volumes(docs: list[dict[str, Any]]) -> set[str]:
 
 def test_off_renders_nothing_of_v2() -> None:
     """The default render, and the render with the optional workloads on, carry
-    no v2 setting, volume or mount."""
+    no hosted agents setting, volume or mount."""
     for args in ([], ["-f", OPTIONAL]):
         docs = render(*args)
         env = core_env(docs)
@@ -111,9 +119,8 @@ def test_off_renders_nothing_of_v2() -> None:
         assert not core_volumes(docs) & set(V2_VOLUMES), args
 
 
-def test_on_with_every_value_renders_v2_and_the_key() -> None:
+def test_the_example_values_render_the_key() -> None:
     env = core_env(render(*ON))
-    assert env["HOSTED_BOX_PROVISIONING"] == "true"
     assert env["VISIBILITY_KEYED_ID_KEY_PATH"] == "/etc/switch-visibility/keyed-id.key"
 
 
@@ -140,9 +147,10 @@ def test_the_pool_and_per_workspace_limit_render_only_when_set() -> None:
         assert "HOSTED_POOL_SIZE" not in env, empty
 
 
-def test_with_v2_off_the_default_pool_renders_nothing() -> None:
-    """The pool's default of 10 is v2's: with v2 off, no HOSTED_POOL_SIZE,
-    whatever the pool is set to, and no refusal for a small capacity."""
+def test_without_the_old_switch_the_default_pool_renders_nothing() -> None:
+    """The pool's size is passed only with `hostedBoxProvisioning` true, so
+    values that never set it render no HOSTED_POOL_SIZE, whatever the pool is
+    set to, and no refusal for a small capacity."""
     for args in (
         [],
         ["--set", "switchCore.hostedPoolSize=10"],
@@ -213,59 +221,31 @@ def test_a_pool_leaving_exactly_two_renders() -> None:
     assert env["HOSTED_POOL_SIZE"] == "48"
 
 
-#: Each value v2 needs, emptied, and the words its refusal must contain.
-REFUSALS = [
-    (
-        ["--set", "switchCore.hostedControllerSecret="],
-        "needs switchCore.hostedControllerSecret",
-    ),
-    (
-        ["--set", "switchCore.hostedLaunchCapacity=0"],
-        "needs switchCore.hostedLaunchCapacity above 0",
-    ),
-    (
-        ["--set", "switchCore.featureFlags.enabled={agent_management}"],
-        'needs "hosted_agents" and "agent_management"',
-    ),
-    (
-        ["--set", "switchCore.visibilityKeyedIdKeySecret="],
-        "needs switchCore.visibilityKeyedIdKeySecret",
-    ),
+#: The values a server with a box cluster needs, each emptied. switch-core
+#: decides from its own config now, so the chart no longer refuses any of them.
+EMPTIED = [
+    ["--set", "switchCore.hostedControllerSecret="],
+    ["--set", "switchCore.hostedLaunchCapacity=12"],
+    ["--set", "switchCore.featureFlags.enabled={agent_management}"],
+    ["--set", "switchCore.visibilityKeyedIdKeySecret="],
 ]
 
 
-def test_on_without_a_needed_value_refuses_and_names_it() -> None:
-    for args, words in REFUSALS:
-        error = render_error(*ON, *args)
-        assert words in error, f"{args}: {error}"
-
-
-def test_off_needs_none_of_them() -> None:
-    """With v2 off, a missing keyed-id key still renders: the Hosted area's
-    pages say they're unavailable, as before."""
-    env = core_env(
-        render(
-            *ON,
-            "--set",
-            "switchCore.hostedBoxProvisioning=false",
-            "--set",
-            "switchCore.visibilityKeyedIdKeySecret=",
-        )
-    )
-    assert "HOSTED_BOX_PROVISIONING" not in env
-    assert "VISIBILITY_KEYED_ID_KEY_PATH" not in env
+def test_the_old_switch_refuses_no_render() -> None:
+    for args in EMPTIED:
+        env = core_env(render(*ON, *args))
+        assert "HOSTED_BOX_PROVISIONING" not in env, args
 
 
 TESTS = [
-    test_off_by_default_sets_no_v2,
+    test_no_render_sets_the_old_switch,
     test_off_renders_nothing_of_v2,
-    test_on_with_every_value_renders_v2_and_the_key,
+    test_the_example_values_render_the_key,
     test_the_pool_and_per_workspace_limit_render_only_when_set,
-    test_with_v2_off_the_default_pool_renders_nothing,
+    test_without_the_old_switch_the_default_pool_renders_nothing,
     test_a_pool_leaving_fewer_than_two_for_people_refuses,
     test_a_pool_leaving_exactly_two_renders,
-    test_on_without_a_needed_value_refuses_and_names_it,
-    test_off_needs_none_of_them,
+    test_the_old_switch_refuses_no_render,
 ]
 
 

@@ -25,7 +25,6 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import tenants_of_cloud_machine
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.tenant_context import tenant_scope
 
 MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
@@ -67,8 +66,13 @@ MACHINE_MIGRATING = (
     "Your hosted agents are being moved to a new machine. They'll be back shortly."
 )
 MACHINE_WORKSPACES_FULL = (
-    f"Your cloud machine already serves {MAX_MACHINE_WORKSPACES} workspaces, the most "
-    "it can. Contact your server administrator."
+    "Your cloud machine already serves the most workspaces it can. Remove it "
+    "from one of them to add it here."
+)
+# The same limit, for a box: people know a box as their cloud box.
+BOX_WORKSPACES_FULL = (
+    "Your cloud box already serves the most workspaces it can. Remove it "
+    "from one of them to add it here."
 )
 
 
@@ -105,9 +109,8 @@ _NO_REMOVAL_CLAIMED = ~(
 
 
 def _not_removed() -> tuple:
-    """The revival filter for a box removal: hosted agents v2's only, so a v1
-    claim reads the audit table no more than before."""
-    return (_NO_REMOVAL_CLAIMED,) if process_hosted_v2() else ()
+    """The revival filter for a box removal."""
+    return (_NO_REMOVAL_CLAIMED,)
 
 
 # A machine whose warm pool bind failed (`box_provision.fail_bind`): deleted at
@@ -263,10 +266,30 @@ async def _pool_boxes_counted(session: AsyncSession) -> int:
     return counted or 0
 
 
+class VmRowRefused(RuntimeError):
+    """A claim tried to make or revive a v1 machine, which nothing may."""
+
+
+def _only_boxes(machine: CloudMachine) -> None:
+    """Hosted agents v1 is frozen: its machines keep running, but no claim
+    makes a new one or revives a deleted one. Every machine a claim writes is
+    a box; anything else is a bug, refused before it reaches the database.
+
+    The one exception anywhere is `flip_back`, the migration's operator-only,
+    audited rollback: it puts a migrated person's own machine back on their own
+    retained v1 disk, and never makes a fresh one. `test_box_cluster` pins that
+    no other code writes a `vm` machine."""
+    if machine.backend != "box":
+        raise VmRowRefused(
+            f"A claim may only make a box, not a {machine.backend!r} machine."
+        )
+
+
 async def _refuse_if_workspace_full(session: AsyncSession, per_workspace: int) -> None:
     """Refuse a claim when the bound workspace already has `per_workspace`
-    live machines serving it (0: no limit). Counted on the workspace's own
-    rows, read with it bound, under the caller's `lock_claims`."""
+    live boxes serving it (0: no limit). v1 machines aren't counted: they're
+    frozen, and no new one is made. Counted on the workspace's own rows, read
+    with it bound, under the caller's `lock_claims`."""
     if per_workspace <= 0:
         return
     serving = await session.scalar(
@@ -276,6 +299,7 @@ async def _refuse_if_workspace_full(session: AsyncSession, per_workspace: int) -
         .where(
             MachineWorkspace.tenant_id == require_tenant_id(),
             CloudMachine.state != "deleted",
+            CloudMachine.backend == "box",
         )
     )
     if (serving or 0) >= per_workspace:
@@ -555,26 +579,24 @@ class CloudMachineStore:
         owner_id: str,
         capacity: int,
         now: datetime,
-        revoke: RevokeController | None = None,
-        backend: Literal["vm", "box"] = "vm",
-        per_workspace: int = 0,
-        pool_pick: PoolPick | None = None,
+        revoke: RevokeController,
+        per_workspace: int,
+        pool_pick: PoolPick | None,
     ) -> Claimed:
         """The owner's machine, reused or newly claimed within `capacity`,
         serving the bound workspace, and what the claim changed.
 
-        With `revoke`, an owner whose machine was cleaned up gets that
-        same row back, with the same id, rather than a new one: a user keeps
-        one machine id for life (`_revive`). Without it, as before.
-        `backend` marks a new row (box provisioning claims `box`). A revived row is always a
-        `box`, and an existing live row keeps what it is.
+        An owner whose machine was cleaned up gets that same row back, with the
+        same id, rather than a new one: a user keeps one machine id for life
+        (`_revive`), its old controllers revoked through `revoke`. A new or
+        revived row is always a box: no v1 machine is ever made. A live v1
+        machine keeps serving its owner, joined and started as before.
 
         A machine joining a workspace takes a new revision, so it is prepared
         again with a controller for it. The caller holds `lock_claims`, so no
         other claim can count towards capacity or join the machine meanwhile.
 
-        `per_workspace` (hosted agents v2's `hosted_launch_capacity_per_workspace`;
-        0 for none) caps the live machines serving the bound workspace: a new
+        `per_workspace` (`hosted_launch_capacity_per_workspace`; 0 for none) caps the live machines serving the bound workspace: a new
         machine, or one joining this workspace, is refused at it.
 
         `pool_pick` (the warm pool's T1) runs only where a brand-new `box`
@@ -583,20 +605,20 @@ class CloudMachineStore:
         row takes the pool box's id, in this same transaction, so the claim,
         its audit entry and its bind request commit with the row or not at all.
         """
-        # A paused user claims nothing, box or no box. The
-        # pause is v2's: with it off, no read, as before v2.
-        if process_hosted_v2() and await owner_paused(session, owner_id):
-            raise CloudMachineConflict(MACHINE_PAUSED)
-        # Nor does a person whose machine is being moved to a box: a workspace
-        # joining mid-move would be one the move didn't plan for.
-        if process_hosted_v2() and await owner_moving(session, owner_id):
+        # A person whose machine is being moved to a box claims nothing: a
+        # workspace joining mid-move would be one the move didn't plan for.
+        if await owner_moving(session, owner_id):
             raise CloudMachineConflict(MACHINE_MIGRATING)
-        # Nor does a suspended one (v2 too, as the box stop is).
-        if process_hosted_v2() and await owner_suspended(session, owner_id):
-            raise CloudMachineConflict(MACHINE_SUSPENDED)
         machine = await self.live_for_owner(session, owner_id)
         if machine is not None:
             machine = await self.locked(session, machine.id)
+        # Pause and suspension are powers over boxes: a paused or suspended
+        # person gets no box, while their v1 machine serves them as before.
+        if machine is None or machine.state == "deleted" or machine.backend == "box":
+            if await owner_paused(session, owner_id):
+                raise CloudMachineConflict(MACHINE_PAUSED)
+            if await owner_suspended(session, owner_id):
+                raise CloudMachineConflict(MACHINE_SUSPENDED)
         if machine is not None and machine.state != "deleted":
             if (conflict := claim_conflict(machine, now)) is not None:
                 raise CloudMachineConflict(conflict)
@@ -606,8 +628,13 @@ class CloudMachineStore:
             if joined:
                 serving = await tenants_of_cloud_machine(factory, machine.id)
                 if len(serving) >= MAX_MACHINE_WORKSPACES:
-                    raise CloudMachineConflict(MACHINE_WORKSPACES_FULL)
-                await _refuse_if_workspace_full(session, per_workspace)
+                    raise CloudMachineConflict(
+                        BOX_WORKSPACES_FULL
+                        if machine.backend == "box"
+                        else MACHINE_WORKSPACES_FULL
+                    )
+                if machine.backend == "box":
+                    await _refuse_if_workspace_full(session, per_workspace)
                 workspace = self._add_workspace(session, machine, now)
             if machine.desired_state == "retained":
                 machine.desired_state = "running"
@@ -629,10 +656,11 @@ class CloudMachineStore:
             await session.flush()
             return Claimed(machine=machine, workspace=workspace, change=change)
 
+        # Boxes only: v1 machines are frozen, and `capacity` is for boxes.
         live = await session.scalar(
             select(func.count())
             .select_from(CloudMachine)
-            .where(CloudMachine.state != "deleted")
+            .where(CloudMachine.state != "deleted", CloudMachine.backend == "box")
         )
         # The warm pool's waiting and requested boxes count towards the
         # capacity too: they're machines made, or being made, for people.
@@ -643,11 +671,7 @@ class CloudMachineStore:
             # Taking a waiting pool box adds nothing (it's counted already),
             # so a full server can still give one to someone who would get a
             # new row; never to an owner whose row would be revived.
-            if (
-                pool_pick is None
-                or backend != "box"
-                or (revoke is not None and await self._revivable(session, owner_id))
-            ):
+            if pool_pick is None or await self._revivable(session, owner_id):
                 raise CloudMachineConflict(MACHINES_FULL)
             await _refuse_if_workspace_full(session, per_workspace)
             picked = await pool_pick(session, owner_id, now)
@@ -655,14 +679,13 @@ class CloudMachineStore:
                 raise CloudMachineConflict(MACHINES_FULL)
         else:
             await _refuse_if_workspace_full(session, per_workspace)
-            if revoke is not None:
-                revived = await self._revive(session, factory, owner_id, revoke, now)
-                if revived is not None:
-                    # A new box for an owner with no live machine, as a new
-                    # row is.
-                    machine, workspace = revived
-                    return Claimed(machine=machine, workspace=workspace, change="new")
-        if picked is None and pool_pick is not None and backend == "box":
+            revived = await self._revive(session, factory, owner_id, revoke, now)
+            if revived is not None:
+                # A new box for an owner with no live machine, as a new
+                # row is.
+                machine, workspace = revived
+                return Claimed(machine=machine, workspace=workspace, change="new")
+        if picked is None and pool_pick is not None:
             picked = await pool_pick(session, owner_id, now)
         machine_id = picked or str(uuid4())
         await lock_machine(session, machine_id)
@@ -671,11 +694,12 @@ class CloudMachineStore:
             owner_id=owner_id,
             state="queued",
             desired_state="running",
-            backend=backend,
+            backend="box",
             active_at=now,
             created_at=now,
             updated_at=now,
         )
+        _only_boxes(machine)
         session.add(machine)
         await session.flush()
         workspace = self._add_workspace(session, machine, now)
@@ -750,7 +774,7 @@ class CloudMachineStore:
         # claim that won the race keeps the row deleted.
         from switch_core.visibility.box_removal import removal_claimed
 
-        if process_hosted_v2() and await removal_claimed(session, machine.id):
+        if await removal_claimed(session, machine.id):
             return None
         if machine.backend == "box":
             # Its disk is in use again: withdraw `box_deleted`'s entry, in
@@ -786,6 +810,7 @@ class CloudMachineStore:
             target_id=_keyed_box(machine.id),
             details={"by": "core", "machine_id": machine.id},
         )
+        _only_boxes(machine)
         await session.flush()
         return machine, workspace
 

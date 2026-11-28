@@ -1,11 +1,12 @@
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.box_cluster import box_cluster_on
 from switch_core.config import SwitchConfig
 from switch_core.db.models import (
     AgentController,
@@ -46,20 +47,17 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_session_factory,
 )
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.observability.hosted import record_machine_event, record_pool_claim
 from switch_core.providers.hosted import (
     NOT_AVAILABLE,
     HostedControllerSettings,
     machines_tenant_allowed,
     machines_user_allowed,
-    v2_of,
 )
 from switch_core.telemetry import emit_after_commit
 from switch_core.visibility.box_provision import (
     BOX_MISSING,
     ask_for_box,
-    box_provisioning_on,
     pool_pick_for,
     refill_after_claim,
 )
@@ -89,17 +87,23 @@ def controller_settings(request: Request) -> HostedControllerSettings:
 
 
 def machines_enabled(
-    config: SwitchConfig, settings: HostedControllerSettings, user_id: str
+    config: SwitchConfig,
+    settings: HostedControllerSettings,
+    user_id: str,
+    *,
+    on_v1: bool,
 ) -> bool:
     """Whether this account, in the bound tenant, may use cloud machines on
     this server. An account off `allowed_user_ids` gets the same answer as a
     workspace off `allowed_tenant_ids`, so neither tells it which list it
-    missed."""
+    missed. `on_v1` is whether the person has a live v1 machine, which the lists
+    read as before boxes (`_admits`). A person without one also needs a box
+    cluster (`ensure_machine`): no v1 machine is ever made."""
     return (
         config.hosted_agents_enabled
         and config.hosted_launch_capacity > 0
-        and machines_tenant_allowed(settings, require_tenant_id(), v2=v2_of(config))
-        and machines_user_allowed(settings, user_id, v2=v2_of(config))
+        and machines_tenant_allowed(settings, require_tenant_id(), for_v1=on_v1)
+        and machines_user_allowed(settings, user_id, for_v1=on_v1)
     )
 
 
@@ -122,7 +126,6 @@ def _usage(heartbeat: dict | None, key: str) -> dict | None:
 # the status schema's, so a figure outside them reads as not reported.
 _MAX_BYTES = 1 << 50
 _MAX_SESSIONS = 1000
-_MAX_CALLS = 1_000_000_000
 
 
 def _bounded(value: object, top: int, *, low: int = 0) -> int | None:
@@ -131,25 +134,15 @@ def _bounded(value: object, top: int, *, low: int = 0) -> int | None:
     return value if low <= value <= top else None
 
 
-def next_utc_midnight(now: datetime) -> datetime:
-    """When the gateway's daily count resets: the next 00:00 UTC."""
-    today = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-    return today + timedelta(days=1)
-
-
-def your_cloud(status: dict | None, now: datetime) -> dict:
-    """Your cloud's figures, from the workspace
-    controller's last report: room to work, sessions awake, and AI calls today
-    against the cap. Each is null when the report doesn't carry it."""
+def your_cloud(status: dict | None) -> dict:
+    """Your cloud's figures, from the workspace controller's last report: room
+    to work and sessions awake. Each is null when the report doesn't carry it."""
     machine = (status or {}).get("machine")
     machine = machine if isinstance(machine, dict) else {}
     total = _bounded(machine.get("mem_total_bytes"), _MAX_BYTES, low=1)
     free = _bounded(machine.get("mem_free_bytes"), _MAX_BYTES)
     running = _bounded(machine.get("sessions_running"), _MAX_SESSIONS)
     most = _bounded(machine.get("sessions_max"), _MAX_SESSIONS)
-    cap = _bounded(machine.get("gateway_daily_cap"), _MAX_CALLS, low=1)
-    used = _bounded(machine.get("gateway_calls_today"), _MAX_CALLS)
-    capped = machine.get("gateway_capped")
     return {
         "room": None
         if total is None or free is None
@@ -157,14 +150,6 @@ def your_cloud(status: dict | None, now: datetime) -> dict:
         "awake": None
         if running is None or most is None
         else {"running": running, "max": most},
-        "ai_calls_today": None
-        if cap is None or used is None
-        else {
-            "used": used,
-            "cap": cap,
-            "capped": capped is True or used >= cap,
-            "resets_at": next_utc_midnight(now).isoformat(),
-        },
     }
 
 
@@ -206,11 +191,9 @@ async def machine_summary(
     the workspace's managed agents placed on the controller the machine
     enrolled as here, `controller_id` (null until it has)."""
     now = datetime.now(UTC)
-    # The v1/v2 switch: with v2 off, the summary is exactly as before v2.
-    v2 = process_hosted_v2()
     controller = (
         None
-        if not v2 or workspace.controller_id is None
+        if workspace.controller_id is None
         else await session.get(
             AgentController, workspace.controller_id, populate_existing=True
         )
@@ -219,14 +202,14 @@ async def machine_summary(
     # While an operator moves the machine to a box, the agents stay on the v1
     # controller until the copy is verified: the box isn't ready for them,
     # whatever its first start reports.
-    held_on = workspace.moving_from_controller_id if v2 else None
+    held_on = workspace.moving_from_controller_id
     if held_on is not None and state == "ready":
         state = "provisioning"
     return {
         "machine_id": machine.id,
         "state": state,
         "desired_state": machine.desired_state,
-        "stop_reason": _wire_stop_reason(machine, v2),
+        "stop_reason": _wire_stop_reason(machine),
         "stopped_by_admin": admin_stopped(machine),
         "sleeping": idle_sleeping(machine),
         "revision": machine.revision,
@@ -245,22 +228,16 @@ async def machine_summary(
             session, held_on if held_on is not None else workspace.controller_id
         ),
         "controller_id": workspace.controller_id,
-        # v1 or v2 (`vm` or `box`): Console shows v2's card and states only for
-        # a box. With hosted agents v2 off, absent, as before v2.
-        **({"backend": machine.backend} if v2 else {}),
-        # A v2 box still starting: `{kind, since}`, else null. With v2 off,
-        # absent, as before v2.
-        **({"start": start_summary(machine, state)} if v2 else {}),
+        # `vm` or `box`: Console shows the box card and states only for a box.
+        "backend": machine.backend,
+        # A box still starting: `{kind, since}`, else null.
+        "start": start_summary(machine, state),
         # Your cloud: from this workspace's controller only.
-        **(
-            your_cloud(None if controller is None else controller.status, now)
-            if v2
-            else {}
-        ),
+        **your_cloud(None if controller is None else controller.status),
     }
 
 
-def _wire_stop_reason(machine: CloudMachine, v2: bool) -> str | None:
+def _wire_stop_reason(machine: CloudMachine) -> str | None:
     """`stop_reason` as Console reads it, which takes only `idle` or `owner`:
     an administrator's stop shows there as the owner's, for builds that predate
     `stopped_by_admin`, and so do a pause, a turn-off and a move's hold:
@@ -268,13 +245,52 @@ def _wire_stop_reason(machine: CloudMachine, v2: bool) -> str | None:
     reason codes."""
     if admin_stopped(machine):
         return "owner" if machine.desired_state == "stopped" else None
-    if v2 and machine.stop_reason in ("paused", "turned_off", "migration", "suspended"):
+    if machine.stop_reason in ("paused", "turned_off", "migration", "suspended"):
         return "owner"
     return machine.stop_reason
 
 
+# What a person with no cloud machine is told on a server with no box cluster:
+# no v1 machine is ever made, and there is nothing to make a box on yet.
+BOXES_NOT_YET = "Hosted agents aren't available here yet."
+
+
+def _on_v1(machine: CloudMachine | None) -> bool:
+    """Whether the person's live machine is a v1 one, which keeps serving them."""
+    return machine is not None and machine.backend == "vm"
+
+
 class MachineUnavailable(Exception):
     """This server offers the bound tenant no cloud machines; the message is the 503 detail."""
+
+
+async def _may_have(
+    session: AsyncSession,
+    config: SwitchConfig,
+    settings: HostedControllerSettings,
+    owner_id: str,
+    *,
+    on_v1: bool,
+) -> None:
+    """Refuse the person a machine the server doesn't offer them.
+
+    The box cluster is checked before the lists, so its answer says nothing
+    about them. A person with a live v1 machine keeps being served by it, on
+    v1's reading of the lists; anyone else needs a box, on the closed reading.
+    A v1 machine is never refused for a box power; a box turned off in this
+    workspace by its admin is. A pause is refused by the claim itself
+    (`claim_conflict`).
+    """
+    if not box_cluster_on() and not on_v1:
+        raise MachineUnavailable(BOXES_NOT_YET)
+    if not machines_enabled(config, settings, owner_id, on_v1=on_v1):
+        raise MachineUnavailable(MACHINES_DISABLED)
+    if (
+        not on_v1
+        and await block_reason_in(session, owner_id, require_tenant_id())
+        is StopReason.TURNED_OFF_BY_ADMIN
+    ):
+        raise CloudMachineConflict(MACHINE_TURNED_OFF)
 
 
 async def ensure_machine(
@@ -293,25 +309,18 @@ async def ensure_machine(
     machines and `CloudMachineConflict` when none can be had. The caller
     commits.
     """
-    if settings is None or not machines_enabled(config, settings, owner_id):
+    if settings is None:
         raise MachineUnavailable(MACHINES_DISABLED)
     machines = CloudMachineStore()
-    v2 = process_hosted_v2()
-    # Turned off in this workspace by its admin: no box for it.
-    # A pause is refused by the claim itself (`claim_conflict`).
-    if (
-        v2
-        and await block_reason_in(session, owner_id, require_tenant_id())
-        is StopReason.TURNED_OFF_BY_ADMIN
-    ):
-        raise CloudMachineConflict(MACHINE_TURNED_OFF)
+    on_v1 = _on_v1(await machines.live_for_owner(session, owner_id))
+    await _may_have(session, config, settings, owner_id, on_v1=on_v1)
     await lock_claims(session)
     existing = await machines.live_for_owner(session, owner_id)
     workspace = None
-    if not v2 and existing is not None and existing.backend == "box":
-        # The v1/v2 switch: with v2 off, a v2 box is never claimed, joined,
-        # started or revived, and no VM is made over it.
-        raise MachineUnavailable(MACHINES_DISABLED)
+    if on_v1 and not _on_v1(existing):
+        # Again under the claims lock: a v1 machine deleted meanwhile leaves
+        # only a box, which v1's reading of the lists never grants.
+        await _may_have(session, config, settings, owner_id, on_v1=False)
     if existing is not None:
         existing = await machines.locked(session, existing.id)
         workspace = (
@@ -333,17 +342,12 @@ async def ensure_machine(
         capacity=config.hosted_launch_capacity,
         now=datetime.now(UTC),
         # A user keeps one machine id for life, so the box made for them
-        # matches the namespace they already have. With box provisioning off, as before.
-        revoke=revoke_machine_controller if box_provisioning_on(config) else None,
-        # With box provisioning on, a new machine is a cluster box it makes; off, a v1 one.
-        backend="box" if box_provisioning_on(config) else "vm",
-        # Hosted agents v2's per-workspace cap; with v2 off, none, as before.
-        per_workspace=(
-            getattr(config, "hosted_launch_capacity_per_workspace", 0) if v2 else 0
-        ),
+        # matches the namespace they already have.
+        revoke=revoke_machine_controller,
+        per_workspace=config.hosted_launch_capacity_per_workspace,
         # The warm pool (T1): a brand-new box takes a waiting pool box when
-        # one is free. None with no pool, so every box is made, as before.
-        pool_pick=pool_pick_for(config, settings) if v2 else None,
+        # one is free. None with no pool, so every box is made.
+        pool_pick=pool_pick_for(config, settings),
     )
     if claimed.change is not None:
         emit_after_commit(
@@ -358,7 +362,7 @@ async def ensure_machine(
     if (
         claimed.change == "new"
         and claimed.machine.backend == "box"
-        and getattr(config, "hosted_pool_size", 0) > 0
+        and config.hosted_pool_size > 0
     ):
         record_pool_claim(session, "pool" if claimed.from_pool else "fallback")
     return claimed.machine, claimed.workspace
@@ -387,14 +391,17 @@ async def warm_after_sign_in(
     dashboard first loads. A sign-in with no workspace yet, or a workspace
     that may have none, starts nothing; one that cannot be had is logged and
     never fails the sign-in, and the dashboard says why when it asks again.
-    With v2's box provisioning on and a warm pool, a sign-in starts nothing,
-    as a sign-up doesn't: a pool box goes to a person at their first start."""
+    With a warm pool, a sign-in starts nothing, as a sign-up doesn't: a pool
+    box goes to a person at their first start."""
     if not config.gateway_onboarding_enabled or settings is None or tenant_id is None:
         return
-    if box_provisioning_on(config) and getattr(config, "hosted_pool_size", 0) > 0:
+    if box_cluster_on() and config.hosted_pool_size > 0:
         return
     async with tenant_session(factory, tenant_id) as session:
-        if not machines_enabled(config, settings, user_id):
+        on_v1 = _on_v1(await CloudMachineStore().live_for_owner(session, user_id))
+        if not (box_cluster_on() or on_v1) or not machines_enabled(
+            config, settings, user_id, on_v1=on_v1
+        ):
             return
         try:
             await ensure_machine(session, factory, user_id, config, settings)
@@ -418,8 +425,13 @@ async def owned_machines(
     workspace it is the same machine, joined from there. `available` says
     whether the bound workspace may claim one here at all, so a client can
     offer cloud agents only where claiming one can work."""
-    available = settings is not None and machines_enabled(config, settings, user.id)
     machine = await CloudMachineStore().live_for_owner(session, user.id)
+    on_v1 = _on_v1(machine)
+    available = (
+        settings is not None
+        and (box_cluster_on() or on_v1)
+        and machines_enabled(config, settings, user.id, on_v1=on_v1)
+    )
     workspace = None if machine is None else await workspace_on(session, machine.id)
     if machine is None or workspace is None:
         return {"available": available, "machines": []}
@@ -445,7 +457,7 @@ async def ensure(
         raise HTTPException(503, str(error)) from None
     except CloudMachineConflict as error:
         raise HTTPException(409, str(error)) from None
-    # The person opening hosted agents starts a v2 box start's clock.
+    # The person opening hosted agents starts a box start's clock.
     note_start_click(machine, datetime.now(UTC))
     await session.commit()
     # A new user's machine asks for its box, just after the claim commits.
@@ -504,14 +516,11 @@ async def lifecycle(
         machine.state in RETIRED_STATES or machine.desired_state in RETIRED_STATES
     ):
         raise HTTPException(409, f"machine is {machine.desired_state}")
-    if not process_hosted_v2() and machine.backend == "box":
-        # The v1/v2 switch: with v2 off, a v2 box takes no start, stop or retry.
-        raise HTTPException(409, MACHINES_DISABLED)
     # Paused, or turned off here: every action is refused, so the owner can't
     # undo an operator's pause or an admin's switch.
     blocked = (
         await block_reason_in(session, user.id, workspace.tenant_id)
-        if process_hosted_v2()
+        if machine.backend == "box"
         else None
     )
     if blocked is StopReason.PAUSED_BY_SWITCH:

@@ -12,48 +12,35 @@ from switch_core.gateway.feature_flags import router
 
 
 class _Config:
-    def __init__(self, flags: dict[str, bool], *, v2: bool = False) -> None:
+    def __init__(self, flags: dict[str, bool]) -> None:
         self.feature_flags = flags
-        self.hosted_box_provisioning = v2
 
 
-def _client(flags: dict[str, bool], *, v2: bool = False) -> TestClient:
+def _client(flags: dict[str, bool]) -> TestClient:
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_authenticated_user_id] = lambda: "user-1"
-    app.dependency_overrides[get_config] = lambda: _Config(flags, v2=v2)
+    app.dependency_overrides[get_config] = lambda: _Config(flags)
     return TestClient(app)
 
 
 def test_lists_every_flag_with_its_deployment_state() -> None:
     response = _client({ECOSYSTEM_SHOW_OWNERS: True}).get("/feature-flags")
     assert response.status_code == 200
-    # With hosted agents v2 off (no box provisioning): upstream's list exactly.
     assert response.json() == {
         "flags": [{"key": ECOSYSTEM_SHOW_OWNERS, "enabled": True}]
     }
 
 
-def test_with_v2_off_its_own_flags_are_left_out_even_when_set() -> None:
-    """`hosted_v2` and `hosted_awake_budgets` are
-    absent with the switch off, so the answer is upstream's byte for byte."""
+def test_the_awake_budgets_flag_is_listed_and_hosted_v2_is_not() -> None:
+    """There's no v1/v2 switch to report: `hosted_v2` is never a flag."""
     response = _client({ECOSYSTEM_SHOW_OWNERS: False, HOSTED_AWAKE_BUDGETS: True}).get(
         "/feature-flags"
     )
     assert response.json() == {
-        "flags": [{"key": ECOSYSTEM_SHOW_OWNERS, "enabled": False}]
-    }
-
-
-def test_with_v2_on_both_are_listed() -> None:
-    response = _client(
-        {ECOSYSTEM_SHOW_OWNERS: False, HOSTED_AWAKE_BUDGETS: True}, v2=True
-    ).get("/feature-flags")
-    assert response.json() == {
         "flags": [
             {"key": ECOSYSTEM_SHOW_OWNERS, "enabled": False},
             {"key": HOSTED_AWAKE_BUDGETS, "enabled": True},
-            {"key": "hosted_v2", "enabled": True},
         ]
     }
 

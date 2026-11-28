@@ -636,7 +636,7 @@
       "route": "GET /gateway/hosted-controller/actions",
       "auth": "none",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
@@ -648,7 +648,7 @@
       "route": "GET /gateway/hosted-controller/pool",
       "auth": "operator-token",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
@@ -665,21 +665,21 @@
       "route": "GET /gateway/hosted-provisioner/actions/{action_id}",
       "auth": "none",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "GET /gateway/hosted-provisioner/pool/retiring",
       "auth": "none",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "GET /gateway/hosted-provisioner/removals/{machine_id}",
       "auth": "none",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
@@ -1032,21 +1032,21 @@
       "route": "GET /gateway/shared-cloud/audit-events",
       "auth": "session",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "GET /gateway/shared-cloud/operators",
       "auth": "session",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "GET /gateway/shared-cloud/overview",
       "auth": "session",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
@@ -1482,14 +1482,14 @@
       "route": "POST /gateway/hosted-controller/actions/{action_id}/steps",
       "auth": "none",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "POST /gateway/hosted-controller/cluster",
       "auth": "operator-token",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
@@ -1516,49 +1516,49 @@
       "route": "POST /gateway/hosted-provisioner/actions/{action_id}/result",
       "auth": "none",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "POST /gateway/hosted-provisioner/actions/{action_id}/steps",
       "auth": "none",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "POST /gateway/hosted-provisioner/claim",
       "auth": "none",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "POST /gateway/hosted-provisioner/pool/{pool_box_id}/gone",
       "auth": "none",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "POST /gateway/hosted-provisioner/removals/claim",
       "auth": "none",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "POST /gateway/hosted-provisioner/removals/listed",
       "auth": "none",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "POST /gateway/hosted-provisioner/removals/{machine_id}/gone",
       "auth": "none",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
@@ -1846,35 +1846,35 @@
       "route": "POST /gateway/shared-cloud/boxes/{box_keyed_id}/restart",
       "auth": "session",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "POST /gateway/shared-cloud/machines/{machine_keyed_id}/drain",
       "auth": "session",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "POST /gateway/shared-cloud/reveal",
       "auth": "session",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "POST /gateway/shared-cloud/users/{user_keyed_id}/pause",
       "auth": "session",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
       "route": "POST /gateway/shared-cloud/users/{user_keyed_id}/resume",
       "auth": "session",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {
@@ -2131,7 +2131,7 @@
       "route": "PUT /gateway/tenants/{tenant_id}/hosted-people/{user_id}",
       "auth": "session",
       "flags": [
-        "hosted_v2"
+        "box_cluster"
       ]
     },
     {

@@ -499,84 +499,40 @@ async def test_the_hosted_controller_route_locks_out_wrong_tokens_but_serves_the
     assert await _hosted(f"Bearer {HOSTED_TOKEN}") == "session"
 
 
-class TestWithHostedAgentsV2Off:
-    """The v1/v2 switch: with v2 off, a refused controller credential is a
-    plain 401 as before, with no warning and no lockout."""
+async def test_each_refusal_is_counted_by_reason_and_route() -> None:
+    """Each refusal is counted, by reason and kind of route only."""
+    from switch_core.observability.metrics import (
+        MetricsRegistry,
+        install,
+        uninstall,
+    )
 
-    @pytest.fixture(autouse=True)
-    def _v2_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from switch_core import hosted_v2
-
-        monkeypatch.setattr(hosted_v2, "_process_on", False)
-
-    async def test_repeated_refusals_never_lock_out_or_log(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        caplog.set_level(logging.INFO, logger=LOGGER)
+    registry = MetricsRegistry()
+    install(registry)
+    try:
         auth = _FakeControllerAuth()
         mw, _served = _middleware(
-            RefusalGuard(lockout_after=2, window_s=60, lockout_s=300, clock=_Clock()),
+            RefusalGuard(lockout_after=10, window_s=60, lockout_s=300, clock=_Clock()),
             auth,
         )
-        for _ in range(4):
-            sent = await _dispatch(mw, "/v1/controllers/ctl-1/status", BAD)
-            assert _status(sent) == 401
-        assert len(auth.authenticated) == 4  # every one checked, none answered early
-        assert _warnings(caplog) == []
-
-    async def test_the_hosted_controller_route_is_a_plain_401(
-        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        caplog.set_level(logging.INFO, logger=LOGGER)
-        monkeypatch.setattr(
-            refusals_module, "_DEFAULT", RefusalGuard(lockout_after=1, clock=_Clock())
-        )
         for _ in range(3):
-            with pytest.raises(HTTPException) as refused:
-                await _hosted("Bearer nope")
-            assert refused.value.status_code == 401
-        assert _warnings(caplog) == []
-        assert await _hosted(f"Bearer {HOSTED_TOKEN}") == "session"
-
-    async def test_each_refusal_is_still_counted_by_reason_and_route(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Observability step 1: with v2 off, no log line and no lockout, but
-        each refusal is counted, by reason and kind of route only."""
-        from switch_core.observability.metrics import (
-            MetricsRegistry,
-            install,
-            uninstall,
-        )
-
-        registry = MetricsRegistry()
-        install(registry)
-        try:
-            auth = _FakeControllerAuth()
-            mw, _served = _middleware(
-                RefusalGuard(
-                    lockout_after=2, window_s=60, lockout_s=300, clock=_Clock()
-                ),
-                auth,
+            await _dispatch(mw, "/v1/controllers/ctl-1/status", BAD)
+        with pytest.raises(HTTPException):
+            await _hosted("Bearer nope")
+        counted = {
+            (dict(point.attributes)["reason"], dict(point.attributes)["route"]): (
+                point.value
             )
-            for _ in range(3):
-                await _dispatch(mw, "/v1/controllers/ctl-1/status", BAD)
-            with pytest.raises(HTTPException):
-                await _hosted("Bearer nope")
-            counted = {
-                (dict(point.attributes)["reason"], dict(point.attributes)["route"]): (
-                    point.value
-                )
-                for payload in registry.collect()
-                if payload.name == "switch.controller.credential_refusals"
-                for point in payload.numbers
-            }
-        finally:
-            uninstall()
-        assert counted == {
-            ("invalid_credential", "controller"): 3.0,
-            ("wrong", "hosted_controller"): 1.0,
+            for payload in registry.collect()
+            if payload.name == "switch.controller.credential_refusals"
+            for point in payload.numbers
         }
+    finally:
+        uninstall()
+    assert counted == {
+        ("invalid_credential", "controller"): 3.0,
+        ("wrong", "hosted_controller"): 1.0,
+    }
 
 
 class _ArchivedWorkspaceAuth(_FakeControllerAuth):

@@ -3543,7 +3543,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "**Hosted agents v2 (boxes).** Empty unless `HOSTED_BOX_PROVISIONING` is on. What only a box reports, beside the v1 panels above, which cover boxes too under `backend:box`: the operator's open alerts, sessions waiting for room, restarts, out-of-memory kills and evictions, the memory guard and valve, the provider gateway, and box memory. Counts and fixed words only.",
+        "content": "**Hosted agents v2 (boxes).** Empty unless `HOSTED_BOX_PROVISIONING` is on. What only a box reports, beside the v1 panels above, which cover boxes too under `backend:box`: the operator's open alerts, sessions waiting for room, restarts and evictions, the valve, the provider gateway, and box memory. Counts and fixed words only.",
         "background_color": "gray",
         "font_size": "14",
         "text_align": "left",
@@ -3601,15 +3601,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Hosted agent restarts (last 10 min), OOM kills, and box evictions",
+        "title": "Hosted agent restarts (last 10 min) and box evictions",
         "show_legend": true,
         "requests": [
           {
             "q": "max:switch.hosted.agent_restarts_10m{$service,$flint_env,$version,!version:0.27.0}",
-            "display_type": "line"
-          },
-          {
-            "q": "max:switch.hosted.agent_oom_kills{$service,$flint_env,$version,!version:0.27.0}",
             "display_type": "line"
           },
           {
@@ -3628,13 +3624,9 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Hosted boxes: agents the memory guard stopped, and sessions the valve parked",
+        "title": "Hosted boxes: sessions the valve parked",
         "show_legend": true,
         "requests": [
-          {
-            "q": "sum:switch.hosted.guard_stops{$service,$flint_env,$version,!version:0.27.0}.as_count()",
-            "display_type": "bars"
-          },
           {
             "q": "sum:switch.hosted.valve_parks{$service,$flint_env,$version,!version:0.27.0}.as_count()",
             "display_type": "bars"

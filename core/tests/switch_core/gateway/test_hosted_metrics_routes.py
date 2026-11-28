@@ -173,7 +173,7 @@ async def test_since_start_counts_must_be_bounded_ints(harness: Harness) -> None
         await ensure_connected(client, laptop)
         for bad in ("12", -1, 1_000_001, 1.5, True):
             body = status_report(2)
-            body["machine"]["guard_stops"] = bad
+            body["machine"]["valve_parks"] = bad
             refused = await client.put(
                 f"/v1/management/controllers/{laptop.controller_id}/status",
                 json=body,
@@ -181,8 +181,9 @@ async def test_since_start_counts_must_be_bounded_ints(harness: Harness) -> None
             )
             assert refused.status_code in (400, 422), (bad, refused.text)
         body = status_report(3)
-        body["machine"]["guard_stops"] = 4
         body["machine"]["valve_parks"] = 0
+        # What a box made before the memory guard went still sends: ignored.
+        body["machine"]["guard_stops"] = "12"
         accepted = await client.put(
             f"/v1/management/controllers/{laptop.controller_id}/status",
             json=body,

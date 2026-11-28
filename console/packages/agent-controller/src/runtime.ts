@@ -144,7 +144,7 @@ export type RelayCredentials = {
   /**
    * Box only: when the login goes through the provider gateway instead, the
    * agent's opaque gateway token and which login it fronts. The login itself
-   * is then not in the file (`providerLogin` is null). Never set on desktop or v1.
+   * is then not in the file (`providerLogin` is null). Never set on desktop or a self-installed machine.
    */
   gateway?: GatewayRecord | null;
 };

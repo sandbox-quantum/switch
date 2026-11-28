@@ -56,6 +56,7 @@ from tests.switch_core.gateway.test_hosted_provisioner import (  # noqa: F401
     KEY,
     provisioner_app,
 )
+from tests.switch_core.hosted_machine_helpers import no_revoke
 from tests.switch_core.test_config_gateway_admission import _config
 
 pytestmark = pytest.mark.usefixtures("hosted_v2_on")
@@ -303,8 +304,9 @@ async def test_a_claim_that_rolls_back_leaves_the_box_waiting(
             owner_id=person.id,
             capacity=5,
             now=datetime.now(UTC),
-            backend="box",
             pool_pick=pool_pick_for(app.config, app.settings),  # type: ignore[arg-type]
+            revoke=no_revoke,
+            per_workspace=0,
         )
         assert claimed.from_pool and claimed.machine.id == box_id
         await session.rollback()
@@ -596,8 +598,7 @@ async def _claim_new(
             owner_id=person.id,
             capacity=capacity,
             now=datetime.now(UTC),
-            backend="box",
-            revoke=revoke,
+            revoke=revoke or no_revoke,
             per_workspace=per_workspace,
             pool_pick=pool_pick_for(app.config, app.settings),  # type: ignore[arg-type]
         )

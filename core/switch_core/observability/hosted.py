@@ -48,7 +48,6 @@ from sqlalchemy.orm import Session, SessionTransaction
 
 from switch_core.observability.catalogue import (
     CONTROLLER_CREDENTIAL_REFUSALS,
-    HOSTED_AGENT_OOM_KILLS,
     HOSTED_AGENT_RESTARTS_10M,
     HOSTED_AGENTS,
     HOSTED_AGENTS_STOPPED,
@@ -65,7 +64,6 @@ from switch_core.observability.catalogue import (
     HOSTED_CONTROLLER_RESTARTS,
     HOSTED_DISK_USED,
     HOSTED_GATEWAY,
-    HOSTED_GUARD_STOPS,
     HOSTED_MACHINE_EVENTS,
     HOSTED_OPERATOR_BOXES_LIVE,
     HOSTED_OPERATOR_CEILING,
@@ -105,7 +103,7 @@ STOP_REASONS = ("out_of_memory", "crash_loop", "other")
 # counts: boxes only.
 VALVE_STATES = ("unprotected", "failing")
 SESSION_KINDS = ("running", "max")
-GATEWAY_KINDS = ("agents", "refused", "capped_boxes")
+GATEWAY_KINDS = ("agents", "refused")
 # The providers a controller runs (`agent-providers`), and the login states a
 # report can carry that mean a provider can't be used. `unknown` (the check
 # could not tell) is not counted. Anything else is `other`.
@@ -119,8 +117,8 @@ V1_BACKEND = "vm"
 BOX_BACKEND = "box"
 
 # The controller refusal codes (`management.reason_codes`) a refused
-# credential is counted by, plus the hosted controller service's own two. With
-# hosted agents v2 on, also a lockout's two words and `controller_token` (a
+# credential is counted by, plus the hosted controller service's own two, a
+# lockout's two words and `controller_token` (a
 # controller's own bearer offered on the operator API). Any other code is
 # counted as `other`.
 REFUSAL_REASONS = frozenset(
@@ -259,7 +257,7 @@ def box_summary(
     """
     by_state: dict[str, int] = {}
     stopped = dict.fromkeys(STOP_REASONS, 0)
-    restarts = oom_kills = waiting = 0
+    restarts = waiting = 0
     for agent in agents if isinstance(agents, list) else []:
         if not isinstance(agent, Mapping):
             continue
@@ -272,11 +270,9 @@ def box_summary(
         key = f"{process}:{session}"
         by_state[key] = by_state.get(key, 0) + 1
         reason = agent.get("reason")
-        # A box's memory guard reports its stop as `stopped` with this reason.
         if process in _FAILED_PROCESS_STATES or reason == "out_of_memory":
             stopped[stop_reason(reason)] += 1
         restarts += _count(agent.get("restarts_10m"))
-        oom_kills += _count(agent.get("oom_kills"))
         waiting_for_room = agent.get("waiting_for_room")
         if isinstance(waiting_for_room, Mapping):
             waiting += _count(waiting_for_room.get("count"))
@@ -302,13 +298,10 @@ def box_summary(
     return {
         **summary,
         "restarts_10m": min(restarts, MAX_COUNT),
-        "oom_kills": min(oom_kills, MAX_COUNT),
         "waiting_for_room": min(waiting, MAX_COUNT),
         "valve_memory": valve if valve in VALVE_STATES else None,
         "gateway_agents": _count(machine.get("gateway_agents")),
         "gateway_refused": _count(machine.get("gateway_refused")),
-        "gateway_capped": machine.get("gateway_capped") is True,
-        "guard_stops": _optional_count(machine.get("guard_stops")),
         "valve_parks": _optional_count(machine.get("valve_parks")),
     }
 
@@ -563,7 +556,7 @@ def _per_backend() -> dict[str, int]:
 class HostedSnapshot:
     """The gauges' values, as of one sample. The ones both kinds of machine
     fill are kept per `backend`; the rest are boxes' only. `box_counts` holds
-    each fresh box's since-start counts (guard stops, valve parks), keyed by
+    each fresh box's since-start count of valve parks, keyed by
     machine and workspace, for the sampler to turn into rises."""
 
     agents: dict[tuple[str, str, str], int] = field(default_factory=dict)
@@ -580,15 +573,13 @@ class HostedSnapshot:
     operator_ceiling: int | None = None
     login_problems: dict[tuple[str, str, str], int] = field(default_factory=dict)
     restarts_10m: int = 0
-    oom_kills: int = 0
     waiting_for_room: int = 0
     valve_memory: dict[str, int] = field(
         default_factory=lambda: dict.fromkeys(VALVE_STATES, 0)
     )
     gateway_agents: int = 0
     gateway_refused: int = 0
-    gateway_capped: int = 0
-    box_counts: dict[str, tuple[int | None, int | None]] = field(default_factory=dict)
+    box_counts: dict[str, int | None] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -676,18 +667,14 @@ def snapshot_of(rows: list[MachineRow], now: datetime) -> HostedSnapshot:
                 # The rest are boxes' only: a v1 machine reports none of them.
                 continue
             snap.restarts_10m += _count(summary.get("restarts_10m"))
-            snap.oom_kills += _count(summary.get("oom_kills"))
             snap.waiting_for_room += _count(summary.get("waiting_for_room"))
             valve = summary.get("valve_memory")
             if valve in VALVE_STATES:
                 snap.valve_memory[valve] += 1
             snap.gateway_agents += _count(summary.get("gateway_agents"))
             snap.gateway_refused += _count(summary.get("gateway_refused"))
-            if summary.get("gateway_capped") is True:
-                snap.gateway_capped += 1
-            snap.box_counts[f"{row.id}/{workspace_id}"] = (
-                _optional_count(summary.get("guard_stops")),
-                _optional_count(summary.get("valve_parks")),
+            snap.box_counts[f"{row.id}/{workspace_id}"] = _optional_count(
+                summary.get("valve_parks")
             )
     return snap
 
@@ -746,7 +733,6 @@ def snapshot_readings(snap: HostedSnapshot) -> Iterator[GaugeReading]:
             HOSTED_POOL_BOXES, float(snap.pool_boxes.get(state, 0)), {"state": state}
         )
     yield GaugeReading(HOSTED_AGENT_RESTARTS_10M, float(snap.restarts_10m), {})
-    yield GaugeReading(HOSTED_AGENT_OOM_KILLS, float(snap.oom_kills), {})
     yield GaugeReading(HOSTED_WAITING_FOR_ROOM, float(snap.waiting_for_room), {})
     for state in VALVE_STATES:
         yield GaugeReading(
@@ -756,9 +742,6 @@ def snapshot_readings(snap: HostedSnapshot) -> Iterator[GaugeReading]:
         )
     yield GaugeReading(HOSTED_GATEWAY, float(snap.gateway_agents), {"kind": "agents"})
     yield GaugeReading(HOSTED_GATEWAY, float(snap.gateway_refused), {"kind": "refused"})
-    yield GaugeReading(
-        HOSTED_GATEWAY, float(snap.gateway_capped), {"kind": "capped_boxes"}
-    )
 
 
 def _rise(previous: int | None, current: int | None) -> int:
@@ -807,7 +790,7 @@ class HostedSampler:
         self._conn: AsyncConnection | None = None
         self._holds_lock = False
         self._latest: HostedSnapshot | None = None
-        self._last_counts: dict[str, tuple[int | None, int | None]] = {}
+        self._last_counts: dict[str, int | None] = {}
         self._last_failure_log = float("-inf")
         self.disabled = False
 
@@ -858,16 +841,12 @@ class HostedSampler:
         self._latest = None
         self._last_counts = {}
 
-    def _record_rises(self, counts: dict[str, tuple[int | None, int | None]]) -> None:
-        guard = parks = 0
-        for key, (stops, parked) in counts.items():
-            before_stops, before_parked = self._last_counts.get(key, (None, None))
-            guard += _rise(before_stops, stops)
-            parks += _rise(before_parked, parked)
+    def _record_rises(self, counts: dict[str, int | None]) -> None:
+        parks = 0
+        for key, parked in counts.items():
+            parks += _rise(self._last_counts.get(key), parked)
         # A box that went silent is forgotten, so its return is a new baseline.
         self._last_counts = counts
-        if guard:
-            metrics().increment(HOSTED_GUARD_STOPS, {}, float(guard))
         if parks:
             metrics().increment(HOSTED_VALVE_PARKS, {}, float(parks))
 

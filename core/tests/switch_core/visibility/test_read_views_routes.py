@@ -367,7 +367,6 @@ async def test_the_overview_counts_boxes_made_against_the_ceiling(views) -> None
     hasn't finished, or one that failed, doesn't count."""
     await enrolled(views.base, agents=0)
     config = _config(views)
-    config.hosted_box_provisioning = True
     config.hosted_box_ceiling = 20
     await _provision_event(views, views.base.machine_id, phase="requested")
     answer = await views.client.get(OVERVIEW)
@@ -393,10 +392,10 @@ async def test_the_overview_counts_boxes_made_against_the_ceiling(views) -> None
     }
 
 
-async def test_with_box_provisioning_off_there_is_no_ceiling(views) -> None:
+@pytest.mark.usefixtures("box_cluster_off")
+async def test_without_a_box_cluster_there_is_no_ceiling(views) -> None:
     await enrolled(views.base, agents=0)
     config = _config(views)
-    config.hosted_box_provisioning = False
     config.hosted_box_ceiling = 20
     await _provision_event(views, views.base.machine_id, phase="result", result="done")
     answer = await views.client.get(OVERVIEW)
@@ -408,7 +407,6 @@ async def test_with_box_provisioning_off_there_is_no_ceiling(views) -> None:
 async def test_members_never_see_the_ceiling(views, who) -> None:
     await enrolled(views.base, agents=0)
     config = _config(views)
-    config.hosted_box_provisioning = True
     config.hosted_box_ceiling = 20
     views.as_(who)
     answer = await views.client.get(OVERVIEW)

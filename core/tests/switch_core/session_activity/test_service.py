@@ -219,19 +219,19 @@ async def test_a_turns_tokens_are_counted_once_when_it_first_ends(
     ]
 
 
-@pytest.mark.parametrize("v2", [True, False])
-async def test_a_late_running_report_reopens_an_ended_turn_only_with_v2_off(
-    service, monkeypatch, v2
+@pytest.mark.parametrize("cluster", [True, False])
+async def test_a_late_running_report_reopens_an_ended_turn_only_without_a_box_cluster(
+    service, monkeypatch, cluster
 ):
-    """With hosted agents v2 on, an ended turn stays ended, since v2's restart
-    sweep may have closed it for a box that went away. With v2 off, a later
-    revision is taken as before v2."""
-    from switch_core import hosted_v2
+    """With a box cluster, an ended turn stays ended, since the restart sweep
+    may have closed it for a box that went away. Without one (v1 machines and
+    desktop on a server with no boxes), a later revision is taken as before."""
+    from switch_core import box_cluster
 
-    monkeypatch.setattr(hosted_v2, "_process_on", v2)
+    monkeypatch.setattr(box_cluster, "_process_on", cluster)
     await service.report_item(AGENT, SESSION, **_turn("turn-1", 1, "completed"))
     moved = await service.report_item(AGENT, SESSION, **_turn("turn-1", 2, "running"))
-    assert moved is (not v2)
+    assert moved is (not cluster)
 
 
 async def test_usage_on_a_turn_that_has_not_ended_is_refused(service):

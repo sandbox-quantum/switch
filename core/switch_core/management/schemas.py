@@ -21,8 +21,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    ModelWrapValidatorHandler,
-    PrivateAttr,
     StrictBool,
     field_validator,
     model_validator,
@@ -74,11 +72,29 @@ class _ControllerBody(BaseModel):
 MAX_MEMINFO_BYTES = 2**50
 # No box runs anywhere near this many agent hosts: a count past it is refused.
 MAX_VALVE_HOSTS = 1000
-# The provider gateway's daily calls: the controller's own
-# ceiling on the cap (`MAX_CAP` in gateway-usage.ts), so no honest figure is refused.
-MAX_GATEWAY_CALLS = 1_000_000_000
-# The memory guard's note codes (status extras): Console words them.
-MEMORY_NOTE_CODES = ("unexplained", "sustained")
+# The provider gateway's refusals since its controller started: far past any
+# honest count, so none is refused.
+MAX_GATEWAY_REFUSED = 1_000_000_000
+# What boxes made before the daily call cap and the memory guard were removed
+# still report. Taken out of a report before it is read, so it is neither
+# stored nor refused, and nothing is logged for it.
+RETIRED_MACHINE_STATUS_FIELDS = (
+    "gateway_calls_today",
+    "gateway_capped",
+    "gateway_daily_cap",
+    "gateway_cap_source",
+    "guard_stops",
+    "memory_note",
+    "memory_note_box_bytes",
+    "memory_note_shmem_bytes",
+)
+RETIRED_AGENT_STATUS_FIELDS = ("ai_calls_today",)
+
+
+def _without(data: Any, names: tuple[str, ...]) -> Any:
+    if not isinstance(data, dict):
+        return data
+    return {key: value for key, value in data.items() if key not in names}
 
 
 class _StatusBody(BaseModel):
@@ -278,66 +294,23 @@ class MachineStatus(_StatusBody):
     valve_hosts_joined: int | None = Field(
         default=None, ge=0, le=MAX_VALVE_HOSTS, strict=True
     )
-    # The provider gateway: agents it fronts and calls it refused, and,
-    # where a daily cap is set, today's calls, whether the cap is reached and the
-    # cap itself (Your cloud's "40 of 200 today"). Declared and
-    # bounded so a box can't store anything else under these names.
+    # The provider gateway: agents it fronts and calls it refused. Declared
+    # and bounded so a box can't store anything else under these names.
     gateway_agents: int | None = Field(
         default=None, ge=0, le=MAX_VALVE_HOSTS, strict=True
     )
     gateway_refused: int | None = Field(
-        default=None, ge=0, le=MAX_GATEWAY_CALLS, strict=True
+        default=None, ge=0, le=MAX_GATEWAY_REFUSED, strict=True
     )
-    gateway_calls_today: int | None = Field(
-        default=None, ge=0, le=MAX_GATEWAY_CALLS, strict=True
-    )
-    gateway_capped: bool | None = Field(default=None, strict=True)
-    gateway_daily_cap: int | None = Field(
-        default=None, ge=1, le=MAX_GATEWAY_CALLS, strict=True
-    )
-    # Which number set today's cap: the operator's own
-    # setting, or the workspace's daily cap held to the gateway's bounds.
-    gateway_cap_source: Literal["local", "workspace"] | None = None
-    # Since the controller started: agents its memory guard stopped, and
-    # sessions its box valve parked. Bounded ints, so a report can't put
-    # anything else in the hosted metrics. Absent where the guard or valve is
-    # off, and from older controllers.
-    guard_stops: int | None = Field(default=None, ge=0, le=1_000_000, strict=True)
+    # Since the controller started: sessions its box valve parked. A bounded
+    # int, so a report can't put anything else in the hosted metrics. Absent
+    # where the valve is off, and from older controllers.
     valve_parks: int | None = Field(default=None, ge=0, le=1_000_000, strict=True)
-    # The memory guard's note while the box is high and no agent explains it:
-    # a fixed code, never text, with the box's reading and its shared-memory
-    # part in bytes. Console builds the wording. An older controller's
-    # free-text note is dropped, never stored (see `_drop_old_memory_note`).
-    memory_note: Literal["unexplained", "sustained"] | None = None
-    memory_note_box_bytes: int | None = Field(
-        default=None, ge=0, le=MAX_MEMINFO_BYTES, strict=True
-    )
-    memory_note_shmem_bytes: int | None = Field(
-        default=None, ge=0, le=MAX_MEMINFO_BYTES, strict=True
-    )
-    # Set when an older controller's free-text `memory_note` was dropped, so
-    # the service can count it without the text ever being kept or logged.
-    _dropped_old_note: bool = PrivateAttr(default=False)
 
-    @model_validator(mode="wrap")
+    @model_validator(mode="before")
     @classmethod
-    def _drop_old_memory_note(
-        cls, data: Any, handler: ModelWrapValidatorHandler[Self]
-    ) -> Self:
-        """An older controller sends the guard's note as a sentence. Refusing it
-        would refuse that box's whole report, so a note that isn't one of the
-        codes is dropped instead, and only counted."""
-        dropped = False
-        if (
-            isinstance(data, dict)
-            and data.get("memory_note") is not None
-            and data["memory_note"] not in MEMORY_NOTE_CODES
-        ):
-            data = {key: value for key, value in data.items() if key != "memory_note"}
-            dropped = True
-        model = handler(data)
-        model._dropped_old_note = dropped
-        return model
+    def _drop_retired_fields(cls, data: Any) -> Any:
+        return _without(data, RETIRED_MACHINE_STATUS_FIELDS)
 
 
 class ProviderStatus(_StatusBody):
@@ -382,12 +355,6 @@ class AgentStatus(_StatusBody):
     session: Literal["active", "waking", "parked"] | None = None
     restarts_10m: int
     oom_kills: int
-    # This agent's AI calls today through the gateway, where the box has a daily
-    # cap. Display only: each rise is filed under the agent's
-    # client id, and nothing in Core enforces from it.
-    ai_calls_today: int | None = Field(
-        default=None, ge=0, le=MAX_GATEWAY_CALLS, strict=True
-    )
     # The absolute working directory the agent runs in; null before the
     # controller resolved one, absent from a controller older than this field.
     directory: str | None = None
@@ -399,6 +366,11 @@ class AgentStatus(_StatusBody):
     # Whether any of its sessions is mid-turn (working versus idle). Strictly a
     # boolean, so a box can't put anything else there; absent when its host doesn't report it.
     busy: StrictBool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_fields(cls, data: Any) -> Any:
+        return _without(data, RETIRED_AGENT_STATUS_FIELDS)
 
     @model_validator(mode="after")
     def _failure_has_a_reason(self) -> AgentStatus:
@@ -415,92 +387,6 @@ class StatusReport(_StatusBody):
     providers: list[ProviderStatus]
     tools: list[ToolStatus]
     agents: list[AgentStatus]
-
-    @model_validator(mode="wrap")
-    @classmethod
-    def _as_upstream_while_v2_is_off(
-        cls, data: Any, handler: ModelWrapValidatorHandler[Self]
-    ) -> Self:
-        """The v1/v2 switch (sweep row 8): with hosted agents v2 off, a report
-        is read as upstream reads it. The fields v2 declared are kept as sent,
-        as upstream's `extra="allow"` keeps them, and none can refuse it."""
-        from switch_core.hosted_v2 import process_hosted_v2
-
-        if cls is StatusReport and not process_hosted_v2():
-            return _V1StatusReport.model_validate(data)  # type: ignore[return-value]
-        return handler(data)
-
-
-# Every field hosted agents v2 declared on a status report, read as upstream
-# reads an undeclared one while v2 is off: any value, kept as sent.
-V2_MACHINE_STATUS_FIELDS = (
-    "mem_anon_bytes",
-    "mem_cached_bytes",
-    "valve_memory",
-    "disk_scope",
-    "valve_hosts",
-    "valve_hosts_joined",
-    "gateway_agents",
-    "gateway_refused",
-    "gateway_calls_today",
-    "gateway_capped",
-    "gateway_daily_cap",
-    "gateway_cap_source",
-    "guard_stops",
-    "valve_parks",
-    "memory_note",
-    "memory_note_box_bytes",
-    "memory_note_shmem_bytes",
-)
-V2_AGENT_STATUS_FIELDS = ("session", "ai_calls_today", "let_go", "busy")
-
-
-class _V1MachineStatus(MachineStatus):
-    mem_anon_bytes: Any = None
-    mem_cached_bytes: Any = None
-    valve_memory: Any = None
-    disk_scope: Any = None
-    valve_hosts: Any = None
-    valve_hosts_joined: Any = None
-    gateway_agents: Any = None
-    gateway_refused: Any = None
-    gateway_calls_today: Any = None
-    gateway_capped: Any = None
-    gateway_daily_cap: Any = None
-    gateway_cap_source: Any = None
-    guard_stops: Any = None
-    valve_parks: Any = None
-    memory_note: Any = None
-    memory_note_box_bytes: Any = None
-    memory_note_shmem_bytes: Any = None
-
-    @model_validator(mode="wrap")
-    @classmethod
-    def _drop_old_memory_note(
-        cls, data: Any, handler: ModelWrapValidatorHandler[Self]
-    ) -> Self:
-        # As upstream: a note is kept as sent, never dropped.
-        return handler(data)
-
-    @field_validator("disk_scope", mode="before")
-    @classmethod
-    def _disk_scope_or_unknown(cls, value: object) -> Any:
-        # As upstream: any value, kept as sent.
-        return value
-
-
-class _V1AgentStatus(AgentStatus):
-    session: Any = None
-    ai_calls_today: Any = None
-    let_go: Any = None
-    busy: Any = None
-
-
-class _V1StatusReport(StatusReport):
-    machine: _V1MachineStatus
-    # Pydantic's v1 view of the same report: the narrower element type is the
-    # point, so list's invariance check doesn't apply here.
-    agents: list[_V1AgentStatus]  # type: ignore[assignment]
 
 
 class ProgressRequest(_ControllerBody):

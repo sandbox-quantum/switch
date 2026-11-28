@@ -931,8 +931,7 @@ HOSTED_AGENTS_STOPPED = _spec(
     "gauge",
     "{agent}",
     "Agents on cloud machines that are crashed or failed, by reason: "
-    "`out_of_memory`, `crash_loop`, and any other reason `other`. On a box, "
-    "an agent the memory guard holds counts as `out_of_memory`.",
+    "`out_of_memory`, `crash_loop`, and any other reason `other`.",
     "reason",
     "backend",
 )
@@ -942,13 +941,6 @@ HOSTED_AGENT_RESTARTS_10M = _spec(
     "{restart}",
     "Agent restarts on hosted boxes in the last 10 minutes, summed over every "
     "agent's reported count.",
-)
-HOSTED_AGENT_OOM_KILLS = _spec(
-    "switch.hosted.agent_oom_kills",
-    "gauge",
-    "{kill}",
-    "Out-of-memory kills of agents on hosted boxes, summed over every agent's "
-    "reported count.",
 )
 HOSTED_SESSIONS = _spec(
     "switch.hosted.sessions",
@@ -997,8 +989,7 @@ HOSTED_GATEWAY = _spec(
     "gauge",
     "{count}",
     "The provider gateway on hosted boxes: `agents` whose login it fronts, "
-    "calls it `refused` since each controller started, and `capped_boxes` "
-    "that reached their daily call cap.",
+    "and calls it `refused` since each controller started.",
     "kind",
 )
 HOSTED_BOX_EVICTIONS = _spec(
@@ -1006,13 +997,6 @@ HOSTED_BOX_EVICTIONS = _spec(
     "sum",
     "{eviction}",
     "Hosted boxes pushed off their machine, as the operator reports them.",
-)
-HOSTED_GUARD_STOPS = _spec(
-    "switch.hosted.guard_stops",
-    "sum",
-    "{stop}",
-    "Agents the memory guard stopped on hosted boxes: the rise in each box's "
-    "since-start count, so a controller restart reads as a reset, not a drop.",
 )
 HOSTED_VALVE_PARKS = _spec(
     "switch.hosted.valve_parks",
@@ -1056,8 +1040,8 @@ HOSTED_CLAIM_REFUSED = _spec(
     "sum",
     "{claim}",
     "Cloud machine claims refused at a limit. `reason` is a fixed word: "
-    "`workspace_full` (the workspace's `HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE`, "
-    "hosted agents v2 only). Never which workspace or person.",
+    "`workspace_full` (the workspace's `HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE`). "
+    "Never which workspace or person.",
     "reason",
 )
 HOSTED_POOL_SIZE = _spec(
@@ -1275,7 +1259,7 @@ CONTROLLER_CREDENTIAL_REFUSALS = _spec(
     "Controller credentials refused with a 401, by reason code and kind of "
     "route (`agent`, `management`, `controller`, `hosted_controller`, "
     "`hosted_provisioner`, `hosted_operator` or `other`), never the path or "
-    "any part of the credential. With hosted agents v2 on, also `locked_out` "
+    "any part of the credential. Also `locked_out` "
     "for a request refused while its address is locked out, and "
     "`lockout_started` each time an address is locked out for repeated "
     "refusals.",
@@ -1396,7 +1380,6 @@ CATALOGUE: dict[str, MetricSpec] = {
         HOSTED_AGENTS,
         HOSTED_AGENTS_STOPPED,
         HOSTED_AGENT_RESTARTS_10M,
-        HOSTED_AGENT_OOM_KILLS,
         HOSTED_SESSIONS,
         HOSTED_WAITING_FOR_ROOM,
         HOSTED_BOXES_VALVE_MEMORY,
@@ -1404,7 +1387,6 @@ CATALOGUE: dict[str, MetricSpec] = {
         HOSTED_BOX_ANON_MEMORY,
         HOSTED_GATEWAY,
         HOSTED_BOX_EVICTIONS,
-        HOSTED_GUARD_STOPS,
         HOSTED_VALVE_PARKS,
         HOSTED_BOXES_REPORTING,
         HOSTED_BOXES_EXPECTED,

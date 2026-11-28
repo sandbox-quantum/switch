@@ -90,7 +90,6 @@ from switch_core.db.stores.room_store import (
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
 from switch_core.delivery.send_limits import MessageRefused, SendRateLimited
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
@@ -1992,11 +1991,10 @@ class CollaborationCore:
             await self._remember_lobby_sender(msg.sender_id, msg.sender_name)
             await self._handle_lobby_message(msg)
             return None
-        if process_hosted_v2() and await self._already_handed_in(msg):
+        if await self._already_handed_in(msg):
             # A second copy of a post already in its room (a bridge that hears
             # each post on several connections, or fetches missed posts after
-            # a reconnect) is not a second message. Hosted agents v2 only: with
-            # it off the inbound path is main's, with no extra read.
+            # a reconnect) is not a second message.
             return None
         # An answer typed in words, or a word that a card is waiting. It does
         # not consume the message: the room still sees what was said.

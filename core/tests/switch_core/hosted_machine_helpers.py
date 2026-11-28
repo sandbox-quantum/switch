@@ -34,11 +34,13 @@ async def seed_machine(
     desired_state: str,
     stop_reason: str | None,
     revision: int,
+    backend: str = "vm",
 ) -> CloudMachine:
     now = datetime.now(UTC)
     machine = CloudMachine(
         id=str(uuid4()),
         owner_id=owner_id,
+        backend=backend,
         state=state,
         desired_state=desired_state,
         stop_reason=stop_reason,
@@ -124,3 +126,7 @@ async def place_managed_agent(
     session.add(definition)
     await session.flush()
     return definition
+
+
+async def no_revoke(session: AsyncSession, tenant_id: str, controller_id: str) -> None:
+    """A claim's `revoke` for a test with no controller worth revoking."""

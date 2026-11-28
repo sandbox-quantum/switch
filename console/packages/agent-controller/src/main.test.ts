@@ -597,7 +597,7 @@ describe('box mode', () => {
     }
   });
 
-  it('takes --box out of the arguments, and leaves desktop and v1 arguments as they are', () => {
+  it('takes --box out of the arguments, and leaves desktop and self-installed arguments as they are', () => {
     expect(boxModeFrom(['--data-dir', '/data', '--box', '--updated-by-console'], true)).toEqual({
       box: true,
       rest: ['--data-dir', '/data', '--updated-by-console'],

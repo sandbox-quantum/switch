@@ -1,15 +1,14 @@
-# Hosted agents v2: the values to turn it on, as an example. Once the box side of
+# Hosted agents: the values for a server with a box cluster, as an example. Once the box side of
 # the cluster is set up (the deployment repository's DEPLOY.md), put them in the deployment's
 # own values, or layer a copy of this file over them with a second -f. Don't
 # commit a filled copy to this repo.
 #
 # Every name below is an example: use the deployment's own Secret names. The
 # Secrets are made by someone with access to the namespace this release runs
-# in; nothing here holds a secret value. To go back to v1, drain every box to
-# 0 first, then set hostedBoxProvisioning to false (or leave this file out) and
-# roll out.
+# in; nothing here holds a secret value. switch-core runs hosted agents only
+# when the controller config below carries provisioner_token.
 switchCore:
-  # The v1/v2 switch (HOSTED_BOX_PROVISIONING). Only true turns v2 on.
+  # No longer read by switch-core; true still passes hostedPoolSize.
   hostedBoxProvisioning: true
 
   # Secret with controller.json: the hosted controller config. Its keys are

@@ -44,7 +44,7 @@ from tests.switch_core.gateway.test_cloud_controller_machines import (
     _update,
     _workspace,
 )
-from tests.switch_core.hosted_machine_helpers import add_tenant
+from tests.switch_core.hosted_machine_helpers import add_tenant, no_revoke
 from tests.switch_core.management.harness import Harness, add_member, build_harness
 from tests.telemetry_records import RecordingSink, recording_telemetry
 
@@ -73,7 +73,7 @@ async def _claim(
     factory: async_sessionmaker[AsyncSession],
     owner: User,
     revoke: RevokeController | None = revoke_machine_controller,
-    backend: Literal["vm", "box"] = "vm",
+    backend: Literal["vm", "box"] = "box",
 ) -> CloudMachine:
     async with factory() as session:
         await lock_claims(session)
@@ -83,10 +83,14 @@ async def _claim(
             owner_id=owner.id,
             capacity=5,
             now=datetime.now(UTC),
-            revoke=revoke,
-            backend=backend,
+            revoke=revoke or no_revoke,
+            per_workspace=0,
+            pool_pick=None,
         )
         machine = claimed.machine
+        if backend == "vm":
+            # A v1 machine from before the freeze: no claim makes one now.
+            machine.backend = "vm"
         await session.commit()
         return machine
 
@@ -209,6 +213,8 @@ async def test_a_revived_machine_is_claimed_as_new(harness: Harness) -> None:
             capacity=5,
             now=datetime.now(UTC),
             revoke=revoke_machine_controller,
+            per_workspace=0,
+            pool_pick=None,
         )
         await session.commit()
     assert claimed.machine.id == machine_id
@@ -250,15 +256,6 @@ async def test_a_revived_box_is_ready_as_new_and_timed_from_its_revival(
     async with factory() as session:
         row = await session.get(CloudMachine, machine_id)
         assert row is not None and row.first_ready_at is not None
-
-
-async def test_without_v0_a_new_row_is_made_as_before(harness: Harness) -> None:
-    factory = harness.session_factory
-    owner = await add_member(factory, "ada")
-    machine_id, _controller_id = await _enrolled_machine(harness, owner)
-    await _cleaned_up(factory, machine_id)
-    fresh = await _claim(factory, owner, revoke=None)
-    assert fresh.id != machine_id
 
 
 async def test_another_owners_cleaned_up_machine_is_never_revived(
@@ -313,7 +310,7 @@ async def test_a_workspace_the_owner_left_loses_its_row(harness: Harness) -> Non
     assert (await _workspace(factory, machine.id)).machine_id == machine.id
 
 
-async def test_a_v0_claim_marks_a_new_machine_as_a_box(harness: Harness) -> None:
+async def test_a_claim_marks_a_new_machine_as_a_box(harness: Harness) -> None:
     factory = harness.session_factory
     owner = await add_member(factory, "ada")
     async with factory() as session:
@@ -325,14 +322,12 @@ async def test_a_v0_claim_marks_a_new_machine_as_a_box(harness: Harness) -> None
             capacity=5,
             now=datetime.now(UTC),
             revoke=revoke_machine_controller,
-            backend="box",
+            per_workspace=0,
+            pool_pick=None,
         )
         machine = claimed.machine
         await session.commit()
     assert machine.backend == "box"
-    # Without box provisioning, a new machine is a v1 one, as every row before it.
-    other = await add_member(factory, "bob")
-    assert (await _claim(factory, other, revoke=None)).backend == "vm"
 
 
 async def _expire_retention(harness: Harness, machine_id: str) -> None:

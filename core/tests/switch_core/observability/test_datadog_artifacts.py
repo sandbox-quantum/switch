@@ -249,7 +249,6 @@ _READ_WITH_MAX = (
     "switch.hosted.provider_login_problems",
     # Hosted agents v2 boxes' gauges, reported the same way.
     "switch.hosted.agent_restarts_10m",
-    "switch.hosted.agent_oom_kills",
     "switch.hosted.waiting_for_room",
     "switch.hosted.boxes_valve_memory",
     "switch.hosted.gateway",
@@ -353,8 +352,8 @@ _HOSTED_BOARD_ORDER = [
     "**Hosted agents v2 (boxes).**",
     "Operator alerts open, by condition (the box, machine or service is on the operator's Alerts tab)",
     "Hosted boxes: sessions waiting for room to start",
-    "Hosted agent restarts (last 10 min), OOM kills, and box evictions",
-    "Hosted boxes: agents the memory guard stopped, and sessions the valve parked",
+    "Hosted agent restarts (last 10 min) and box evictions",
+    "Hosted boxes: sessions the valve parked",
     "Provider gateway on hosted boxes, by kind; boxes with a valve memory problem, by state",
     "Hosted box anonymous memory (bytes), p95 / max. Needs distribution mapping, see README",
     "Hosted box starts: seconds to ready from the person's first request, p50 / p90, by case (first_start target 20 / 30 s, wake 10 / 20 s). Needs distribution mapping, see README",
@@ -426,7 +425,7 @@ def test_the_hosted_alerts_panel_lists_every_alert_on_its_charts() -> None:
     query = alerts["query"]
     assert query.startswith('tag:"service:REPLACE-WITH-SERVICE" (')
     assert set(re.findall(r'"([^"]+)"', query.split(" ", 1)[1])) == expected
-    assert len(expected) == 18
+    assert len(expected) == 17
 
 
 def test_the_hosted_board_carries_placeholders_not_a_deployment() -> None:

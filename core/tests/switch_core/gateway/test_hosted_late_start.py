@@ -293,21 +293,6 @@ async def test_the_scalers_no_room_is_shown_as_busy_counted_and_given_up(
     assert (await _state(harness, box)).state == "ready"
 
 
-def test_with_v2_off_no_room_is_refused_as_upstream_would(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from pydantic import ValidationError
-
-    from switch_core import hosted_v2
-    from switch_core.gateway.hosted_controller import Observation
-
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
-    with pytest.raises(ValidationError):
-        Observation.model_validate(
-            {"state": "error", "revision": 1, "error_code": "no_room"}
-        )
-
-
 async def test_a_repeated_stale_error_doesnt_stretch_the_grace(
     harness: Harness,
 ) -> None:

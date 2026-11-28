@@ -407,16 +407,15 @@ class SwitchConfig(BaseSettings):
     # or blank turns the check off.
     gateway_signup_refused_header: str | None = None
     # How many cloud machines may exist at once across the whole server (one
-    # count, v1 and v2 together, not per workspace); 0 means this server
+    # count, not per workspace); 0 means this server
     # cannot run them. The `hosted_agents` flag is what offers them.
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
-    # Hosted agents v2 only: how many live cloud machines may serve any one
-    # workspace, under `hosted_launch_capacity`, so one workspace can't take
-    # every machine. A box serving several workspaces counts in each. 0 means
-    # no per-workspace limit (Core warns at start when v2 is on and machines
-    # can run). With v2 off it's ignored.
+    # How many live cloud machines may serve any one workspace, under
+    # `hosted_launch_capacity`, so one workspace can't take every machine. A box
+    # serving several workspaces counts in each. 0 means no per-workspace limit
+    # (Core warns at start when machines can run).
     hosted_launch_capacity_per_workspace: int = Field(default=0, ge=0, le=100)
-    # Hosted agents v2's warm pool: how many boxes wait, made ahead, for the
+    # The warm pool: how many boxes wait, made ahead, for the
     # next person's first start. 0 makes none (and retires any waiting); at
     # most 50. Waiting and requested pool boxes count towards
     # `hosted_launch_capacity` and `hosted_box_ceiling`, and Core refuses to
@@ -428,11 +427,8 @@ class SwitchConfig(BaseSettings):
     # Separate from the box's 3-minute start timeout.
     hosted_wait_limit_minutes: int = Field(default=10, ge=1, le=60)
     hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
-    # Core asks the provisioner for a new user's box. Off until the
-    # provisioner runs in the cluster; with it off, boxes are made by hand as
-    # before. The caps bound how fast and how many: a burst or a
-    # slow trickle can't fill the cluster.
-    hosted_box_provisioning: bool = False
+    # How fast and how many boxes Core asks the box provisioner for: a burst
+    # or a slow trickle can't fill the cluster.
     hosted_provisions_per_minute: int = Field(default=5, ge=1, le=60)
     hosted_box_ceiling: int = Field(default=50, ge=1, le=10_000)
     # How long a record of each service token Core issued is kept: which agent,
@@ -813,15 +809,6 @@ class SwitchConfig(BaseSettings):
     # error. With it set, links to the dashboard default to GATEWAY_PUBLIC_URL
     # when FRONTEND_BASE_URL is unset (`dashboard_base_url`).
     gateway_ui_dir: Path | None = None
-
-    @field_validator("hosted_box_provisioning", mode="before")
-    @classmethod
-    def _parse_box_provisioning(cls, value: object) -> bool:
-        # The v1/v2 switch fails closed: anything but a clear yes is off,
-        # never a refusal to start (`hosted_v2.parse_box_provisioning`).
-        from switch_core.hosted_v2 import parse_box_provisioning
-
-        return parse_box_provisioning(value)
 
     @field_validator("gateway_ui_dir", mode="before")
     @classmethod

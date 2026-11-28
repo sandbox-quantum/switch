@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+from switch_core.box_cluster import box_cluster_on
 from switch_core.db.models import TENANT_ZERO_ID, AgentController, CloudMachine
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_STOPPED_BY_ADMIN,
@@ -19,7 +20,6 @@ from switch_core.db.stores.hosted_machine_store import (
 from switch_core.db.tenant_lookup import tenants_of_cloud_machine
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.hosted_machines import WORKSPACE_CONNECT_TIMEOUT
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
@@ -58,9 +58,9 @@ async def test_summary_has_the_contract_shape(controller_app):  # noqa: F811
     # too. With v2 on, the summary also names the backend and carries the
     # cloud figures; with it off, it is exactly the fixture and none of them.
     # `start` is null here: a v1 machine, and asleep.
-    v2_only = ("room", "awake", "ai_calls_today", "start")
+    v2_only = ("room", "awake", "start")
     assert not set(v2_only) & set(expected)
-    if process_hosted_v2():
+    if box_cluster_on():
         expected["backend"] = "vm"
         expected.update(dict.fromkeys(v2_only))
     await update_machine(
@@ -78,7 +78,7 @@ async def test_summary_has_the_contract_shape(controller_app):  # noqa: F811
     assert listed.status_code == 200, listed.text
     (summary,) = listed.json()["machines"]
     assert set(summary) == set(expected)
-    if not process_hosted_v2():
+    if not box_cluster_on():
         assert not set(v2_only) & set(summary)
     assert set(summary["disk"]) == set(expected["disk"])
     assert set(summary["memory"]) == set(expected["memory"])
@@ -111,14 +111,10 @@ async def test_a_machine_that_never_enrolled_reports_no_usage_or_agents(
     ) == (None, None, None, [], None, False)
     # Nothing for Your cloud without a controller report. With
     # hosted agents v2 off, the summary is as before v2, without those keys.
-    if process_hosted_v2():
-        assert (summary["room"], summary["awake"], summary["ai_calls_today"]) == (
-            None,
-            None,
-            None,
-        )
+    if box_cluster_on():
+        assert (summary["room"], summary["awake"]) == (None, None)
     else:
-        assert not {"room", "awake", "ai_calls_today"} & set(summary)
+        assert not {"room", "awake"} & set(summary)
 
 
 async def test_the_summary_lists_the_agents_placed_on_its_controller(
@@ -163,7 +159,7 @@ async def test_the_disk_says_it_is_the_workspace_only_when_the_box_says_so(
     )
     summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
     # The v1/v2 switch: with v2 off, the summary is exactly as before v2.
-    if process_hosted_v2():
+    if box_cluster_on():
         assert summary["disk"] == {
             "total_bytes": 15,
             "available_bytes": 12,
@@ -190,7 +186,7 @@ async def test_the_disk_says_it_is_the_workspace_only_when_the_box_says_so(
         app, controller_id, sessions_running=0, disk_scope="unknown", **figures
     )
     summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
-    if process_hosted_v2():
+    if box_cluster_on():
         assert summary["disk"] == {
             "total_bytes": 15,
             "available_bytes": 12,
@@ -206,7 +202,7 @@ async def test_the_disk_says_it_is_the_workspace_only_when_the_box_says_so(
     summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
     stored = (await machine_of(app.factory, app.machine_id)).heartbeat
     assert stored is not None
-    if process_hosted_v2():
+    if box_cluster_on():
         unknown = {"total_bytes": 15, "available_bytes": 12, "scope": "unknown"}
         assert summary["disk"] == unknown
         assert stored["disk"] == unknown
@@ -219,8 +215,9 @@ async def test_the_disk_says_it_is_the_workspace_only_when_the_box_says_so(
 async def test_your_cloud_figures_come_from_this_workspace_s_controller(
     controller_app,  # noqa: F811
 ):
-    """Room to work, sessions awake and AI calls today,
-    from the last report of the controller the machine enrolled as here."""
+    """Room to work and sessions awake, from the last report of the controller
+    the machine enrolled as here. What an older box still says of its daily
+    call cap is not shown."""
     app = controller_app
     controller_id, _ = await enrolled(app, agents=1)
     async with app.factory() as session:
@@ -242,11 +239,7 @@ async def test_your_cloud_figures_come_from_this_workspace_s_controller(
     summary = (await app.client.get(f"/hosted-machines/{app.machine_id}")).json()
     assert summary["room"] == {"used_bytes": 6 * 1024**3, "total_bytes": 8 * 1024**3}
     assert summary["awake"] == {"running": 3, "max": 15}
-    calls = summary["ai_calls_today"]
-    assert (calls["used"], calls["cap"], calls["capped"]) == (40, 200, False)
-    resets = datetime.fromisoformat(calls["resets_at"])
-    assert (resets.hour, resets.minute, resets.utcoffset()) == (0, 0, timedelta(0))
-    assert resets > datetime.now(UTC)
+    assert "ai_calls_today" not in summary
 
 
 async def test_other_owners_machines_read_as_missing(controller_app):  # noqa: F811
@@ -419,7 +412,8 @@ async def test_ensure_returns_the_owner_s_machine_and_claims_one_when_missing(
     claimed = await _ensure(app)
     assert claimed.status_code == 200, claimed.text
     body = claimed.json()
-    assert body["machine_id"] != app.machine_id
+    # A person keeps one machine id for life: it comes back, as a box.
+    assert (body["machine_id"], body["backend"]) == (app.machine_id, "box")
     assert (body["state"], body["desired_state"], body["agents"]) == (
         "queued",
         "running",
@@ -526,6 +520,8 @@ async def test_ensure_returns_a_machine_in_error_as_it_is(controller_app):  # no
 
 async def test_ensure_refuses_when_every_machine_is_in_use(controller_app):  # noqa: F811
     app = controller_app
+    # Capacity counts boxes: the fixture's machine takes the only one.
+    await update_machine(app.factory, app.machine_id, backend="box")
     app.config.hosted_launch_capacity = 1
     fastapi_app = app.client._transport.app
     fastapi_app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
@@ -570,20 +566,15 @@ async def test_every_workspace_may_use_machines_when_none_is_listed(
     controller_app,  # noqa: F811
     listed,
 ):
-    """With hosted agents v2 on, `"*"` (as a list or bare) admits every
-    workspace and unset admits none. With it off, unset admits every
-    workspace, as before v2, and `"*"` is just a name (a bare one doesn't
-    load)."""
+    """For a box, `"*"` (as a list or bare) admits every workspace and unset
+    admits none. (A v1 owner keeps v1's reading: `test_box_cluster`.)"""
     app = controller_app
-    v2 = process_hosted_v2()
-    if listed == "*" and not v2:
-        return  # refused at load with v2 off: test_how_a_star_loads_in_each_mode
+    await update_machine(app.factory, app.machine_id, backend="box")
     fastapi_app = app.client._transport.app
     fastapi_app.state.hosted_controller_settings = (
         HostedControllerSettings.model_validate(
             {**app.settings.model_dump(), "allowed_tenant_ids": listed}
             | {"token": app.settings.token.get_secret_value()},
-            context={"v2": v2},
         )
     )
     async with app.factory() as session:
@@ -591,7 +582,7 @@ async def test_every_workspace_may_use_machines_when_none_is_listed(
         await session.commit()
     with tenant_scope("tenant-b"):
         joined = await _ensure(app)
-    if (listed is None) == v2:  # unset with v2 on, or "*" with it off
+    if listed is None:
         assert joined.status_code == 503
         assert joined.json() == {"detail": "This server does not support cloud agents."}
         return
@@ -642,7 +633,7 @@ async def test_a_listed_account_in_a_listed_workspace_can_claim(
     )
     claimed = await _ensure(app)
     assert claimed.status_code == 200, claimed.text
-    assert claimed.json()["machine_id"] != app.machine_id  # a new one, claimed
+    assert claimed.json()["backend"] == "box"  # a box, never a v1 machine
     assert (await app.client.get("/hosted-machines")).json()["available"] is True
 
 
@@ -669,22 +660,21 @@ async def test_an_account_off_the_list_in_a_listed_workspace_is_refused_alike(
     assert await _machine_count(app) == before
 
 
-async def test_no_account_list_admits_every_account_only_with_v2_off(
+@pytest.mark.parametrize(("backend", "admitted"), [("vm", True), ("box", False)])
+async def test_no_account_list_admits_a_v1_owner_but_nobody_to_a_box(
     controller_app,  # noqa: F811
+    backend: str,
+    admitted: bool,
 ):
-    """Left out, as configs did before v2: every account with hosted agents
-    v2 off, exactly as before; none with it on, until the server names them
-    or sets `"*"`."""
+    """Left out, as configs did before boxes: a v1 owner keeps their machine;
+    nobody gets a box until the server names them or sets `"*"`."""
     app = controller_app
+    await update_machine(app.factory, app.machine_id, backend=backend)
     _allow_users(app, None)
     ensured = await _ensure(app)
     available = (await app.client.get("/hosted-machines")).json()["available"]
-    if process_hosted_v2():
-        assert ensured.status_code == 503
-        assert available is False
-    else:
-        assert ensured.status_code == 200
-        assert available is True
+    assert ensured.status_code == (200 if admitted else 503)
+    assert available is admitted
 
 
 async def test_every_account_is_said_with_a_star_only_with_v2_on(
@@ -692,7 +682,7 @@ async def test_every_account_is_said_with_a_star_only_with_v2_on(
 ):
     app = controller_app
     _allow_users(app, ["*"])
-    expected = process_hosted_v2()  # with v2 off, "*" names nobody real
+    expected = box_cluster_on()  # with v2 off, "*" names nobody real
     assert ((await _ensure(app)).status_code == 200) is expected
     assert (await app.client.get("/hosted-machines")).json()["available"] is expected
 
@@ -736,7 +726,7 @@ async def test_ensure_from_another_workspace_joins_the_owner_s_machine(
     controller_app,  # noqa: F811
 ):
     app = controller_app
-    app.settings.allowed_tenant_ids = ["*"] if process_hosted_v2() else None
+    app.settings.allowed_tenant_ids = ["*"] if box_cluster_on() else None
     await update_machine(
         app.factory,
         app.machine_id,

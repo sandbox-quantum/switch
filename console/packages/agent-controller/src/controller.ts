@@ -377,7 +377,7 @@ export async function runController(
   signal: AbortSignal
 ): Promise<ControllerExit> {
   const { store, timing } = deps;
-  // Box mode only: loaded here, so desktop and v1 never load it.
+  // Box mode only: loaded here, so desktop and self-installed machines never load it.
   const boxed: BoxController | null = deps.box
     ? new (await import('./box/controller-box')).BoxController(deps.boxDeps ?? {}, {
         log: deps.log,

@@ -256,7 +256,7 @@ export const agentStatusSchema = z
     session: z.enum(['active', 'waking', 'parked']).nullable().optional(),
     /**
      * Box only: room messages waiting for room in a full box, and since when
-     * the oldest. Absent when none wait, and always on desktop and v1.
+     * the oldest. Absent when none wait, and always on desktop and self-installed machines.
      */
     waiting_for_room: z
       .object({ count: z.number().int().positive(), oldest_since: time.nullable() })
@@ -299,7 +299,7 @@ export const statusReportSchema = z.object({
     disk_total_bytes: z.number().nonnegative(),
     /**
      * Box only: which disk the figures are, `workspace` when they are the
-     * agents' own volume, `unknown` otherwise. Absent on desktop and v1.
+     * agents' own volume, `unknown` otherwise. Absent on desktop and self-installed machines.
      */
     disk_scope: z.enum(['workspace', 'unknown']).optional(),
     mem_free_bytes: z.number().nonnegative(),

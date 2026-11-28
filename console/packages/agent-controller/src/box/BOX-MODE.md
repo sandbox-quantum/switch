@@ -1,8 +1,8 @@
 # Box mode
 
 Hosted agents v2 runs each person's agents in a box on a shared cluster. A box runs this package, the same
-controller Switch Console and v1 cloud machines run, in **box mode**. Box mode changes nothing anywhere else:
-desktop and v1 run upstream's code paths exactly as they were.
+controller Switch Console and self-installed machines run, in **box mode**. Box mode changes nothing anywhere
+else: desktop and self-installed machines run upstream's code paths exactly as they were.
 
 ## How it turns on
 
@@ -44,7 +44,7 @@ Each item below is gated on box mode, with a test for box on and one showing box
   agents are deleted after two checks; controller and agent host messages are capped at 1 MiB; a recorded process
   id that answers EPERM counts as alive; no device id is sent.
 - Only the providers the box image carries are offered: Claude Code, Codex, OpenCode, Cursor and Antigravity
-  (`providersFor` in `providers.ts`). Every other provider stays registered, for desktop and v1.
+  (`providersFor` in `providers.ts`). Every other provider stays registered, for desktop and self-installed machines.
 - Updates come only from rolling the box image, which is pinned by digest: a box runs `--updated-by-console`, and
   Switch sends such a controller no release.
 

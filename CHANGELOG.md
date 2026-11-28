@@ -52,6 +52,25 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **Hosted agents v1 is frozen: every new cloud machine is a box.** There's no
+  longer a setting to choose between v1 and boxes. A person who already has a
+  v1 cloud machine (an EC2 VM the hosted controller runs) keeps it: it is
+  listed, prepared, started, woken and managed as before, with or without a box
+  cluster, and nobody gets a new one. Everyone else gets a box, which needs the
+  hosted controller config to name the box operator (`provisioner_token`) and
+  the keyed-id key to be set; without them, a claim says "Hosted agents aren't
+  available here yet." Pause and per-workspace turn-off leave v1 machines
+  alone. A suspension stops a box; on a v1 machine, the suspended person's
+  controllers are refused as before. `HOSTED_LAUNCH_CAPACITY` and the
+  per-workspace limit (`HOSTED_LAUNCH_CAPACITY_PER_WORKSPACE`) count boxes
+  only. An unset cloud-machine user or workspace list still admits a v1 owner
+  to their own machine; boxes need the lists set.
+- **When a cloud machine already serves the most workspaces it can, the person
+  is told to remove it from one of them to add it here.** This applies to v1
+  machines and boxes alike, and no longer tells them to contact their server
+  administrator.
+
 #### Fixed
 - **`switch.hosted.provider_login_problems` counts only providers an agent on
   the machine runs.** Cloud machines have every provider installed, so a login

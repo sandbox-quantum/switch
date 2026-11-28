@@ -44,7 +44,6 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.gateway.cloud_controllers import set_cloud_enrollment
-from switch_core.hosted_v2 import hosted_v2_on
 from switch_core.management.agent_operations import ManagementAgentOperations
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.bindings import load_bindings
@@ -253,19 +252,11 @@ def mount_gateway_routes(gateway_app: FastAPI) -> None:
     gateway_app.include_router(organization_devices_router)
 
 
-def _management_tenant_ids(path: str | None, hosted_v2: bool) -> list[str] | None:
+def _management_tenant_ids(path: str | None) -> list[str] | None:
     """The workspaces agent management serves, from the hosted config's
-    `management_tenant_ids`, or None for every workspace. It belongs to hosted
-    agents v2, so with v2 off it has no effect: said once at start, so an
-    operator who set it isn't left expecting a restriction."""
-    settings = load_hosted_settings(path, v2=hosted_v2)
-    tenant_ids = None if settings is None else settings.management_tenant_ids
-    if tenant_ids is not None and not hosted_v2:
-        logger.warning(
-            "management_tenant_ids is set but hosted agents v2 is off; it has no effect"
-        )
-        return None
-    return tenant_ids
+    `management_tenant_ids`, or None for every workspace."""
+    settings = load_hosted_settings(path)
+    return None if settings is None else settings.management_tenant_ids
 
 
 def create_management(
@@ -280,9 +271,7 @@ def create_management(
         raise RuntimeError(
             "CONTROLLER_TOKEN_SECRET is not set; the config validator should have refused this"
         )
-    tenant_ids = _management_tenant_ids(
-        config.hosted_controller_config_path, hosted_v2_on(config)
-    )
+    tenant_ids = _management_tenant_ids(config.hosted_controller_config_path)
     return build_management(
         token_secret=config.controller_token_secret,
         status_interval_seconds=config.controller_status_interval_seconds,

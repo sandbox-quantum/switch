@@ -1190,45 +1190,14 @@ def test_only_a_failed_host_counts_as_given_up_not_a_crashed_one() -> None:
     assert _host_failure_reason(None) is None
 
 
-class TestWithHostedAgentsV2Off:
-    """The v1/v2 switch: with v2 off, the message path answers exactly as it
-    did before v2, and a v2 box never wakes."""
-
-    @pytest.fixture(autouse=True)
-    def _v2_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from switch_core import hosted_v2
-
-        monkeypatch.setattr(hosted_v2, "_process_on", False)
+class TestV1Machines:
+    """A v1 machine's message path answers as it did before boxes."""
 
     @staticmethod
     def _meta() -> SimpleNamespace:
         return SimpleNamespace(
             room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
         )
-
-    async def test_a_revoked_controller_is_removed_and_never_woken(self) -> None:
-        registry = AgentConnectionRegistry()
-        _bind(registry, "auto")
-        registry.controllers.revoke_controller(CONTROLLER)
-        client = _client(
-            registry,
-            "auto",
-            lifted=CloudMachineState(
-                state="stopped",
-                revision=5,
-                owner_stopped=False,
-                admin_stopped=False,
-                starting=True,
-            ),
-        )
-        reply = await client._reply_when_unavailable_here(
-            object(), _agent("auto", "auto_session"), self._meta(), "u"
-        )
-        assert reply is not None
-        assert reply.startswith("@owner — my device, **machine**, has been removed")
-        assert (client.woken_lifted, client.woken) == ([], [])
-        await client._wake_for_follow_up()
-        assert (client.woken_lifted, client.woken) == ([], [])
 
     async def test_a_machine_in_error_reads_offline_as_before(self) -> None:
         registry = AgentConnectionRegistry()
@@ -1245,27 +1214,6 @@ class TestWithHostedAgentsV2Off:
         )
         assert reply is not None
         assert reply.startswith("My device, **machine**, is offline or reconnecting")
-
-    async def test_a_v2_box_reads_offline_and_gets_no_waking_line(self) -> None:
-        registry = AgentConnectionRegistry()
-        _bind(registry, "auto")
-        client = _client(
-            registry,
-            "auto",
-            CloudMachineState(
-                state="stopped",
-                revision=4,
-                owner_stopped=False,
-                admin_stopped=False,
-                box=True,
-            ),
-        )
-        reply = await client._reply_when_unavailable_here(
-            object(), _agent("auto", "auto_session"), self._meta(), "u"
-        )
-        assert reply is not None
-        assert reply.startswith("My device, **machine**, is offline or reconnecting")
-        assert client._cloud_waking_notices == set()
 
     async def test_a_v1_machine_still_wakes_with_its_line(self) -> None:
         registry = AgentConnectionRegistry()

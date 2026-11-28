@@ -48,7 +48,6 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_controller import router
 from switch_core.gateway.hosted_machines import router as machines_router
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.keys import Keyring
 from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.providers.hosted import HostedControllerSettings
@@ -57,6 +56,7 @@ from tests.switch_core.hosted_machine_helpers import (
     add_tenant,
     add_workspace,
     link_controller,
+    no_revoke,
     place_managed_agent,
     seed_machine,
 )
@@ -161,9 +161,8 @@ async def controller_app(session_factory):
         await session.commit()
     settings = HostedControllerSettings(
         allowed_tenant_ids=[require_tenant_id()],
-        # Every account in it: with hosted agents v2 on, an unset list is nobody
-        # and "*" says everyone; with it off, unset is everyone, as before v2.
-        allowed_user_ids=["*"] if process_hosted_v2() else None,
+        # Every account in it: an unset list is nobody, and "*" says everyone.
+        allowed_user_ids=["*"],
         token=TOKEN,
         agent_api_endpoint="https://switch.example.com/api/agent",
     )
@@ -173,6 +172,11 @@ async def controller_app(session_factory):
         hosted_disk_retention_days=7,
         hosted_launch_capacity=2,
         hosted_agents_enabled=True,
+        # The rest of what a claim reads, at `SwitchConfig`'s defaults.
+        hosted_launch_capacity_per_workspace=0,
+        hosted_pool_size=0,
+        hosted_provisions_per_minute=5,
+        hosted_box_ceiling=50,
     )
     app = FastAPI()
     app.state.hosted_controller_settings = settings
@@ -1570,13 +1574,16 @@ async def _claim(factory, owner_id: str) -> CloudMachine:
             owner_id=owner_id,
             capacity=2,
             now=datetime.now(UTC),
+            revoke=no_revoke,
+            per_workspace=0,
+            pool_pick=None,
         )
         machine = claimed.machine
         await session.commit()
         return machine
 
 
-async def test_released_machine_is_revived_or_replaced_by_a_claim(controller_app):
+async def test_a_released_machine_is_revived_by_a_claim(controller_app):
     app = controller_app
     app.config.hosted_idle_stop_minutes = 30
     machine_id, owner_id = await _empty_machine(app)
@@ -1590,8 +1597,9 @@ async def test_released_machine_is_revived_or_replaced_by_a_claim(controller_app
     await update_machine(
         app.factory, machine_id, state="deleted", desired_state="deleted"
     )
+    # Deleted, it comes back with its id, as a box (one machine id for life).
     replaced = await _claim(app.factory, owner_id)
-    assert replaced.id != machine_id
+    assert (replaced.id, replaced.backend) == (machine_id, "box")
     assert replaced.desired_state == "running"
 
 
@@ -1700,72 +1708,9 @@ async def test_the_operator_s_machine_list_says_when_machines_are_open_to_all(
 
 @pytest.fixture
 def v2_off(monkeypatch):
-    from switch_core import hosted_v2
+    from switch_core import box_cluster
 
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
-
-
-async def test_v2_off_stops_a_running_box_and_keeps_it(controller_app, v2_off):
-    app = controller_app
-    # A box with agents on it, as a live one has: an agentless machine asleep is
-    # retained by upstream's own idle sweep, whatever the switch says.
-    await enrolled(app, agents=1)
-    await update_machine(
-        app.factory,
-        app.machine_id,
-        backend="box",
-        state="ready",
-        desired_state="running",
-    )
-    item = await listed(app.client, app.machine_id)
-    machine = await machine_of(app.factory, app.machine_id)
-    # Asleep, not deleted or retained: a message wakes it once v2 is on again.
-    assert (machine.desired_state, machine.stop_reason) == ("stopped", "idle")
-    assert item["desired_state"] == "stopped"
-
-
-async def test_v2_off_an_agentless_box_is_stopped_and_never_retained(
-    controller_app, v2_off
-):
-    """With v2 off a box is only kept stopped, its data kept: not retained or
-    expired, even with no agents on it. Retained, the box scaler (which scales
-    down only `stopped`) would leave it running."""
-    app = controller_app
-    await update_machine(
-        app.factory,
-        app.machine_id,
-        backend="box",
-        state="ready",
-        desired_state="running",
-    )
-    for _ in range(2):  # and on the next pass too
-        await listed(app.client, app.machine_id)
-        machine = await machine_of(app.factory, app.machine_id)
-        assert (machine.desired_state, machine.stop_reason) == ("stopped", "idle")
-        assert machine.retain_until is None
-
-
-async def test_v2_off_a_box_already_retained_is_stopped_and_kept(
-    controller_app, v2_off
-):
-    """A box retained before the switch went off is brought back to
-    stopped (the box scaler scales down only `stopped`), its retention dropped
-    so nothing expires while v2 is off."""
-    app = controller_app
-    await update_machine(
-        app.factory,
-        app.machine_id,
-        backend="box",
-        state="ready",
-        desired_state="retained",
-        stop_reason=None,
-        retain_until=datetime.now(UTC) + timedelta(days=7),
-    )
-    for _ in range(2):  # and on the next pass too
-        await listed(app.client, app.machine_id)
-        machine = await machine_of(app.factory, app.machine_id)
-        assert (machine.desired_state, machine.stop_reason) == ("stopped", "idle")
-        assert machine.retain_until is None
+    monkeypatch.setattr(box_cluster, "_process_on", False)
 
 
 @pytest.mark.usefixtures("hosted_v2_on")
@@ -1815,14 +1760,6 @@ async def test_v2_off_leaves_a_v1_machine_running(controller_app, v2_off):
     assert machine.backend == "vm" and machine.desired_state == "running"
 
 
-async def test_v2_off_no_box_boots_or_enrols(controller_app, v2_off):
-    app = controller_app
-    await update_machine(app.factory, app.machine_id, backend="box")
-    response = await prepare(app.client, app.machine_id)
-    assert response.status_code == 409
-    assert app.enrollment.minted == []
-
-
 async def test_v2_off_a_v1_code_is_reused_as_before(controller_app, v2_off):
     """Before v2, the stored code for a revision was handed out as
     it was; with v2 off, still so, and nothing is retired."""
@@ -1832,25 +1769,6 @@ async def test_v2_off_a_v1_code_is_reused_as_before(controller_app, v2_off):
     again = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
     assert again["enrollment_code"] == first["enrollment_code"]
     assert app.enrollment.retired == []
-
-
-async def test_v2_off_the_listing_never_says_open_to_all(controller_app, v2_off):
-    app = controller_app
-    app.client._transport.app.state.hosted_controller_settings = (
-        app.settings.model_copy(
-            update={"allowed_tenant_ids": None, "allowed_user_ids": None}
-        )
-    )
-    listed_all = await app.client.get("/hosted-controller/machines", headers=HEADERS)
-    assert "open_to_all" not in listed_all.json()
-
-
-async def test_v2_off_the_owners_summary_is_as_before(controller_app, v2_off):
-    app = controller_app
-    owned = await app.client.get("/hosted-machines")
-    assert owned.status_code == 200, owned.text
-    (machine,) = owned.json()["machines"]
-    assert not {"room", "awake", "ai_calls_today", "backend"} & set(machine)
 
 
 @pytest.mark.usefixtures("hosted_v2_on")
@@ -1864,90 +1782,6 @@ async def test_v2_on_the_owners_summary_names_the_backend(controller_app):
     await update_machine(app.factory, app.machine_id, backend="box")
     (machine,) = (await app.client.get("/hosted-machines")).json()["machines"]
     assert machine["backend"] == "box"
-
-
-async def test_v2_off_a_box_is_never_claimed_or_started(controller_app, v2_off):
-    app = controller_app
-    await update_machine(
-        app.factory,
-        app.machine_id,
-        backend="box",
-        state="stopped",
-        desired_state="stopped",
-        stop_reason="idle",
-    )
-    ensured = await app.client.post("/hosted-machines/ensure")
-    started = await app.client.post(
-        f"/hosted-machines/{app.machine_id}/lifecycle",
-        json={"action": "start", "revision": 1},
-    )
-    machine = await machine_of(app.factory, app.machine_id)
-    assert ensured.status_code == 503
-    assert started.status_code == 409
-    assert machine.desired_state == "stopped" and machine.backend == "box"
-
-
-async def test_v2_off_a_status_report_keeps_only_the_counts_summary_beside_it(
-    controller_app, v2_off
-):
-    app = controller_app
-    controller_id, _ = await enrolled(app, agents=0)
-    await update_machine(app.factory, app.machine_id, heartbeat={"box": {"node": "n1"}})
-    await report_status(app, controller_id, sessions_running=0)
-    machine = await machine_of(app.factory, app.machine_id)
-    assert "box" not in (machine.heartbeat or {})
-    # A counts-only summary is kept with v2 off too: fixed keys only, never
-    # an id or text.
-    reports = controller_reports(machine)
-    assert reports
-    for report in reports.values():
-        # A v1 machine's summary: the box-only counts are kept for a box only.
-        assert set(report["metrics"]) == {
-            "agents",
-            "stopped",
-            "sessions_running",
-            "sessions_max",
-            "login_problems",
-        }
-
-
-async def test_v2_off_a_message_never_wakes_a_box(controller_app, v2_off):
-    from switch_core.gateway.cloud_controllers import (
-        wake_controller_machine,
-        wake_lifted_machine,
-    )
-
-    app = controller_app
-    controller_id, _ = await enrolled(app, agents=0)
-    await update_machine(
-        app.factory,
-        app.machine_id,
-        backend="box",
-        state="stopped",
-        desired_state="stopped",
-        stop_reason="idle",
-    )
-    with tenant_scope(TENANT_ZERO_ID):
-        async with app.factory() as session:
-            await wake_controller_machine(
-                session, controller_id, datetime.now(UTC), "message"
-            )
-            assert (
-                await wake_lifted_machine(session, controller_id, datetime.now(UTC))
-                is None
-            )
-            await session.commit()
-    machine = await machine_of(app.factory, app.machine_id)
-    assert machine.desired_state == "stopped"
-    # A v1 machine asleep still wakes for a message, as before.
-    await update_machine(app.factory, app.machine_id, backend="vm")
-    with tenant_scope(TENANT_ZERO_ID):
-        async with app.factory() as session:
-            await wake_controller_machine(
-                session, controller_id, datetime.now(UTC), "message"
-            )
-            await session.commit()
-    assert (await machine_of(app.factory, app.machine_id)).desired_state == "running"
 
 
 @pytest.fixture

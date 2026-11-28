@@ -30,12 +30,10 @@ ALONE = {
     StopReason.TURNED_OFF_BY_ADMIN: {"turned_off": True},
     StopReason.CANT_REACH: {"controller_offline_since": AGO},
     StopReason.LOGIN_NEEDED: {"login_needed_since": AGO},
-    StopReason.DAILY_CAP_REACHED: {"capped_since": AGO, "cap_resets_at": RESETS},
     StopReason.BUDGET_REACHED: {
         "budget_reached": True,
         "budget_resets_at": RESETS,
     },
-    StopReason.MEMORY_GUARD: {"memory_stopped_since": AGO},
     StopReason.WAITING_TOO_LONG: {"let_go_at": AGO},
     StopReason.BOX_MOVED: {"moved_at": AGO},
     StopReason.BOX_RESTARTED: {"restart_notice_at": AGO},
@@ -54,7 +52,7 @@ def test_each_reason_can_be_forced_on_its_own(code):
     # A budget and a turn-off carry no start time.
     no_time = (StopReason.BUDGET_REACHED, StopReason.TURNED_OFF_BY_ADMIN)
     assert reason.since == (None if code in no_time else AGO)
-    if code in (StopReason.DAILY_CAP_REACHED, StopReason.BUDGET_REACHED):
+    if code is StopReason.BUDGET_REACHED:
         assert reason.reset_at == RESETS
     else:
         assert reason.reset_at is None
@@ -121,9 +119,9 @@ def test_restarted_stops_showing_after_30_minutes_even_without_work():
 
 def test_lasting_reasons_do_not_clear_on_old_work():
     reason = stop_reason(
-        ReasonInputs(now=NOW, memory_stopped_since=AGO, last_worked_at=NOW)
+        ReasonInputs(now=NOW, login_needed_since=AGO, last_worked_at=NOW)
     )
-    assert reason == AgentStopReason(StopReason.MEMORY_GUARD, AGO)
+    assert reason == AgentStopReason(StopReason.LOGIN_NEEDED, AGO)
 
 
 # ---- the words ----
@@ -142,10 +140,7 @@ def test_the_status_heading_follows_the_wait_limit_setting():
 
 
 def test_restart_is_offered_only_where_it_helps():
-    assert {c for c, w in WORDS.items() if w.restart_helps} == {
-        StopReason.MEMORY_GUARD,
-        StopReason.CANT_REACH,
-    }
+    assert {c for c, w in WORDS.items() if w.restart_helps} == {StopReason.CANT_REACH}
 
 
 def test_core_posts_no_line_for_the_codes_the_box_or_budgets_post():
@@ -154,21 +149,12 @@ def test_core_posts_no_line_for_the_codes_the_box_or_budgets_post():
     assert set(ROOM_LINES) | BOX_POSTS | {StopReason.BUDGET_REACHED} == set(StopReason)
 
 
-def test_room_lines_are_filled_with_only_the_owner_and_a_utc_time():
-    line = room_line(StopReason.DAILY_CAP_REACHED, "ada", RESETS)
-    assert line == (
-        "My owner (@ada) has reached today's AI limit, so I can't start on this. It resets at 00:00 UTC. "
-        "Send it again after that."
-    )
-    # the gateway counts per UTC day, so the reset is always 00:00 UTC
-    assert "It resets at 00:00 UTC." in room_line(StopReason.DAILY_CAP_REACHED, "ada")
-    no_handle = room_line(StopReason.DAILY_CAP_REACHED, None, RESETS)
-    assert no_handle.startswith("My owner has reached")
+def test_room_lines_are_filled_with_only_the_owner():
     paused = room_line(StopReason.PAUSED_BY_SWITCH, "ada")
     assert "paused hosted agents for my owner (@ada)," in paused
     for code in ROOM_LINES:
         for handle in ("ada", None):
-            text = room_line(code, handle, RESETS)
+            text = room_line(code, handle)
             assert "{" not in text and "}" not in text
             assert "my owner (my owner" not in text.lower()
 

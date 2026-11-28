@@ -46,7 +46,6 @@ from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
 from switch_core.delivery.send_limits import MessageTooLong, SendRateLimited
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
     BRIDGE_ERRORS,
@@ -88,9 +87,8 @@ def refusal_status(exc: Exception) -> int | None:
         return 403
     if isinstance(exc, AgentClientNotRunning):
         # Core has only just started: the agent's host sends the post again,
-        # as for any 503, rather than taking it as refused. With hosted
-        # agents v2 off, upstream's 400, as for any ValueError below.
-        return 503 if process_hosted_v2() else 400
+        # as for any 503, rather than taking it as refused.
+        return 503
     if isinstance(exc, MembershipFixed):
         # As the room routes answer it: nothing is wrong with the request, the
         # room is a direct or group conversation.
@@ -229,10 +227,8 @@ def checked_reply_key(value: str | None) -> str | None:
 
 
 def reply_key(value: str | None) -> str | None:
-    """The host's reply key for this call's room post. With hosted agents v2
-    off the header is ignored, as before v2: no 400 for one out of shape, and
-    no `sent_under` lookup."""
-    return checked_reply_key(value) if process_hosted_v2() else None
+    """The host's reply key for this call's room post."""
+    return checked_reply_key(value)
 
 
 SESSION_SELECTOR_HEADERS = (
@@ -388,8 +384,7 @@ async def post_operation(
 
     `X-Switch-Client-Txn-Id`, when sent, is the host's key for the room post
     this call makes (`reply:…`): asked again under it, after an answer
-    lost to a Switch restart, the post is the one already made. With hosted
-    agents v2 off it is ignored, as before v2 (`reply_key`).
+    lost to a Switch restart, the post is the one already made (`reply_key`).
     """
     key = reply_key(client_txn_id)
     caller: CallerSession | None

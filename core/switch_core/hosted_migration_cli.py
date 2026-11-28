@@ -16,7 +16,7 @@ the operators list) is the actor of every audit entry. It adds no web route.
   the rollback window, say which v1 resources may go, and record it.
 
 Every command is a dry run unless `--execute` is given. PERSON is the person's
-user id. Hosted agents v2 must be on (`HOSTED_BOX_PROVISIONING`).
+user id. The server must have a box cluster configured.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.box_cluster import set_box_cluster
 from switch_core.config import SwitchConfig
 from switch_core.db.engine import create_engine_from_config, create_session_factory
 from switch_core.db.models import CloudMachine
@@ -39,7 +40,6 @@ from switch_core.db.stores.agent_controller_operation_store import (
 )
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
-from switch_core.hosted_v2 import set_process_hosted_v2
 from switch_core.management.service import revoke_controller_rows
 from switch_core.providers.hosted import load_hosted_settings
 from switch_core.visibility.box_provision import box_allowed
@@ -181,8 +181,11 @@ def _migrations(
 
 
 async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
-    if not set_process_hosted_v2(config):
-        raise CommandError("Hosted agents v2 is off here (HOSTED_BOX_PROVISIONING).")
+    if not set_box_cluster(
+        load_hosted_settings(config.hosted_controller_config_path),
+        load_keyed_id_key(config),
+    ):
+        raise CommandError("Hosted agents are off here: no box cluster is configured.")
     operator: str | None = getattr(arguments, "operator", None)
     if operator is not None:
         _require_operator(config, operator)

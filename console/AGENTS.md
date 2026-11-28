@@ -440,9 +440,10 @@ pnpm run lint
   copy it was started with is what is read back. The server reads the gate once at
   boot, so a running stack can be out of step; that is surfaced on the server's page with
   a restart offered, never applied by restarting the user's server for them (the one
-  deliberate exception anywhere is a Switch Cloud machine, which reboots itself within
-  seven days of a security update that needs it, ending its sessions; see
-  `deploy/hosted/machine/README.md`, "Security updates and reboots"). Whether it
+  deliberate exception anywhere is a frozen v1 Switch Cloud machine, which reboots itself
+  within seven days of a security update that needs it, ending its sessions; see
+  `deploy/hosted/machine/README.md`, "Security updates and reboots". A box is never
+  rebooted by the agent; a new box image is rolled out by the platform). Whether it
   is out of step is read off the running container, not inferred from what we last wrote —
   and a host that cannot be read is reported as unknown, never as agreeing.
 - **The toggle defaults to on.** Usage data is opt-out: a first-run notice says what is

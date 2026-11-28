@@ -42,7 +42,7 @@ describe('box mode', () => {
 
   it('runs the controller in box mode only with --box and the marker', () => {
     expect(resolveControllerBoxMode(true, true)).toBe(true);
-    expect(resolveControllerBoxMode(false, false)).toBe(false); // desktop and v1, unchanged
+    expect(resolveControllerBoxMode(false, false)).toBe(false); // desktop and self-installed, unchanged
     expect(() => resolveControllerBoxMode(false, true)).toThrow(BoxModeMismatch); // a box without --box
     expect(() => resolveControllerBoxMode(true, false)).toThrow(BoxModeMismatch); // --box outside a box
   });
@@ -50,7 +50,7 @@ describe('box mode', () => {
   it('takes the host from the marker, and a config can only add a refusal', () => {
     expect(hostBoxMode(true, true)).toBe(true);
     expect(hostBoxMode(false, true)).toBe(true); // nothing an agent writes turns box mode off
-    expect(hostBoxMode(false, false)).toBe(false); // desktop and v1
+    expect(hostBoxMode(false, false)).toBe(false); // desktop and self-installed
     expect(() => hostBoxMode(true, false)).toThrow(BoxModeMismatch); // marker gone: refuse on restart
   });
 });

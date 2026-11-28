@@ -4,7 +4,6 @@ copy report must be exactly its four counts."""
 
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -85,10 +84,3 @@ def test_the_operator_must_be_on_the_list(tmp_path: Path) -> None:
     cli._require_operator(config, "op-1")  # type: ignore[arg-type]
     with pytest.raises(cli.CommandError, match="operators list"):
         cli._require_operator(config, "someone-else")  # type: ignore[arg-type]
-
-
-async def test_with_v2_off_nothing_runs() -> None:
-    config = SimpleNamespace(hosted_box_provisioning=False)
-    arguments = argparse.Namespace(command="plan", person="u-1")
-    with pytest.raises(cli.CommandError, match="v2 is off"):
-        await cli._run(config, arguments)  # type: ignore[arg-type]

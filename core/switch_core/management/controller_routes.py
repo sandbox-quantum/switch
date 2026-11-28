@@ -42,6 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.box_cluster import require_box_cluster_here
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.commands import RESET_NOT_SENT
 from switch_core.bridges.agent.dependencies import get_protocol, get_session
@@ -72,7 +73,6 @@ from switch_core.delivery.restart_notice import (
     RESTART_NOTICE_TEXT,
     restart_notice_key,
 )
-from switch_core.hosted_v2 import require_hosted_v2_here
 from switch_core.management import reason_codes, socket_calls
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.dependencies import (
@@ -350,8 +350,8 @@ class RestartNoticeRequest(BaseModel):
 
 @router.post(
     "/v1/management/controllers/{controller_id}/agents/{agent_id}/restart-notice",
-    # v2's notices: with hosted agents v2 off, as if absent (404).
-    dependencies=[Depends(require_hosted_v2_here)],
+    # Box notices: without a box cluster, as if absent (404).
+    dependencies=[Depends(require_box_cluster_here)],
 )
 async def post_restart_notice(
     agent_id: str,
@@ -458,7 +458,7 @@ class RestNoticeRequest(BaseModel):
 
 @router.post(
     "/v1/management/controllers/{controller_id}/agents/{agent_id}/rest-notice",
-    dependencies=[Depends(require_hosted_v2_here)],
+    dependencies=[Depends(require_box_cluster_here)],
 )
 async def post_rest_notice(
     agent_id: str,
@@ -541,7 +541,7 @@ class ResetRefusedRequest(BaseModel):
 
 @router.post(
     "/v1/management/controllers/{controller_id}/agents/{agent_id}/reset-refused",
-    dependencies=[Depends(require_hosted_v2_here)],
+    dependencies=[Depends(require_box_cluster_here)],
 )
 async def post_reset_refused(
     agent_id: str,

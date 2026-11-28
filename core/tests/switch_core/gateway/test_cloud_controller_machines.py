@@ -22,6 +22,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.box_cluster import box_cluster_on
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     AgentController,
@@ -54,8 +55,6 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_controller import router as controller_router
 from switch_core.gateway.hosted_machines import router as machines_router
-from switch_core.hosted_v2 import _config as hosted_v2_config
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.management.placement import placement_refusal
 from switch_core.observability.hosted import reconciler_watch
@@ -63,7 +62,11 @@ from switch_core.observability.metrics import MetricsRegistry, install, uninstal
 from switch_core.process_lease import ProcessLeases
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
-from tests.switch_core.hosted_machine_helpers import add_tenant, place_managed_agent
+from tests.switch_core.hosted_machine_helpers import (
+    add_tenant,
+    no_revoke,
+    place_managed_agent,
+)
 from tests.switch_core.management.harness import (
     TEST_KEYRING,
     Harness,
@@ -125,7 +128,7 @@ def _hosted_app(
     app = FastAPI()
     app.state.hosted_controller_settings = HostedControllerSettings(
         allowed_tenant_ids=[require_tenant_id()],
-        allowed_user_ids=["*"] if process_hosted_v2() else None,
+        allowed_user_ids=["*"] if box_cluster_on() else None,
         token=TOKEN,
         agent_api_endpoint=API_ENDPOINT,
     )
@@ -136,10 +139,12 @@ def _hosted_app(
         hosted_idle_stop_minutes=30,
         hosted_disk_retention_days=7,
         hosted_launch_capacity=1,
+        hosted_launch_capacity_per_workspace=0,
+        hosted_pool_size=0,
+        hosted_provisions_per_minute=5,
+        hosted_box_ceiling=50,
         hosted_agents_enabled=True,
         third_party_avatars_enabled=True,
-        # The v1/v2 switch as the test runs it, for the v2-only routes' gate.
-        hosted_box_provisioning=process_hosted_v2(),
     )
 
     async def session():
@@ -152,7 +157,6 @@ def _hosted_app(
     app.dependency_overrides[get_session] = session
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_config] = lambda: config
-    app.dependency_overrides[hosted_v2_config] = lambda: config
     app.dependency_overrides[get_current_user] = current_user
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.test"
@@ -162,6 +166,9 @@ def _hosted_app(
 async def _claim(
     session_factory: async_sessionmaker[AsyncSession], owner: User
 ) -> CloudMachine:
+    """The owner's v1 machine, from before the freeze: these tests drive the
+    v1 controller's own flow, which existing v1 machines keep (no claim makes
+    one now, so the row is marked v1 after it)."""
     async with session_factory() as session:
         await lock_claims(session)
         claimed = await CloudMachineStore().claim(
@@ -170,8 +177,12 @@ async def _claim(
             owner_id=owner.id,
             capacity=1,
             now=datetime.now(UTC),
+            revoke=no_revoke,
+            per_workspace=0,
+            pool_pick=None,
         )
         machine = claimed.machine
+        machine.backend = "vm"
         await session.commit()
         return machine
 

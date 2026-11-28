@@ -198,7 +198,7 @@ async def restart_sweep_loop(
 
 # The restart sweep is owned work too: one process sweeps
 # every tenant, as upstream's sweeps, so two processes never both post the
-# restart line for one turn. It's registered only with hosted agents v2 on.
+# restart line for one turn. It's registered only with a box cluster.
 RESTART_SWEEP_KIND = "restart_sweep"
 
 

@@ -171,9 +171,6 @@ ALWAYS_ON_FEATURE_FLAGS: frozenset[str] = frozenset(
 )
 
 # Every flag the server recognises.
-# Flags only hosted agents v2 has, absent upstream: a list of flags leaves
-# them out with v2 off, so it is upstream's exactly.
-V2_ONLY_FLAGS: frozenset[str] = frozenset({HOSTED_AWAKE_BUDGETS})
 
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {

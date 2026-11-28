@@ -23,6 +23,7 @@ from switch_core.accounts.deletion import (
     AccountDeletionRefused,
     Workspace,
 )
+from switch_core.box_cluster import box_cluster_on
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
@@ -122,7 +123,6 @@ from switch_core.gateway.schemas import (
     UpdateMeRequest,
 )
 from switch_core.gateway.sign_in_events import record_sign_in, sign_in_failed
-from switch_core.hosted_v2 import hosted_v2_on
 from switch_core.observability.catalogue import AUTH_SIGN_IN_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.organization_admin_notices import OrganizationAdminNotices
@@ -131,7 +131,7 @@ from switch_core.room_service import RoomService
 from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 from switch_core.version import server_declaration
-from switch_core.visibility.box_provision import ask_for_box, box_provisioning_on
+from switch_core.visibility.box_provision import ask_for_box
 from switch_core.visibility.guards import get_operator_list
 from switch_core.visibility.operators import OperatorList
 
@@ -391,8 +391,8 @@ async def signup(
             machine = SignupMachine(
                 status="unavailable", reason=MACHINE_AFTER_WORKSPACE
             )
-        elif box_provisioning_on(config) and getattr(config, "hosted_pool_size", 0) > 0:
-            # Hosted agents v2 with a warm pool: no box at sign-up. One is
+        elif box_cluster_on() and config.hosted_pool_size > 0:
+            # A warm pool: no box at sign-up. One is
             # taken from the pool, or made, at the person's first start, so
             # the pool's boxes go to people who use them. The answer says
             # nothing is wrong, as before (Console shows nothing for
@@ -549,10 +549,8 @@ async def session_state(
         # the web's navigation, so nothing is written to the operator log here:
         # `require_operator` records list changes before any operator route
         # answers.
-        # With hosted agents v2 off, not read or sent, as upstream.
-        hosted_operator=operators.is_operator(user.id)
-        if hosted_v2_on(config)
-        else None,
+        # Without a box cluster, not read or sent.
+        hosted_operator=operators.is_operator(user.id) if box_cluster_on() else None,
     )
 
 

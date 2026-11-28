@@ -10,10 +10,8 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core import hosted_v2
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.gateway.cloud_controllers import (
     ROOM_KEY,
@@ -21,7 +19,6 @@ from switch_core.gateway.cloud_controllers import (
     note_waiting_for_room,
     start_summary,
 )
-from switch_core.gateway.hosted_controller import Observation
 from tests.switch_core.gateway.test_box_missing import _app as _hosted_app
 from tests.switch_core.gateway.test_box_missing import keyed_id_key  # noqa: F401
 from tests.switch_core.gateway.test_box_ready_both_orders import (
@@ -205,17 +202,6 @@ async def test_a_wake_and_a_retry_each_show_their_own_start(harness: Harness) ->
         )
 
 
-async def test_with_v2_off_the_summary_has_no_start(
-    harness: Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
-    owner = await add_member(harness.session_factory, "ada")
-    async with _hosted_app(harness, owner) as hosted:
-        ensured = await hosted.post("/hosted-machines/ensure")
-        assert ensured.status_code == 200, ensured.text
-        assert "start" not in await _summary(hosted)
-
-
 async def _observe(box: Box, harness: Harness, **body: object) -> httpx.Response:
     machine = await _state(harness, box)
     return await box.hosted.post(
@@ -247,16 +233,3 @@ async def test_the_scalers_waiting_for_room_shows_in_start_and_keeps_it_provisio
         placed = await _observe(box, harness, state="provisioning")
         assert placed.status_code == 200, placed.text
         assert (await _summary(hosted))["start"]["waiting_for_room"] is False
-
-
-def test_with_v2_off_the_field_is_refused_as_upstream_would(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The v1/v2 switch: with v2 off an observation naming it is checked by
-    upstream's model alone, which refuses the unknown field (the box scaler
-    then stops sending it)."""
-    monkeypatch.setattr(hosted_v2, "_process_on", False)
-    with pytest.raises(ValidationError, match="waiting_for_room"):
-        Observation.model_validate(
-            {"state": "provisioning", "revision": 1, "waiting_for_room": True}
-        )

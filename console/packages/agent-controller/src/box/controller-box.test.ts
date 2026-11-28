@@ -38,7 +38,7 @@ import { LaunchGate, type ProbeEnv } from './split-runtime';
 
 /**
  * The controller in box mode (`BoxController`): what only a hosted agents
- * box does. The same controller runs everywhere; desktop and v1 are
+ * box does. The same controller runs everywhere; desktop and self-installed machines are
  * `controller.test.ts`, unchanged.
  */
 

@@ -11,7 +11,7 @@ import { UpstreamForwarder } from './relay-forward';
 import { FakeCore } from './testing/fake-core';
 
 /**
- * The hub socket with box mode off (desktop and v1: as before) and on (the
+ * The hub socket with box mode off (desktop and self-installed machines: as before) and on (the
  * frame cap, and the valve's frames kept off the hub's own messages). The
  * real box valve is tested in `box/hub-valve.test.ts`; here a stand-in is enough.
  */

@@ -50,6 +50,7 @@ from typing import Any, Literal
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.box_cluster import box_cluster_on
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import (
@@ -72,7 +73,6 @@ from switch_core.db.stores.hosted_machine_store import (
     workspace_on,
 )
 from switch_core.db.tenant_lookup import tenants_of_cloud_machine
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.tenant_context import no_tenant
 from switch_core.visibility.box_provision import NAMESPACE_PREFIX, boxes_made
 from switch_core.visibility.keyed_id import KeyedIdKey, KeyedIdKind
@@ -610,8 +610,6 @@ class HostedMigrations:
         plan: Plan,
     ) -> list[str]:
         refusals: list[str] = []
-        if not process_hosted_v2():
-            return ["v2_off"]
         if record is not None and record.step in ("done", "cleaned"):
             return refusals
         if machine is None:
@@ -828,8 +826,8 @@ class HostedMigrations:
 
 
 def _require_v2() -> None:
-    if not process_hosted_v2():
-        raise MigrationRefused("v2_off", "Hosted agents v2 is off on this server.")
+    if not box_cluster_on():
+        raise MigrationRefused("v2_off", "Hosted agents are off on this server.")
 
 
 def _frozen(machine: CloudMachine) -> bool:

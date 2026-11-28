@@ -408,6 +408,10 @@ class HostedAccess:
                     .values(hosted_paused_at=now)
                 )
                 machine = await store.live_for_owner(session, user_id)
+                if machine is not None and machine.backend != "box":
+                    # A pause is a power over boxes: a v1 machine is left
+                    # running, its controllers and codes untouched (spec 2b).
+                    machine = None
                 if machine is not None:
                     machine = await store.locked(session, machine.id)
                 # An administrator's stop stays: it already holds the box
@@ -489,7 +493,7 @@ class HostedAccess:
                 raised=False,
             )
         if not enabled:
-            machine_id = await self._live_machine_of(user_id)
+            machine_id = await self._live_box_of(user_id)
             if machine_id is not None:
                 controllers = await self._controllers_of(
                     machine_id, tenant_id=tenant_id
@@ -579,12 +583,17 @@ class HostedAccess:
 
     # ── Shared steps ─────────────────────────────────────────────────────────
 
-    async def _live_machine_of(self, user_id: str) -> str | None:
+    async def _live_box_of(self, user_id: str) -> str | None:
+        """The user's live box. A turn-off is a power over boxes: a v1
+        machine is left running, its controllers and codes untouched (spec
+        2b)."""
         with no_tenant():
             async with self.session_factory() as session:
                 machine = await CloudMachineStore().live_for_owner(session, user_id)
                 await session.commit()
-                return machine.id if machine is not None else None
+                if machine is None or machine.backend != "box":
+                    return None
+                return machine.id
 
     async def _controllers_of(
         self, machine_id: str, *, tenant_id: str | None

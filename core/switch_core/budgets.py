@@ -18,7 +18,7 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import GATEWAY_ENFORCED_METRICS, UsageMetric
+from switch_core.db.models import RETIRED_METRICS, UsageMetric
 from switch_core.db.stores.budget_store import BudgetStanding
 from switch_core.security_events import SecuritySignal, log_security_event
 
@@ -35,7 +35,7 @@ def enforce_awake_budgets(enabled: bool) -> None:
 
 
 def _enforced_here(metric: str) -> bool:
-    if metric in GATEWAY_ENFORCED_METRICS:
+    if metric in RETIRED_METRICS:
         return False
     if metric == UsageMetric.AWAKE_MINUTES:
         return _awake_budgets["enforced"]
@@ -97,9 +97,7 @@ class BudgetGuard:
         exhausted = [
             standing
             for standing in standings
-            # The hosted daily cap is the gateway's to enforce, never Core's
-            # from a count the box reports; awake time only once every box is
-            # split.
+            # A retired metric never; awake time only once every box is split.
             if standing.exhausted and _enforced_here(standing.metric)
         ]
         if exhausted:
