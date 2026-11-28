@@ -1356,3 +1356,65 @@ async def test_a_release_whose_box_never_enrols_stays_released_and_rolls_back(
             )
         )
     assert placed == v1_controller
+
+
+async def test_the_record_says_where_the_move_is_and_changes_nothing(
+    session_factory: async_sessionmaker[AsyncSession], people: dict[str, Any]
+) -> None:
+    world = World(session_factory)
+    ada, op = people["ada"], people["op"].id
+    machine_id, _controller, _agent = await world.v1_machine(ada)
+    keyed = KEY.keyed_id(KeyedIdKind.USER, ada.id)
+
+    none = await world.migrations.record(ada.id)
+    assert dataclasses.asdict(none) == {
+        "machine_id": None,
+        "owner_keyed_id": keyed,
+        "step": None,
+        "v1_instance_id": None,
+        "v1_data_volume_id": None,
+        "snapshot_id": None,
+        "done_at": None,
+    }
+
+    seen: list[tuple[str | None, str | None]] = []
+
+    async def note() -> None:
+        record = await world.migrations.record(ada.id)
+        assert (record.machine_id, record.owner_keyed_id) == (machine_id, keyed)
+        assert (record.v1_instance_id, record.v1_data_volume_id) == (INSTANCE, VOLUME)
+        seen.append((record.step, record.snapshot_id))
+
+    await world.step(ada, op)
+    await note()
+    await world.reports(machine_id, "stopped")
+    await world.step(ada, op)
+    await note()
+    await world.step(ada, op, snapshot_id=SNAPSHOT)
+    await note()
+    assert seen == [("freezing", None), ("frozen", None), ("snapshot", SNAPSHOT)]
+
+    audit_before = len(await _audit(session_factory))
+    for step in ("flipped", "holding", "held", "copy_failed", "copied", "released"):
+        await _set_step(session_factory, ada, step)
+        assert (await world.migrations.record(ada.id)).step == step
+    assert len(await _audit(session_factory)) == audit_before
+
+
+async def test_the_record_of_a_finished_and_cleaned_move_has_its_done_time(
+    session_factory: async_sessionmaker[AsyncSession], people: dict[str, Any]
+) -> None:
+    world = World(session_factory)
+    ada, op = people["ada"], people["op"].id
+    machine_id, _controller, _agent = await world.v1_machine(ada)
+    await world.to_done(ada, machine_id, op)
+
+    done = await world.migrations.record(ada.id)
+    assert done.step == "done" and done.done_at == world.clock.now
+    assert done.snapshot_id == SNAPSHOT
+
+    world.clock.now += timedelta(days=7)
+    await world.migrations.clean_up(ada.id, operator_id=op, execute=True)
+    cleaned = await world.migrations.record(ada.id)
+    assert (cleaned.step, cleaned.done_at) == ("cleaned", done.done_at)
+    assert (cleaned.v1_instance_id, cleaned.v1_data_volume_id) == (INSTANCE, VOLUME)

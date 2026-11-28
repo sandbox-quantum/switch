@@ -6,12 +6,14 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from switch_core import hosted_migration_cli as cli
+from switch_core.visibility.hosted_migration import MigrationRecord
 
 
 def _report(tmp_path: Path, body: object) -> Path:
@@ -92,3 +94,39 @@ async def test_with_v2_off_nothing_runs() -> None:
     arguments = argparse.Namespace(command="plan", person="u-1")
     with pytest.raises(cli.CommandError, match="v2 is off"):
         await cli._run(config, arguments)  # type: ignore[arg-type]
+
+
+def test_the_record_is_exactly_its_seven_keys() -> None:
+    empty = cli.record_body(MigrationRecord(None, None, None, None, None, None, None))
+    assert empty == dict.fromkeys(
+        [
+            "machine_id",
+            "owner_keyed_id",
+            "step",
+            "v1_instance_id",
+            "v1_data_volume_id",
+            "snapshot_id",
+            "done_at",
+        ]
+    )
+    done = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
+    full = cli.record_body(
+        MigrationRecord(
+            "m-1",
+            "k1.user.abc",
+            "done",
+            "i-0123456789abcdef0",
+            "vol-0123456789abcdef0",
+            "snap-0123456789abcdef0",
+            done,
+        )
+    )
+    assert set(full) == set(empty)
+    assert full["done_at"] == done.isoformat()
+    assert json.loads(json.dumps(full)) == full
+
+
+def test_record_takes_a_person_and_no_operator() -> None:
+    arguments = cli._parser().parse_args(["record", "u-1"])
+    assert arguments.command == "record" and arguments.person == "u-1"
+    assert not hasattr(arguments, "operator")

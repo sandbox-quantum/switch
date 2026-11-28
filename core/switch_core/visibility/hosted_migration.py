@@ -188,6 +188,21 @@ class Manifest:
     workspaces: list[tuple[str, list[str]]]  # (tenant id, agent ids)
 
 
+@dataclass(frozen=True)
+class MigrationRecord:
+    """The move's record as the cloud-side scripts need it (`snapshot`,
+    `clean-up --execute`): the machine, the person's keyed id for the
+    snapshot's tags, the step, and the v1 resources. None where not set yet."""
+
+    machine_id: str | None
+    owner_keyed_id: str | None
+    step: str | None
+    v1_instance_id: str | None
+    v1_data_volume_id: str | None
+    snapshot_id: str | None
+    done_at: datetime | None
+
+
 class HostedMigrations:
     def __init__(
         self,
@@ -235,6 +250,21 @@ class HostedMigrations:
         plan.refusals = await self._refusals(owner_id, record, machine, plan)
         plan.next = _next(record, plan.refusals)
         return plan
+
+    async def record(self, owner_id: str) -> MigrationRecord:
+        """The person's move as recorded. Read only: no lock, no audit."""
+        with no_tenant():
+            async with self._factory() as session:
+                record = await session.get(HostedMigration, owner_id)
+                return MigrationRecord(
+                    machine_id=record.machine_id if record else None,
+                    owner_keyed_id=self._keyed(KeyedIdKind.USER, owner_id),
+                    step=record.step if record else None,
+                    v1_instance_id=record.v1_instance_id if record else None,
+                    v1_data_volume_id=record.v1_data_volume_id if record else None,
+                    snapshot_id=record.snapshot_id if record else None,
+                    done_at=record.done_at if record else None,
+                )
 
     async def copy_manifest(self, owner_id: str) -> Manifest:
         """The agents the copy job copies, named from Core's record only."""
