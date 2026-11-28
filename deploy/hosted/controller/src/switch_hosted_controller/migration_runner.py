@@ -22,8 +22,9 @@ command returns, whatever happened: the box's own egress rule (`agent-egress`) i
 copier may run with the two capabilities reading another user's files needs. A run that stops between the two
 leaves both said in its output, and the next run puts them back before anything else.
 
-Kubernetes is reached through `kubectl`, on the named context only, so the operator's own cluster login is used
-and no credential passes through this program. EC2 is read only (`DescribeSnapshots`,
+Kubernetes is reached through `kubectl proxy` on the named context only, over a private Unix socket, so the
+operator's own cluster login is used and no credential passes through this program; the requests themselves are
+`KubeHttp`'s, which the cluster contract records. EC2 is read only (`DescribeSnapshots`,
 `DescribeSnapshotAttribute`). No token, file name or file content is ever printed.
 """
 
@@ -31,15 +32,20 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import re
+import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import boto3
 
@@ -289,67 +295,208 @@ class Kube(Protocol):
     def label(self, kind: str, name: str, key: str, value: str) -> None: ...
 
 
-class Kubectl:
-    """`Kube` through `kubectl`, on the operator's named context only: never the current one."""
+# Where each kind the runner touches lives in the API: (group/version prefix, plural, namespaced).
+_RESOURCES: dict[str, tuple[str, str, bool]] = {
+    "namespace": ("/api/v1", "namespaces", False),
+    "pod": ("/api/v1", "pods", True),
+    "configmap": ("/api/v1", "configmaps", True),
+    "persistentvolumeclaim": ("/api/v1", "persistentvolumeclaims", True),
+    "persistentvolume": ("/api/v1", "persistentvolumes", False),
+    "statefulset": ("/apis/apps/v1", "statefulsets", True),
+    "job": ("/apis/batch/v1", "jobs", True),
+    "networkpolicy": ("/apis/networking.k8s.io/v1", "networkpolicies", True),
+    "storageclass": ("/apis/storage.k8s.io/v1", "storageclasses", False),
+    "volumesnapshot": ("/apis/snapshot.storage.k8s.io/v1", "volumesnapshots", True),
+    "volumesnapshotcontent": ("/apis/snapshot.storage.k8s.io/v1", "volumesnapshotcontents", False),
+}
+NAME_RE = re.compile(r"[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?")
+# The runner's field manager, so the API server's records name it.
+FIELD_MANAGER = "switch-migration-runner"
+# No comma anywhere: kubectl splits the list on commas. Names are checked in full by `resource_path` anyway.
+_SEG = r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?"
+# What `kubectl proxy` will forward: exactly the paths `resource_path` builds from `_RESOURCES`, and nothing else
+# (no secrets, no exec, attach or port-forward, no other group). kubectl's own default `--reject-paths` stays on.
+PROXY_ACCEPT_PATHS = (
+    ",".join(
+        "^"
+        + re.escape(prefix)
+        + (f"/namespaces/{_SEG}" if namespaced else "")
+        + f"/{plural}(/{_SEG})?$"
+        for prefix, plural, namespaced in _RESOURCES.values()
+        if plural != "namespaces"
+    )
+    + f",^/api/v1/namespaces/{_SEG}$"
+)
 
-    def __init__(
-        self, context: str, run: Callable[..., subprocess.CompletedProcess] = subprocess.run
-    ):
-        if not CONTEXT_RE.fullmatch(context):
-            raise Refused("bad_context", "The cluster context isn't a plain name.")
-        self._context = context
-        self._run = run
 
-    def _kubectl(
-        self, args: Sequence[str], stdin: str | None = None
-    ) -> subprocess.CompletedProcess:
-        return self._run(
-            ["kubectl", "--context", self._context, *args],
-            input=stdin,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
+class ApiError(Exception):
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
 
-    @staticmethod
-    def _failed(what: str, done: subprocess.CompletedProcess) -> Refused:
-        # kubectl's own words, cut short: they name objects and reasons, never a credential.
-        detail = (done.stderr or "").strip().splitlines()[-1:] or ["no detail"]
-        return Refused("kubectl_failed", f"kubectl {what} failed: {detail[0][:300]}")
+
+def resource_path(kind: str, namespace: str | None, name: str | None = None) -> str:
+    """The API path for a kind, built only from the fixed table and checked names."""
+    prefix, plural, namespaced = _RESOURCES[kind]
+    if namespaced != bool(namespace):
+        raise ValueError(f"{kind} is {'namespaced' if namespaced else 'cluster-wide'}")
+    for part in (namespace, name):
+        if part is not None and not NAME_RE.fullmatch(part):
+            raise Refused("bad_name", "A Kubernetes name isn't valid.")
+    path = f"{prefix}/namespaces/{namespace}/{plural}" if namespace else f"{prefix}/{plural}"
+    return f"{path}/{name}" if name else path
+
+
+def _matches(labels: Mapping[str, str], selector: str) -> bool:
+    for term in selector.split(","):
+        key, _, value = term.partition("=")
+        if labels.get(key) != value:
+            return False
+    return True
+
+
+class KubeHttp:
+    """`Kube` over the Kubernetes API, as every other client in this package speaks it: `_call` is the one way out,
+    so the cluster contract records exactly what the runner sends.
+
+    Each call is a plain request: create is a POST of the object, delete a DELETE (background propagation), the
+    label a JSON merge patch of that one label. Nothing is ever replaced whole, and no object is updated except by
+    that patch.
+    """
+
+    def __init__(self, call: Callable[..., Any]):
+        self._send = call
+
+    def _call(
+        self, method: str, path: str, body: Any = None, content_type: str | None = None
+    ) -> Any:
+        try:
+            return self._send(method, path, body, content_type)
+        except ApiError as error:
+            if error.status == 404:
+                raise
+            what = path.split("?")[0]
+            raise Refused(
+                "api_refused", f"{method} {what} was refused ({error.status}): {error}"
+            ) from None
 
     def get(self, kind: str, name: str, namespace: str | None) -> dict | None:
-        args = ["get", kind, name, "-o", "json", "--ignore-not-found"]
-        if namespace:
-            args += ["-n", namespace]
-        done = self._kubectl(args)
-        if done.returncode != 0:
-            raise self._failed(f"get {kind}", done)
-        return json.loads(done.stdout) if done.stdout.strip() else None
+        try:
+            return self._call("GET", resource_path(kind, namespace, name))
+        except ApiError as error:
+            if error.status == 404:
+                return None
+            raise
 
     def list(self, kind: str, namespace: str, selector: str) -> list[dict]:
-        done = self._kubectl(["get", kind, "-n", namespace, "-l", selector, "-o", "json"])
-        if done.returncode != 0:
-            raise self._failed(f"list {kind}", done)
-        return list(json.loads(done.stdout).get("items") or [])
+        found = self._call(
+            "GET", f"{resource_path(kind, namespace)}?labelSelector={quote(selector)}"
+        )
+        items = (found or {}).get("items") or []
+        # The server filters; so does this, so an answer it didn't filter can't name another pod.
+        return [
+            i for i in items if _matches((i.get("metadata") or {}).get("labels") or {}, selector)
+        ]
 
     def create(self, obj: dict) -> None:
-        done = self._kubectl(["create", "-f", "-", "-o", "name"], stdin=json.dumps(obj))
-        if done.returncode != 0:
-            raise self._failed(f"create {obj.get('kind')}", done)
+        kind = str(obj.get("kind", "")).lower()
+        namespace = (obj.get("metadata") or {}).get("namespace")
+        self._call("POST", f"{resource_path(kind, namespace)}?fieldManager={FIELD_MANAGER}", obj)
 
     def delete(self, kind: str, name: str, namespace: str | None) -> None:
-        args = ["delete", kind, name, "--ignore-not-found", "--wait=false"]
-        if namespace:
-            args += ["-n", namespace]
-        done = self._kubectl(args)
-        if done.returncode != 0:
-            raise self._failed(f"delete {kind}", done)
+        try:
+            self._call(
+                "DELETE",
+                resource_path(kind, namespace, name),
+                {"kind": "DeleteOptions", "apiVersion": "v1", "propagationPolicy": "Background"},
+            )
+        except ApiError as error:
+            if error.status != 404:
+                raise
 
     def label(self, kind: str, name: str, key: str, value: str) -> None:
-        done = self._kubectl(["label", kind, name, f"{key}={value}", "--overwrite"])
-        if done.returncode != 0:
-            raise self._failed(f"label {kind}", done)
+        self._call(
+            "PATCH",
+            f"{resource_path(kind, None, name)}?fieldManager={FIELD_MANAGER}",
+            {"metadata": {"labels": {key: value}}},
+            "application/merge-patch+json",
+        )
+
+
+class KubectlProxy:
+    """The operator's way in: `kubectl proxy` on the named context, on a private Unix socket in a fresh 0700
+    folder, so the API is reached with the operator's own sign-in (kubectl's credential plugin) and no credential
+    passes through this program. The proxy only forwards; the requests are `KubeHttp`'s."""
+
+    def __init__(self, context: str):
+        if not CONTEXT_RE.fullmatch(context):
+            raise Refused("bad_context", "The cluster context isn't a plain name.")
+        self._folder = Path(tempfile.mkdtemp(prefix="switch-migration-"))
+        self._socket = self._folder / "kube.sock"
+        self._process = subprocess.Popen(
+            [
+                "kubectl",
+                "--context",
+                context,
+                "proxy",
+                f"--unix-socket={self._socket}",
+                f"--accept-paths={PROXY_ACCEPT_PATHS}",
+                "--reject-methods=PUT",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 30
+        while not self._socket.exists():
+            if self._process.poll() is not None or time.monotonic() > deadline:
+                self.close()
+                raise Refused("kubectl_failed", "kubectl proxy didn't start for that context.")
+            time.sleep(0.1)
+
+    def call(
+        self, method: str, path: str, body: Any = None, content_type: str | None = None
+    ) -> Any:
+        connection = _UnixConnection(str(self._socket))
+        try:
+            payload = json.dumps(body).encode() if body is not None else None
+            headers = {"Accept": "application/json"}
+            if payload is not None:
+                headers["Content-Type"] = content_type or "application/json"
+            connection.request(method, path, body=payload, headers=headers)
+            response = connection.getresponse()
+            raw = response.read()
+        finally:
+            connection.close()
+        if response.status >= 400:
+            # The API's own reason, cut short: it names objects and rules, never a credential.
+            try:
+                reason = str(json.loads(raw).get("message", ""))[:300]
+            except ValueError:
+                reason = ""
+            raise ApiError(response.status, reason or f"HTTP {response.status}")
+        return json.loads(raw) if raw else None
+
+    def close(self) -> None:
+        if self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+        shutil.rmtree(self._folder, ignore_errors=True)
+
+
+class _UnixConnection(http.client.HTTPConnection):
+    def __init__(self, path: str):
+        super().__init__("localhost", timeout=120)
+        self._path = path
+
+    def connect(self) -> None:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(120)
+        sock.connect(self._path)
+        self.sock = sock
 
 
 @dataclass(frozen=True)
@@ -966,7 +1113,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "verify":
             if not re.fullmatch(r"[0-9a-f]{64}", args.egress_sha256):
                 raise Refused("bad_input", "The egress fingerprint isn't a sha256.")
-            verify(Kubectl(args.context), load_manifest(_read(args.manifest)), args.egress_sha256)
+            proxy = KubectlProxy(args.context)
+            try:
+                verify(
+                    KubeHttp(proxy.call), load_manifest(_read(args.manifest)), args.egress_sha256
+                )
+            finally:
+                proxy.close()
             print(
                 "The box's namespace is back as a box's: restricted, its egress rule as it was, nothing left."
             )
@@ -979,19 +1132,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         record = load_record(_read(args.record))
         manifest = load_manifest(_read(args.manifest))
-        runner = CopyRunner(
-            Kubectl(args.context),
-            boto3.client("ec2", region_name=args.region),
-            RealClock(),
-            lambda line: print(line, file=sys.stderr),
-        )
-        report = runner.run(
-            record,
-            manifest,
-            installation_id=args.installation_id,
-            image=args.image,
-            saved_egress=Path(args.saved_egress),
-        )
+        proxy = KubectlProxy(args.context)
+        try:
+            runner = CopyRunner(
+                KubeHttp(proxy.call),
+                boto3.client("ec2", region_name=args.region),
+                RealClock(),
+                lambda line: print(line, file=sys.stderr),
+            )
+            report = runner.run(
+                record,
+                manifest,
+                installation_id=args.installation_id,
+                image=args.image,
+                saved_egress=Path(args.saved_egress),
+            )
+        finally:
+            proxy.close()
     except Refused as refused:
         print(json.dumps({"refused": refused.code, "message": str(refused)}), file=sys.stderr)
         if refused.code in ("copy_failed", "bad_report", "target_mismatch", "timed_out"):

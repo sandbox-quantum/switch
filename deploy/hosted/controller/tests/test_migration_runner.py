@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,6 @@ from switch_hosted_controller.migration_runner import (
     SNAPSHOT,
     SOURCE_CLAIM,
     CopyRunner,
-    Kubectl,
     Refused,
     check_inputs,
     content_name,
@@ -746,42 +746,117 @@ def test_the_copy_prints_the_fingerprint_verify_checks(kube, ec2, tmp_path):
     assert runner.egress_sha256 == egress_hash()
 
 
-# ── kubectl ──────────────────────────────────────────────────────────────
+# ── the API client ───────────────────────────────────────────────────────
 
 
-class Done:
-    def __init__(self, returncode=0, stdout="", stderr=""):
-        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+class Recorder:
+    def __init__(self, answers: dict | None = None, fail: int | None = None) -> None:
+        self.calls: list[tuple] = []
+        self.answers = answers or {}
+        self.fail = fail
+
+    def __call__(self, method, path, body=None, content_type=None):
+        self.calls.append((method, path, body, content_type))
+        if self.fail is not None:
+            raise mr.ApiError(self.fail, "denied by policy p-m6")
+        return self.answers.get((method, path.split("?")[0]))
 
 
-def test_kubectl_always_names_the_context_and_never_the_current_one():
-    calls: list[list[str]] = []
+def test_the_client_sends_plain_creates_deletes_and_one_label_patch():
+    rec = Recorder()
+    kube = mr.KubeHttp(rec)
+    kube.create({"kind": "Job", "metadata": {"name": JOB, "namespace": NS}})
+    kube.create({"kind": "VolumeSnapshotContent", "metadata": {"name": content_name(MACHINE)}})
+    kube.delete("networkpolicy", BOX_EGRESS, NS)
+    kube.label("namespace", NS, PSS_ENFORCE, "baseline")
+    assert [(m, p) for m, p, _b, _c in rec.calls] == [
+        ("POST", f"/apis/batch/v1/namespaces/{NS}/jobs?fieldManager=switch-migration-runner"),
+        (
+            "POST",
+            "/apis/snapshot.storage.k8s.io/v1/volumesnapshotcontents?fieldManager=switch-migration-runner",
+        ),
+        ("DELETE", f"/apis/networking.k8s.io/v1/namespaces/{NS}/networkpolicies/{BOX_EGRESS}"),
+        ("PATCH", f"/api/v1/namespaces/{NS}?fieldManager=switch-migration-runner"),
+    ]
+    assert rec.calls[2][2]["propagationPolicy"] == "Background"
+    assert rec.calls[3][2:] == (
+        {"metadata": {"labels": {PSS_ENFORCE: "baseline"}}},
+        "application/merge-patch+json",
+    )
 
-    def fake(args, **kwargs):
-        calls.append(args)
-        return Done(stdout="")
 
-    kube = Kubectl("box-cluster-test", run=fake)
-    assert kube.get("namespace", NS, None) is None
+def test_a_missing_object_is_none_and_a_missing_delete_is_nothing():
+    kube = mr.KubeHttp(Recorder(fail=404))
+    assert kube.get("job", JOB, NS) is None
     kube.delete("job", JOB, NS)
-    assert all(call[:3] == ["kubectl", "--context", "box-cluster-test"] for call in calls)
+
+
+def test_an_api_refusal_is_a_refusal_with_the_apis_reason():
+    with pytest.raises(Refused) as refused:
+        mr.KubeHttp(Recorder(fail=403)).create(
+            {"kind": "Job", "metadata": {"name": JOB, "namespace": NS}}
+        )
+    assert refused.value.code == "api_refused"
+    assert "403" in str(refused.value) and "p-m6" in str(refused.value)
+
+
+def test_a_list_keeps_only_what_its_selector_names():
+    path = f"/api/v1/namespaces/{NS}/pods"
+    rec = Recorder(
+        {
+            ("GET", path): {
+                "items": [
+                    {"metadata": {"name": "box-0", "labels": {"app": "switch-box"}}},
+                    {"metadata": {"name": "copy", "labels": dict(mr.JOB_LABEL)}},
+                ]
+            }
+        }
+    )
+    found = mr.KubeHttp(rec).list("pod", NS, "app=switch-box")
+    assert [p["metadata"]["name"] for p in found] == ["box-0"]
+    assert rec.calls[0][1] == f"{path}?labelSelector=app%3Dswitch-box"
+
+
+def test_paths_are_built_from_the_table_and_checked_names_only():
+    with pytest.raises(Refused):
+        mr.resource_path("job", NS, "../../secrets/x")
+    with pytest.raises(ValueError):
+        mr.resource_path("namespace", NS, "x")
 
 
 def test_a_context_that_isnt_a_plain_name_is_refused():
     with pytest.raises(Refused):
-        Kubectl("ctx; rm -rf /")
+        mr.KubectlProxy("ctx; rm -rf /")
 
 
-def test_kubectl_failures_are_refusals_with_its_last_line_only():
-    def fake(args, **kwargs):
-        return Done(
-            returncode=1, stderr="line one\nError from server (Forbidden): jobs is forbidden"
-        )
+def _proxy_accepts(path: str) -> bool:
+    # As kubectl reads the flag: a comma-separated list of patterns.
+    return any(re.fullmatch(p, path) for p in mr.PROXY_ACCEPT_PATHS.split(","))
 
-    with pytest.raises(Refused) as refused:
-        Kubectl("ctx", run=fake).create({"kind": "Job", "metadata": {"name": JOB}})
-    assert refused.value.code == "kubectl_failed"
-    assert "forbidden" in str(refused.value) and "line one" not in str(refused.value)
+
+def test_the_proxy_patterns_hold_no_comma_of_their_own():
+    assert len(mr.PROXY_ACCEPT_PATHS.split(",")) == len(mr._RESOURCES)
+
+
+def test_the_proxy_forwards_every_path_the_runner_builds_and_nothing_else():
+    for kind, (_prefix, _plural, namespaced) in mr._RESOURCES.items():
+        ns = NS if namespaced else None
+        if kind != "namespace":  # namespaces are only ever read by name, never listed
+            assert _proxy_accepts(mr.resource_path(kind, ns)), kind
+        assert _proxy_accepts(mr.resource_path(kind, ns, "some-name")), kind
+    assert not _proxy_accepts("/api/v1/namespaces")
+    for path in (
+        f"/api/v1/namespaces/{NS}/secrets/switch-proxy-login",
+        f"/api/v1/namespaces/{NS}/pods/box-0/exec",
+        f"/api/v1/namespaces/{NS}/pods/box-0/attach",
+        f"/api/v1/namespaces/{NS}/pods/box-0/portforward",
+        f"/api/v1/namespaces/{NS}/pods/box-0/log",
+        "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings",
+        "/api/v1/nodes/n1",
+        f"/api/v1/namespaces/{NS}/serviceaccounts/box/token",
+        "/api/v1/namespaces/a/b/c",
+    ):
+        assert not _proxy_accepts(path), path
 
 
 # ── the command ──────────────────────────────────────────────────────────
