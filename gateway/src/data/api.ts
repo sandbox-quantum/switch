@@ -1779,10 +1779,13 @@ export async function changeMyName(name: string): Promise<Me> {
   return jsonRequest<Me>("/auth/me", "PATCH", { name });
 }
 
-/** What deleting the account would be refused with now, saying what to do
- * first, or null when it would go ahead. */
-export async function accountDeletionRefusal(): Promise<string | null> {
-  const check = await jsonRequest<{ refusal: string | null }>("/auth/me/deletion", "GET");
+/** What deleting the account (or, with `reset`, resetting the test
+ * account) would be refused with now, saying what to do first, or null when
+ * it would go ahead. A reset tears down the cloud machine itself, so that
+ * blocks only a deletion. */
+export async function accountDeletionRefusal(mode: "delete" | "reset"): Promise<string | null> {
+  const path = mode === "reset" ? "/auth/me/deletion?mode=reset" : "/auth/me/deletion";
+  const check = await jsonRequest<{ refusal: string | null }>(path, "GET");
   return check.refusal;
 }
 

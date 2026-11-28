@@ -29,6 +29,7 @@ const me = (overrides: Partial<Me> = {}): Me => ({
 interface Call {
   method: string;
   path: string;
+  query: string;
   body: unknown;
 }
 
@@ -38,11 +39,14 @@ function answer(routes: Record<string, unknown>): Call[] {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input)
-        .replace(/^\/gateway/, "")
-        .split("?")[0];
+      const [path, query = ""] = String(input).replace(/^\/gateway/, "").split("?");
       const method = init?.method ?? "GET";
-      calls.push({ method, path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      calls.push({
+        method,
+        path,
+        query,
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
       const key = `${method} ${path}`;
       if (!(key in routes))
         return new Response(JSON.stringify({ detail: `unmocked ${key}` }), { status: 404 });
@@ -267,6 +271,7 @@ describe("Deleting your account", () => {
     fireEvent.click(confirm);
     expect(await dialog.findByText("Your account is deleted")).toBeTruthy();
     expect(calls.find((c) => c.method === "DELETE")?.body).toEqual({ email: "ADA@example.test" });
+    expect(calls.find((c) => c.path === "/auth/me/deletion")?.query).toBe("");
     expect(auth.logout).not.toHaveBeenCalled();
     fireEvent.click(dialog.getByRole("button", { name: "Done" }));
     expect(auth.logout).toHaveBeenCalledTimes(1);
@@ -291,6 +296,8 @@ describe("Deleting your account", () => {
     expect(calls.find((c) => c.path === "/auth/me/reset-test-account")?.body).toEqual({
       email: "ada@example.test",
     });
+    // The reset's own check: a cloud machine doesn't stop a reset, which tears it down.
+    expect(calls.find((c) => c.path === "/auth/me/deletion")?.query).toBe("mode=reset");
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
     fireEvent.click(dialog.getByRole("button", { name: "Done" }));
     expect(auth.logout).toHaveBeenCalledTimes(1);

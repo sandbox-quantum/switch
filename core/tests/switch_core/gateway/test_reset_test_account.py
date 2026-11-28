@@ -726,3 +726,53 @@ async def test_starting_over_waits_for_the_cloud_machine_signing_nobody_out(
     async with session_factory() as session:
         assert await session.get(User, user_id) is not None
         assert await session.get(Tenant, solo) is None
+
+
+async def test_the_reset_check_lets_a_cloud_machine_and_a_slack_install_through(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The reset tears down the cloud machine and disconnects the Slack app of
+    a workspace it purges, so `?mode=reset` doesn't refuse either, though the
+    deletion check refuses both. Nothing changes."""
+    app, _, _ = _app(session_factory, enabled=True)
+    user_id, email, solo, _ = await _solo_workspace(session_factory)
+    async with tenant_session(session_factory, solo) as session:
+        await seed_machine(
+            session,
+            owner_id=user_id,
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+        )
+        session.add(
+            MessagingInstall(
+                tenant_id=solo,
+                platform="slack",
+                external_workspace_id=f"T-{solo}",
+                scopes="chat:write",
+                status="active",
+                installed_by_user_id=user_id,
+            )
+        )
+        await session.commit()
+
+    async with _client(app, user_id, email, solo) as client:
+        for_reset = await client.get("/auth/me/deletion", params={"mode": "reset"})
+        for_deletion = await client.get("/auth/me/deletion")
+
+    assert for_reset.status_code == 200, for_reset.text
+    assert for_reset.json() == {"refusal": None}
+    assert for_deletion.json()["refusal"] is not None
+    async with session_factory() as session:
+        assert await session.get(User, user_id) is not None
+
+
+async def test_the_reset_check_is_not_found_unless_resets_are_allowed(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    app, _, _ = _app(session_factory, enabled=False)
+    user_id, email, solo, _ = await _solo_workspace(session_factory)
+    async with _client(app, user_id, email, solo) as client:
+        answer = await client.get("/auth/me/deletion", params={"mode": "reset"})
+    assert answer.status_code == 404
