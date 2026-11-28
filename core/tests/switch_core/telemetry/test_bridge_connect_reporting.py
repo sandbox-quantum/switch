@@ -271,7 +271,7 @@ class TestEachStartFailurePointReportsAndReraises:
             await session.execute(
                 update(CollaborationBridge)
                 .where(CollaborationBridge.id == bridge_id)
-                .values(type="irc")
+                .values(type="carrier_pigeon")
             )
             await session.commit()
 

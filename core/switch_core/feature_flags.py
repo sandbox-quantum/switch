@@ -125,9 +125,9 @@ GATEWAY_CHATS = "gateway_chats"
 GATEWAY_ONBOARDING = "gateway_onboarding"
 
 # Messaging platforms beyond Slack, Mattermost, Teams, Discord and Telegram:
-# WhatsApp, Google Chat, Zulip, Signal, Matrix, Rocket.Chat and Webex. With it
-# off their adapters are not registered, so they are missing from the platform
-# directory and no bridge of those types can be created or started.
+# WhatsApp, Google Chat, Zulip, Signal, Matrix, Rocket.Chat, Webex and IRC.
+# With it off their adapters are not registered, so they are missing from the
+# platform directory and no bridge of those types can be created or started.
 ADDITIONAL_MESSAGING_PLATFORMS = "additional_messaging_platforms"
 
 # Agent providers beyond Claude Code, Codex, OpenCode, Cursor and Antigravity:
