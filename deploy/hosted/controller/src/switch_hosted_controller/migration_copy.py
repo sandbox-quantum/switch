@@ -1,24 +1,31 @@
 """The v1 to v2 migration's copy program: one person's agents' work, from a volume restored from their v1 disk's
 snapshot, into their box's `data-agents` disk.
 
-It runs as the copy Job in the person's own box namespace, with the restored volume mounted read-only, the box's
-`data-agents` claim read-write, no network and no service account token (`migration-copy-design`, and security's
-`migration-copy-job-threat-model`). It treats the source tree as hostile:
+It runs as the copy Job in the person's own box namespace, as two containers joined by a FIFO on a shared
+memory-backed `emptyDir` (`migration-copy-design`, security's `migration-copy-job-threat-model`, and the tech lead's
+decisions on the Job's shape):
 
-- It copies only what Core's manifest names: for each workspace, the seat its `seat_key` holds in the seat map (whose
+- `read`: root holding only `DAC_OVERRIDE` (so it can read every seat), with only the restored volume (read-only) and
+  the FIFO mounted. It makes every source-side check and streams what it would copy.
+- `write`: the box's agents user with no capabilities, with only `data-agents` and the FIFO mounted. It owns what it
+  writes, trusts nothing in the stream, and writes the report.
+
+Each side refuses to start with any other identity. The source tree is treated as hostile:
+
+- Only what Core's manifest names is copied: for each workspace, the seat its `seat_key` holds in the seat map (whose
   controller must be the one Core recorded), and for each agent the manifest lists there, that agent's `workspace/`
-  folder in the slot the seat's controller store gives it. Nothing else on the disk: never an agent's `home/` or
-  `watcher/`, never a controller's data, never a set-aside agent.
+  folder in the slot the seat's controller store gives it (and that slot's marker must agree). Nothing else on the
+  disk: never an agent's `home/` or `watcher/`, never a controller's data, never a set-aside agent.
 - Every path is built from integers and from names Core gave; nothing read from the disk ever becomes a path.
-- It never follows a link. Symlinks are skipped and counted; hard links, devices, FIFOs, sockets and names it can't
+- No link is ever followed. Symlinks are skipped and counted; hard links, devices, FIFOs, sockets and names it can't
   use are refused and counted.
-- It checks the caps (files, bytes, one file's size, depth) and the target's free space before writing anything.
-- It writes plain bytes with fixed ownership and modes: no setuid, setgid or sticky bit, nothing of the v1 owner.
-- It reads every file back and compares checksums.
-- Its report is counts only, never a file or agent name (`CopyReport` in Core).
+- The caps (files, bytes, one file's size, depth) and the box disk's free space are checked before anything is
+  written. Files are written with fixed modes, read back and checksummed.
+- The report is counts only, never a file or agent name (`CopyReport` in Core). Its `source_volume_id` is null: the
+  runner fills it from the bound volume. Agents with no slot on the v1 disk are named only in the reader's log.
 
-A run that refuses writes nothing and exits non-zero with a reason code. A second run may clear the target folders it
-would write, only when the runner says Core's step is `held` or `copy_failed`.
+A run that refuses writes nothing and reports its reason code. A second run clears the target folders it would write,
+only when the runner says Core's step is `copy_failed`.
 """
 
 from __future__ import annotations
@@ -67,7 +74,6 @@ BOX_UID = 2000
 BOX_GID = 2000
 FILE_MODE = 0o640
 DIR_MODE = 0o750
-VOLUME_ID = re.compile(r"^vol-[0-9a-f]{8,17}$")
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_WORKSPACES = 64
 MAX_AGENTS = 256
@@ -382,6 +388,10 @@ def read_store(root: int, index: int, owners: Owners = Owners()) -> tuple[str, d
                 "slot_mismatch", f"seat {index}'s store gives agent {agent_id} two agent users"
             )
         slots[agent_id] = slot
+    if len(set(slots.values())) != len(slots):
+        raise CopyRefused(
+            "slot_mismatch", f"seat {index}'s store gives one agent user to two agents"
+        )
     return ids[0][0], slots
 
 
@@ -407,7 +417,10 @@ def find_slots(
         try:
             folder = _open_chain(root, _agents_folder(index) + (name,))
         except FileNotFoundError:
-            continue
+            raise CopyRefused(
+                "slot_mismatch",
+                f"seat {index}'s store gives agent {agent.id} a slot that isn't on the disk",
+            ) from None
         except OSError:
             raise CopyRefused(
                 "bad_source", f"seat {index}'s slot {name} isn't a plain folder"
@@ -536,9 +549,10 @@ def walk(folder: int, caps: Caps, counts: Counts) -> Iterator[_Entry]:
 
 def _plan(
     source: int, manifest: Manifest, caps: Caps, owners: Owners
-) -> tuple[_Plan, dict[tuple[str, ...], list[_Entry]]]:
+) -> tuple[_Plan, dict[tuple[str, ...], list[_Entry]], list[str]]:
     seats = read_seat_map(source, owners)
     plan = _Plan()
+    skipped: list[str] = []
     trees: dict[tuple[str, ...], list[_Entry]] = {}
     for workspace in manifest.workspaces:
         if workspace.seat_key not in seats:
@@ -550,6 +564,7 @@ def _plan(
         for agent in workspace.agents:
             slot = slots.get(agent.id)
             if slot is None:
+                skipped.append(agent.id)
                 continue
             chain = _agents_folder(index) + (slot, WORKSPACE)
             try:
@@ -574,7 +589,143 @@ def _plan(
                 raise CopyRefused("copy_failed", "more bytes than the cap")
             plan.moves.append((chain, agent.name))
             trees[chain] = entries
-    return plan, trees
+    return plan, trees, skipped
+
+
+# ---------------------------------------------------------------- the stream between the reader and the writer
+#
+# The reader (root, `DAC_OVERRIDE` only, the source read-only) and the writer (uid 2000, no capabilities, `data-agents`
+# only) are two containers joined by a FIFO on a shared memory-backed `emptyDir`. Each frame is a 4-byte big-endian
+# length and a small JSON header; a `file` frame's header is followed by exactly its `size` bytes and their sha256.
+# The writer trusts none of it: it checks every name, depth, size and total against its own copy of the manifest and
+# its own caps, and builds every path itself.
+
+MAX_HEADER = 64 * 1024
+DIGEST = 32
+#: Effective capability bits (`/proc/self/status`, CapEff): `DAC_OVERRIDE` is bit 1.
+CAP_DAC_OVERRIDE = 1 << 1
+
+
+class StreamError(Exception):
+    """The stream isn't what the protocol says: the copy fails."""
+
+
+def _send(out: Any, header: dict[str, Any], body: bytes = b"") -> None:
+    raw = json.dumps(header, separators=(",", ":")).encode()
+    out.write(len(raw).to_bytes(4, "big") + raw + body)
+
+
+def _read_exact(stream: Any, size: int) -> bytes:
+    data = bytearray()
+    while len(data) < size:
+        chunk = stream.read(min(CHUNK, size - len(data)))
+        if not chunk:
+            raise StreamError("the stream ended early")
+        data += chunk
+    return bytes(data)
+
+
+def _receive(stream: Any) -> dict[str, Any]:
+    size = int.from_bytes(_read_exact(stream, 4), "big")
+    if not 0 < size <= MAX_HEADER:
+        raise StreamError("a header is out of bounds")
+    try:
+        header = json.loads(_read_exact(stream, size))
+    except ValueError:
+        raise StreamError("a header isn't JSON") from None
+    if not isinstance(header, dict) or not isinstance(header.get("t"), str):
+        raise StreamError("a header isn't a frame")
+    return header
+
+
+def _count(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise StreamError("a count isn't a count")
+    return value
+
+
+def read(
+    manifest: Manifest,
+    source_root: Path,
+    out: Any,
+    *,
+    caps: Caps = Caps(),
+    owners: Owners = Owners(),
+    log: Callable[[str], None] = lambda line: print(line, file=sys.stderr),
+) -> list[str]:
+    """The reader: plans the copy from the source (every source-side check), then streams it, and returns the ids of
+    the manifest's agents with no slot on the v1 disk (for the operator, never the report). A refusal is sent as a
+    `refused` frame with its code, so the writer reports it, and re-raised."""
+    source = os.open(source_root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        try:
+            plan, trees, skipped = _plan(source, manifest, caps, owners)
+        except CopyRefused as refused:
+            _send(out, {"t": "refused", "code": refused.code})
+            raise
+        if skipped:
+            # The operator's output only, never the report: agents with no slot on the v1 disk.
+            log(
+                f"agents with no slot on the v1 disk, not copied: {len(skipped)}: {', '.join(skipped)}"
+            )
+        _send(
+            out,
+            {
+                "t": "totals",
+                "files": plan.counts.files,
+                "bytes": plan.counts.bytes,
+                "symlinks_skipped": plan.counts.symlinks_skipped,
+                "refused": plan.counts.refused,
+            },
+        )
+        for chain, name in plan.moves:
+            _send(out, {"t": "agent", "name": name})
+            _stream_tree(source, chain, trees[chain], out)
+        _send(out, {"t": "end"})
+    finally:
+        os.close(source)
+    return skipped
+
+
+def _stream_tree(source: int, chain: tuple[str, ...], entries: list[_Entry], out: Any) -> None:
+    root = _open_chain(source, chain)
+    open_dirs: dict[tuple[str, ...], int] = {(): root}
+    try:
+        for entry in entries:
+            parent = open_dirs[entry.path[:-1]]
+            leaf = entry.path[-1]
+            if entry.kind == "dir":
+                open_dirs[entry.path] = _open_dir(leaf, parent)
+                _send(out, {"t": "dir", "path": list(entry.path)})
+                continue
+            src = os.open(
+                leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=parent
+            )
+            try:
+                info = os.fstat(src)
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_nlink != 1
+                    or info.st_size != entry.size
+                ):
+                    raise CopyRefused("copy_failed", "a file changed under the copy")
+                _send(out, {"t": "file", "path": list(entry.path), "size": entry.size})
+                digest = hashlib.sha256()
+                sent = 0
+                while chunk := os.read(src, CHUNK):
+                    sent += len(chunk)
+                    if sent > entry.size:
+                        raise CopyRefused("copy_failed", "a file grew under the copy")
+                    digest.update(chunk)
+                    out.write(chunk)
+                if sent != entry.size:
+                    raise CopyRefused("copy_failed", "a file shrank under the copy")
+                out.write(digest.digest())
+            finally:
+                os.close(src)
+    finally:
+        for fd in open_dirs.values():
+            os.close(fd)
 
 
 # ---------------------------------------------------------------- writing the target
@@ -597,144 +748,13 @@ def _clear(target_workspaces: int, name: str) -> None:
 def _make_dir(name: str, parent: int) -> int:
     os.mkdir(name, DIR_MODE, dir_fd=parent)
     fd = _open_dir(name, parent)
-    _own(fd, DIR_MODE)
+    os.fchmod(fd, DIR_MODE)
     return fd
-
-
-def _own(fd: int, mode: int) -> None:
-    """Fixed owner and mode, never the source's: no setuid, setgid or sticky bit."""
-    if os.geteuid() == 0:
-        os.fchown(fd, BOX_UID, BOX_GID)
-    os.fchmod(fd, mode)
-
-
-def _copy_file(name: str, source_dir: int, target_dir: int, expected: int) -> tuple[bool, int]:
-    """Copies one plain file; returns whether its read-back checksum matched, and its size."""
-    src = os.open(
-        name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=source_dir
-    )
-    try:
-        info = os.fstat(src)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != expected:
-            raise CopyRefused("copy_failed", "a file changed under the copy")
-        dst = os.open(
-            name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-            FILE_MODE,
-            dir_fd=target_dir,
-        )
-        digest = hashlib.sha256()
-        written = 0
-        try:
-            while chunk := os.read(src, CHUNK):
-                written += len(chunk)
-                if written > expected:
-                    raise CopyRefused("copy_failed", "a file grew under the copy")
-                digest.update(chunk)
-                view = memoryview(chunk)
-                while view:
-                    view = view[os.write(dst, view) :]
-            _own(dst, FILE_MODE)
-            os.fsync(dst)
-        finally:
-            os.close(dst)
-    finally:
-        os.close(src)
-    check = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=target_dir)
-    try:
-        again = hashlib.sha256()
-        while chunk := os.read(check, CHUNK):
-            again.update(chunk)
-    finally:
-        os.close(check)
-    return again.digest() == digest.digest(), written
-
-
-def _write(
-    source: int,
-    target_workspaces: int,
-    chain: tuple[str, ...],
-    name: str,
-    entries: list[_Entry],
-    counts: Counts,
-) -> None:
-    src_root = _open_chain(source, chain)
-    dst_root = _make_dir(name, target_workspaces)
-    open_dirs: dict[tuple[str, ...], tuple[int, int]] = {(): (src_root, dst_root)}
-    try:
-        for entry in entries:
-            parent_src, parent_dst = open_dirs[entry.path[:-1]]
-            leaf = entry.path[-1]
-            if entry.kind == "dir":
-                open_dirs[entry.path] = (_open_dir(leaf, parent_src), _make_dir(leaf, parent_dst))
-            else:
-                matched, _ = _copy_file(leaf, parent_src, parent_dst, entry.size)
-                if not matched:
-                    counts.checksum_mismatches += 1
-    finally:
-        for src_fd, dst_fd in open_dirs.values():
-            os.close(src_fd)
-            os.close(dst_fd)
 
 
 def _free_bytes(fd: int) -> int:
     info = os.fstatvfs(fd)
     return info.f_bavail * info.f_frsize
-
-
-def copy(
-    manifest: Manifest,
-    source_root: Path,
-    target_root: Path,
-    *,
-    source_volume_id: str,
-    may_clear: bool,
-    caps: Caps = Caps(),
-    owners: Owners = Owners(),
-    free_bytes: Callable[[int], int] = _free_bytes,
-    clock: Callable[[], float] = time.monotonic,
-) -> dict[str, Any]:
-    """Copies the manifest's agents' work and returns the `CopyReport` body. Refuses, writing nothing, on anything it
-    can't vouch for."""
-    if not VOLUME_ID.match(source_volume_id):
-        raise CopyRefused("bad_manifest", "the source volume id isn't a volume id")
-    started = clock()
-    source = os.open(source_root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    target = os.open(target_root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    try:
-        plan, trees = _plan(source, manifest, caps, owners)
-        try:
-            workspaces = _open_dir(BOX_WORKSPACES, target)
-        except FileNotFoundError:
-            workspaces = _make_dir(BOX_WORKSPACES, target)
-        try:
-            existing = [name for _, name in plan.moves if _exists(name, workspaces)]
-            if existing and not may_clear:
-                raise CopyRefused(
-                    "target_not_empty", "the box already holds some of these agents' folders"
-                )
-            if free_bytes(target) < plan.counts.bytes + FREE_SPACE_MARGIN:
-                raise CopyRefused("target_full", "the box's disk can't hold the copy")
-            for name in existing:
-                _clear(workspaces, name)
-            for chain, name in plan.moves:
-                _write(source, workspaces, chain, name, trees[chain], plan.counts)
-        finally:
-            os.close(workspaces)
-    finally:
-        os.close(source)
-        os.close(target)
-    return {
-        "machine_id": manifest.machine_id,
-        "workspaces": [w.tenant_id for w in manifest.workspaces],
-        "files": plan.counts.files,
-        "bytes": plan.counts.bytes,
-        "symlinks_skipped": plan.counts.symlinks_skipped,
-        "refused": plan.counts.refused,
-        "checksum_mismatches": plan.counts.checksum_mismatches,
-        "source_volume_id": source_volume_id,
-        "seconds": max(0, int(clock() - started)),
-    }
 
 
 def _exists(name: str, parent: int) -> bool:
@@ -745,7 +765,256 @@ def _exists(name: str, parent: int) -> bool:
     return True
 
 
-# ---------------------------------------------------------------- the Job's entry point
+def _box_disk(info: os.stat_result, box_uid: int, box_gid: int) -> bool:
+    """The box's `data-agents` root: its agents user's own, or, as the box pod's `fsGroup` leaves a fresh volume
+    (`root:2000`, group-writable), its agents group's to write."""
+    if not stat.S_ISDIR(info.st_mode):
+        return False
+    return info.st_uid == box_uid or (info.st_gid == box_gid and bool(info.st_mode & stat.S_IWGRP))
+
+
+def _path(value: Any, caps: Caps) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value or len(value) > caps.depth + 1:
+        raise StreamError("a path isn't a short list")
+    if not all(isinstance(part, str) and _usable_name(part) for part in value):
+        raise StreamError("a path segment isn't usable")
+    return tuple(value)
+
+
+def write(
+    manifest: Manifest,
+    target_root: Path,
+    stream: Any,
+    *,
+    may_clear: bool,
+    caps: Caps = Caps(),
+    box_uid: int = BOX_UID,
+    box_gid: int = BOX_GID,
+    free_bytes: Callable[[int], int] = _free_bytes,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """The writer: checks the reader's totals against its own caps and the box disk's free space before writing
+    anything, then writes what the stream carries under `workspaces/<name>` for the manifest's own names, reads each
+    file back and compares checksums, and returns the `CopyReport` body (with `source_volume_id` null: the runner fills
+    it from the bound volume)."""
+    started = clock()
+    names = {agent.name for workspace in manifest.workspaces for agent in workspace.agents}
+    first = _receive(stream)
+    if first["t"] == "refused":
+        code = first.get("code")
+        raise CopyRefused(
+            code if isinstance(code, str) and SAFE_ID.match(code) else "copy_failed",
+            "the reader refused",
+        )
+    if first["t"] != "totals":
+        raise StreamError("the stream doesn't start with its totals")
+    files, size = _count(first.get("files")), _count(first.get("bytes"))
+    skipped, refused = _count(first.get("symlinks_skipped")), _count(first.get("refused"))
+    if files > caps.files or size > caps.bytes:
+        raise CopyRefused("copy_failed", "the copy is larger than the caps")
+    target = os.open(target_root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        if not _box_disk(os.fstat(target), box_uid, box_gid):
+            raise CopyRefused("target_mismatch", "the target isn't the box's agents disk")
+        if free_bytes(target) < size + FREE_SPACE_MARGIN:
+            raise CopyRefused("target_full", "the box's disk can't hold the copy")
+        try:
+            workspaces = _open_dir(BOX_WORKSPACES, target)
+        except FileNotFoundError:
+            workspaces = _make_dir(BOX_WORKSPACES, target)
+        try:
+            existing = [name for name in sorted(names) if _exists(name, workspaces)]
+            if existing and not may_clear:
+                raise CopyRefused(
+                    "target_not_empty", "the box already holds some of these agents' folders"
+                )
+            for name in existing:
+                _clear(workspaces, name)
+            got_files, got_bytes, mismatches = _receive_trees(
+                stream, workspaces, names, caps, files, size
+            )
+        finally:
+            os.close(workspaces)
+    finally:
+        os.close(target)
+    if (got_files, got_bytes) != (files, size):
+        raise StreamError("the stream didn't carry what its totals said")
+    return {
+        "machine_id": manifest.machine_id,
+        "workspaces": [w.tenant_id for w in manifest.workspaces],
+        "files": got_files,
+        "bytes": got_bytes,
+        "symlinks_skipped": skipped,
+        "refused": refused,
+        "checksum_mismatches": mismatches,
+        "source_volume_id": None,
+        "seconds": max(0, int(clock() - started)),
+    }
+
+
+def _receive_trees(
+    stream: Any, workspaces: int, names: set[str], caps: Caps, files: int, size: int
+) -> tuple[int, int, int]:
+    got_files = got_bytes = mismatches = 0
+    seen: set[str] = set()
+    open_dirs: dict[tuple[str, ...], int] = {}
+    try:
+        while True:
+            header = _receive(stream)
+            kind = header["t"]
+            if kind == "end":
+                return got_files, got_bytes, mismatches
+            if kind == "agent":
+                name = header.get("name")
+                if not isinstance(name, str) or name not in names or name in seen:
+                    raise StreamError("an agent folder isn't one the manifest names, once")
+                seen.add(name)
+                for fd in open_dirs.values():
+                    os.close(fd)
+                open_dirs = {(): _make_dir(name, workspaces)}
+                continue
+            if not open_dirs:
+                raise StreamError("an entry came before its agent")
+            path = _path(header.get("path"), caps)
+            parent = open_dirs.get(path[:-1])
+            if parent is None or path in open_dirs:
+                raise StreamError("an entry's folder wasn't sent first, or came twice")
+            if kind == "dir":
+                if len(path) > caps.depth:
+                    raise CopyRefused("copy_failed", "a folder is nested past the depth cap")
+                open_dirs[path] = _make_dir(path[-1], parent)
+            elif kind == "file":
+                length = _count(header.get("size"))
+                got_files += 1
+                got_bytes += length
+                if length > caps.file_bytes or got_files > files or got_bytes > size:
+                    raise StreamError("a file is past its declared totals or the caps")
+                if not _receive_file(stream, path[-1], parent, length):
+                    mismatches += 1
+            else:
+                raise StreamError("a frame isn't one the protocol has")
+    finally:
+        for fd in open_dirs.values():
+            os.close(fd)
+
+
+def _receive_file(stream: Any, name: str, parent: int, length: int) -> bool:
+    """Writes `length` bytes from the stream as a new file; whether the reader's checksum, the bytes received and the
+    file read back all agree."""
+    dst = os.open(
+        name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        FILE_MODE,
+        dir_fd=parent,
+    )
+    digest = hashlib.sha256()
+    try:
+        left = length
+        while left:
+            chunk = _read_exact(stream, min(CHUNK, left))
+            left -= len(chunk)
+            digest.update(chunk)
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(dst, view) :]
+        os.fchmod(dst, FILE_MODE)
+        os.fsync(dst)
+    finally:
+        os.close(dst)
+    sent = _read_exact(stream, DIGEST)
+    check = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+    try:
+        again = hashlib.sha256()
+        while chunk := os.read(check, CHUNK):
+            again.update(chunk)
+    finally:
+        os.close(check)
+    return digest.digest() == sent == again.digest()
+
+
+# ---------------------------------------------------------------- both halves in one process (tests, local runs)
+
+
+def copy(
+    manifest: Manifest,
+    source_root: Path,
+    target_root: Path,
+    *,
+    may_clear: bool,
+    caps: Caps = Caps(),
+    owners: Owners = Owners(),
+    box_uid: int = BOX_UID,
+    free_bytes: Callable[[int], int] = _free_bytes,
+    log: Callable[[str], None] = lambda line: print(line, file=sys.stderr),
+) -> dict[str, Any]:
+    """The reader and the writer joined by a pipe, as the Job joins them by a FIFO. Raises the reader's refusal if it
+    refused."""
+    import threading
+
+    read_end, write_end = os.pipe()
+    errors: list[BaseException] = []
+
+    def reader() -> None:
+        try:
+            with os.fdopen(write_end, "wb") as out:
+                read(manifest, source_root, out, caps=caps, owners=owners, log=log)
+        except BaseException as exc:  # noqa: BLE001 -- carried to the caller
+            errors.append(exc)
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    try:
+        with os.fdopen(read_end, "rb") as stream:
+            try:
+                return write(
+                    manifest,
+                    target_root,
+                    stream,
+                    may_clear=may_clear,
+                    caps=caps,
+                    box_uid=box_uid,
+                    free_bytes=free_bytes,
+                )
+            except BaseException:
+                # Let the reader finish writing into a closed pipe rather than block.
+                stream.close()
+                raise
+    finally:
+        thread.join()
+        if errors and isinstance(errors[0], CopyRefused):
+            raise errors[0]
+
+
+# ---------------------------------------------------------------- the Job's entry points
+
+
+def _capabilities() -> int:
+    for line in Path("/proc/self/status").read_text().splitlines():
+        if line.startswith("CapEff:"):
+            return int(line.split()[1], 16)
+    raise CopyRefused("copy_failed", "the process's capabilities can't be read")
+
+
+def check_reader_identity() -> None:
+    """The reader runs as root holding exactly `DAC_OVERRIDE`; a looser Job fails closed."""
+    if os.geteuid() != 0 or _capabilities() != CAP_DAC_OVERRIDE:
+        raise CopyRefused("bad_job", "the reader must run as root with only DAC_OVERRIDE")
+
+
+def check_writer_identity(box_uid: int = BOX_UID) -> None:
+    """The writer runs as the box's agents user with no capabilities."""
+    if os.geteuid() != box_uid or os.getegid() != BOX_GID or _capabilities() != 0:
+        raise CopyRefused(
+            "bad_job", "the writer must run as the box's agents user with no capabilities"
+        )
+
+
+def _wait_for(path: Path, timeout: float = 300.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not path.exists():
+        if time.monotonic() > deadline:
+            raise CopyRefused("copy_failed", "the stream never appeared")
+        time.sleep(0.2)
 
 
 def main(
@@ -753,16 +1022,25 @@ def main(
     termination_log: Path = TERMINATION_LOG,
     *,
     owners: Owners = Owners(),
+    box_uid: int = BOX_UID,
     free_bytes: Callable[[int], int] = _free_bytes,
+    check_identity: bool = True,
 ) -> int:
     parser = argparse.ArgumentParser(prog="switch-migration-copy")
-    parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument(
+    roles = parser.add_subparsers(dest="role", required=True)
+    reader = roles.add_parser("read", help="the reader container: root, DAC_OVERRIDE only")
+    reader.add_argument("--manifest", type=Path, required=True)
+    reader.add_argument(
         "--source", type=Path, required=True, help="the restored volume, mounted read-only"
     )
-    parser.add_argument("--target", type=Path, required=True, help="the box's data-agents disk")
-    parser.add_argument("--source-volume-id", required=True)
-    parser.add_argument(
+    reader.add_argument("--stream", type=Path, required=True, help="the FIFO the writer makes")
+    writer = roles.add_parser(
+        "write", help="the writer container: the box's agents user, no capabilities"
+    )
+    writer.add_argument("--manifest", type=Path, required=True)
+    writer.add_argument("--target", type=Path, required=True, help="the box's data-agents disk")
+    writer.add_argument("--stream", type=Path, required=True, help="the FIFO to make and read")
+    writer.add_argument(
         "--step",
         choices=("held", "copy_failed"),
         required=True,
@@ -774,29 +1052,58 @@ def main(
         namespace = os.environ.get("POD_NAMESPACE")
         if namespace is not None and namespace != manifest.namespace:
             raise CopyRefused("target_mismatch", "the manifest is for another box's namespace")
-        report = copy(
-            manifest,
-            args.source,
-            args.target,
-            source_volume_id=args.source_volume_id,
-            may_clear=args.step == "copy_failed",
-            owners=owners,
-            free_bytes=free_bytes,
-        )
+        if args.role == "read":
+            if check_identity:
+                check_reader_identity()
+            _wait_for(args.stream)
+            with open(args.stream, "wb") as out:
+                skipped = read(manifest, args.source, out, owners=owners)
+            _report(termination_log, _read_done(skipped))
+            return 0
+        if check_identity:
+            check_writer_identity(box_uid)
+        if not args.stream.exists():
+            os.mkfifo(args.stream, 0o600)
+        with open(args.stream, "rb") as stream:
+            report = write(
+                manifest,
+                args.target,
+                stream,
+                may_clear=args.step == "copy_failed",
+                box_uid=box_uid,
+                free_bytes=free_bytes,
+            )
     except CopyRefused as refused:
         print(f"copy refused: {refused.code}: {refused.detail}", file=sys.stderr)
         _report(termination_log, {"refused": refused.code})
         return 1
-    except OSError as exc:
-        print(
-            f"copy failed: {type(exc).__name__} {errno.errorcode.get(exc.errno or 0, '')}",
-            file=sys.stderr,
+    except (OSError, StreamError) as exc:
+        detail = (
+            errno.errorcode.get(getattr(exc, "errno", 0) or 0, "")
+            if isinstance(exc, OSError)
+            else str(exc)
         )
+        print(f"copy failed: {type(exc).__name__} {detail}", file=sys.stderr)
         _report(termination_log, {"refused": "copy_failed"})
         return 1
     _report(termination_log, report)
     print(json.dumps(report))
     return 0
+
+
+#: A pod's termination message holds 4 KB; the reader's keeps well inside it.
+MAX_TERMINATION_BYTES = 3800
+
+
+def _read_done(skipped: list[str]) -> dict[str, Any]:
+    """The reader's termination message: the skipped agents' ids, as many as fit, and how many there were in all."""
+    body: dict[str, Any] = {"read": "done", "skipped_agents": [], "skipped_total": len(skipped)}
+    for agent_id in skipped:
+        body["skipped_agents"].append(agent_id)
+        if len(json.dumps(body, separators=(",", ":"))) > MAX_TERMINATION_BYTES:
+            body["skipped_agents"].pop()
+            break
+    return body
 
 
 def _report(path: Path, body: dict[str, Any]) -> None:

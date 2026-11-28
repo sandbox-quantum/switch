@@ -3,6 +3,7 @@ nothing (`migration_copy.py`, security's `migration-copy-job-threat-model`)."""
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import socket
@@ -17,7 +18,6 @@ from switch_hosted_controller.migration_copy import Caps, CopyRefused, Owners, c
 
 ME = os.getuid()
 OWNERS = Owners(seat_map=ME, seat_base=ME, seat_step=0)
-VOLUME = "vol-0123456789abcdef0"
 MACHINE = "00000000-0000-4000-8000-0000000000aa"
 NAMESPACE = "agents-user-k1-00000000000000aa"
 
@@ -106,11 +106,12 @@ def _run(disk: dict, *, may_clear: bool = False, caps: Caps = Caps(), free: int 
         read_manifest(json.dumps(disk["manifest"]).encode()),
         disk["source"],
         disk["target"],
-        source_volume_id=VOLUME,
         may_clear=may_clear,
         caps=caps,
         owners=OWNERS,
+        box_uid=ME,
         free_bytes=lambda _fd: free,
+        log=disk.setdefault("log", []).append,
     )
 
 
@@ -152,7 +153,7 @@ def test_only_each_agents_workspace_is_copied_into_its_box_folder(disk: dict) ->
         "symlinks_skipped": 0,
         "refused": 0,
         "checksum_mismatches": 0,
-        "source_volume_id": VOLUME,
+        "source_volume_id": None,
         "seconds": report["seconds"],
     }
 
@@ -322,10 +323,11 @@ def _refused_with_owners(disk: dict, owners: Owners, code: str) -> None:
             read_manifest(json.dumps(disk["manifest"]).encode()),
             disk["source"],
             disk["target"],
-            source_volume_id=VOLUME,
             may_clear=False,
             owners=owners,
+            box_uid=ME,
             free_bytes=lambda _fd: 1 << 50,
+            log=lambda _line: None,
         )
     assert refused.value.code == code
     assert not (disk["target"] / "workspaces" / "alpha").exists()
@@ -389,38 +391,193 @@ def test_two_agents_of_one_name_refuse_the_copy(disk: dict) -> None:
     assert refused.value.code == "unsafe_name"
 
 
-# ---------------------------------------------------------------- the Job's entry point
+def test_an_agent_with_no_slot_is_named_in_the_log_only(disk: dict) -> None:
+    report = _run(disk)
+    assert any("a2" in line for line in disk["log"])
+    assert "a2" not in json.dumps(report)
 
 
-def _main(disk: dict, monkeypatch: pytest.MonkeyPatch, step: str = "held") -> tuple[int, Path]:
+# ---------------------------------------------------------------- the stream: the writer trusts none of it
+
+
+def _stream(disk: dict) -> bytes:
+    out = io.BytesIO()
+    migration_copy.read(
+        read_manifest(json.dumps(disk["manifest"]).encode()),
+        disk["source"],
+        out,
+        owners=OWNERS,
+        log=lambda _line: None,
+    )
+    return out.getvalue()
+
+
+def _frames(raw: bytes) -> list[tuple[dict, bytes]]:
+    """The stream split into (header, what follows it) pairs."""
+    frames, at = [], 0
+    while at < len(raw):
+        size = int.from_bytes(raw[at : at + 4], "big")
+        header = json.loads(raw[at + 4 : at + 4 + size])
+        at += 4 + size
+        body = b""
+        if header["t"] == "file":
+            body = raw[at : at + header["size"] + 32]
+            at += len(body)
+        frames.append((header, body))
+    return frames
+
+
+def _join(frames: list[tuple[dict, bytes]]) -> bytes:
+    out = io.BytesIO()
+    for header, body in frames:
+        migration_copy._send(out, header, body)
+    return out.getvalue()
+
+
+def _write(disk: dict, raw: bytes) -> dict:
+    return migration_copy.write(
+        read_manifest(json.dumps(disk["manifest"]).encode()),
+        disk["target"],
+        io.BytesIO(raw),
+        may_clear=False,
+        box_uid=ME,
+        free_bytes=lambda _fd: 1 << 50,
+    )
+
+
+def test_the_writer_takes_an_honest_stream(disk: dict) -> None:
+    assert _write(disk, _stream(disk))["files"] == 3
+
+
+def test_a_truncated_stream_fails_the_copy(disk: dict) -> None:
+    with pytest.raises(migration_copy.StreamError):
+        _write(disk, _stream(disk)[:-40])
+
+
+def test_a_lying_reader_cant_name_a_folder_outside(disk: dict) -> None:
+    frames = _frames(_stream(disk))
+    for header, _ in frames:
+        if header["t"] == "file":
+            header["path"] = ["..", "escaped.txt"]
+            break
+    with pytest.raises(migration_copy.StreamError):
+        _write(disk, _join(frames))
+    assert not (disk["target"] / "escaped.txt").exists()
+    assert not (disk["target"] / "workspaces" / "escaped.txt").exists()
+
+
+def test_a_lying_reader_cant_write_another_agents_folder(disk: dict) -> None:
+    frames = _frames(_stream(disk))
+    for header, _ in frames:
+        if header["t"] == "agent":
+            header["name"] = "someone-else"
+            break
+    with pytest.raises(migration_copy.StreamError):
+        _write(disk, _join(frames))
+    assert not (disk["target"] / "workspaces" / "someone-else").exists()
+
+
+def test_a_stream_past_its_declared_totals_fails_the_copy(disk: dict) -> None:
+    frames = _frames(_stream(disk))
+    frames[0][0]["files"] = 1
+    with pytest.raises(migration_copy.StreamError):
+        _write(disk, _join(frames))
+
+
+def test_a_stream_larger_than_the_writers_caps_is_refused_before_writing(disk: dict) -> None:
+    frames = _frames(_stream(disk))
+    frames[0][0]["bytes"] = 10**15
+    with pytest.raises(CopyRefused) as refused:
+        _write(disk, _join(frames))
+    assert refused.value.code == "copy_failed"
+    assert not (disk["target"] / "workspaces").exists()
+
+
+def test_a_bad_checksum_is_counted(disk: dict) -> None:
+    frames = _frames(_stream(disk))
+    for i, (header, body) in enumerate(frames):
+        if header["t"] == "file":
+            frames[i] = (header, body[:-32] + bytes(32))
+            break
+    assert _write(disk, _join(frames))["checksum_mismatches"] == 1
+
+
+@pytest.mark.parametrize(
+    "raw", [b"", b"\x00\x00\x00\x00", b"\xff\xff\xff\xff" + b"x" * 10, b"\x00\x00\x00\x02{}"]
+)
+def test_a_malformed_stream_fails_the_copy(disk: dict, raw: bytes) -> None:
+    with pytest.raises(migration_copy.StreamError):
+        _write(disk, raw)
+
+
+def test_the_readers_refusal_reaches_the_writer(disk: dict) -> None:
+    disk["manifest"]["workspaces"][1]["seat_key"] = "key-elsewhere"
+    with pytest.raises(CopyRefused):
+        _stream(disk)
+    raw = io.BytesIO()
+    migration_copy._send(raw, {"t": "refused", "code": "no_seat"})
+    with pytest.raises(CopyRefused) as refused:
+        _write(disk, raw.getvalue())
+    assert refused.value.code == "no_seat"
+
+
+def test_the_writer_refuses_a_target_that_isnt_the_boxs(disk: dict) -> None:
+    with pytest.raises(CopyRefused) as refused:
+        migration_copy.write(
+            read_manifest(json.dumps(disk["manifest"]).encode()),
+            disk["target"],
+            io.BytesIO(_stream(disk)),
+            may_clear=False,
+            box_uid=ME + 1,
+            free_bytes=lambda _fd: 1 << 50,
+        )
+    assert refused.value.code == "target_mismatch"
+
+
+# ---------------------------------------------------------------- the containers' entry points
+
+
+def test_each_side_refuses_the_wrong_identity() -> None:
+    if os.geteuid() != 0:
+        with pytest.raises(CopyRefused) as refused:
+            migration_copy.check_reader_identity()
+        assert refused.value.code == "bad_job"
+    if os.geteuid() != migration_copy.BOX_UID:
+        with pytest.raises(CopyRefused):
+            migration_copy.check_writer_identity()
+
+
+def _main_write(disk: dict, raw: bytes, monkeypatch: pytest.MonkeyPatch) -> tuple[int, Path]:
     manifest = disk["tmp"] / "manifest.json"
     manifest.write_text(json.dumps(disk["manifest"]))
+    stream = disk["tmp"] / "stream"
+    stream.write_bytes(raw)
     log = disk["tmp"] / "termination-log"
     code = migration_copy.main(
         [
+            "write",
             "--manifest",
             str(manifest),
-            "--source",
-            str(disk["source"]),
             "--target",
             str(disk["target"]),
-            "--source-volume-id",
-            VOLUME,
+            "--stream",
+            str(stream),
             "--step",
-            step,
+            "held",
         ],
         termination_log=log,
-        owners=OWNERS,
+        box_uid=ME,
         free_bytes=lambda _fd: 1 << 50,
+        check_identity=False,
     )
     return code, log
 
 
-def test_the_job_writes_its_report_to_the_termination_log(
+def test_the_writer_puts_its_report_in_the_termination_log(
     disk: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("POD_NAMESPACE", NAMESPACE)
-    code, log = _main(disk, monkeypatch)
+    code, log = _main_write(disk, _stream(disk), monkeypatch)
     assert code == 0
     body = json.loads(log.read_text())
     assert set(body) == {
@@ -434,11 +591,145 @@ def test_the_job_writes_its_report_to_the_termination_log(
         "source_volume_id",
         "seconds",
     }
+    assert body["source_volume_id"] is None
 
 
 def test_the_job_refuses_another_boxs_manifest(disk: dict, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POD_NAMESPACE", "agents-user-k1-00000000000000bb")
-    code, log = _main(disk, monkeypatch)
+    code, log = _main_write(disk, _stream(disk), monkeypatch)
     assert code == 1
     assert json.loads(log.read_text()) == {"refused": "target_mismatch"}
     assert not (disk["target"] / "workspaces").exists()
+
+
+def test_a_broken_stream_is_reported_as_a_failed_copy(
+    disk: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code, log = _main_write(disk, _stream(disk)[:-10], monkeypatch)
+    assert code == 1
+    assert json.loads(log.read_text()) == {"refused": "copy_failed"}
+
+
+def test_the_two_containers_meet_through_a_fifo(disk: dict) -> None:
+    """Both entry points, as the Job runs them: the writer makes the FIFO and reads it; the reader waits for it."""
+    import threading
+
+    manifest = disk["tmp"] / "manifest.json"
+    manifest.write_text(json.dumps(disk["manifest"]))
+    shared = disk["tmp"] / "shared"
+    shared.mkdir()
+    stream = shared / "stream"
+    writer_log, reader_log = disk["tmp"] / "writer-log", disk["tmp"] / "reader-log"
+    results: dict[str, int] = {}
+
+    def writer() -> None:
+        results["write"] = migration_copy.main(
+            [
+                "write",
+                "--manifest",
+                str(manifest),
+                "--target",
+                str(disk["target"]),
+                "--stream",
+                str(stream),
+                "--step",
+                "held",
+            ],
+            termination_log=writer_log,
+            box_uid=ME,
+            free_bytes=lambda _fd: 1 << 50,
+            check_identity=False,
+        )
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    results["read"] = migration_copy.main(
+        [
+            "read",
+            "--manifest",
+            str(manifest),
+            "--source",
+            str(disk["source"]),
+            "--stream",
+            str(stream),
+        ],
+        termination_log=reader_log,
+        owners=OWNERS,
+        check_identity=False,
+    )
+    thread.join(timeout=30)
+    assert results == {"read": 0, "write": 0}
+    assert json.loads(reader_log.read_text()) == {
+        "read": "done",
+        "skipped_agents": ["a2"],
+        "skipped_total": 1,
+    }
+    assert json.loads(writer_log.read_text())["files"] == 3
+    assert (disk["target"] / "workspaces" / "bravo" / "notes.txt").read_text() == "b1's notes\n"
+
+
+def test_a_lying_reader_cant_send_an_unusable_name(disk: dict) -> None:
+    frames = _frames(_stream(disk))
+    for header, _ in frames:
+        if header["t"] == "file" and len(header["path"]) == 1:
+            header["path"] = ["new\nline.txt"]
+            break
+    with pytest.raises(migration_copy.StreamError):
+        _write(disk, _join(frames))
+    assert not any("\n" in p.name for p in disk["target"].rglob("*"))
+
+
+def test_a_file_past_the_writers_own_cap_is_refused_before_it_is_written(disk: dict) -> None:
+    with pytest.raises(migration_copy.StreamError):
+        migration_copy.write(
+            read_manifest(json.dumps(disk["manifest"]).encode()),
+            disk["target"],
+            io.BytesIO(_stream(disk)),
+            may_clear=False,
+            caps=Caps(file_bytes=5),
+            box_uid=ME,
+            free_bytes=lambda _fd: 1 << 50,
+        )
+    assert not any(p.is_file() for p in disk["target"].rglob("*"))
+
+
+def test_the_readers_skipped_list_fits_a_termination_message() -> None:
+    body = migration_copy._read_done([f"agent-{i:04d}-" + "x" * 150 for i in range(256)])
+    assert len(json.dumps(body, separators=(",", ":"))) <= migration_copy.MAX_TERMINATION_BYTES
+    assert body["skipped_total"] == 256 and 0 < len(body["skipped_agents"]) < 256
+
+
+def test_a_box_disk_left_root_owned_by_the_pods_fs_group_is_taken() -> None:
+    """A fresh volume under `fsGroup: 2000`: root's, group 2000, group-writable (2775)."""
+    fresh = os.stat_result((stat.S_IFDIR | 0o2775, 0, 0, 0, 0, 2000, 0, 0, 0, 0))
+    assert migration_copy._box_disk(fresh, 2000, 2000)
+    closed = os.stat_result((stat.S_IFDIR | 0o2755, 0, 0, 0, 0, 2000, 0, 0, 0, 0))
+    assert not migration_copy._box_disk(closed, 2000, 2000)
+    elsewhere = os.stat_result((stat.S_IFDIR | 0o2775, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    assert not migration_copy._box_disk(elsewhere, 2000, 2000)
+
+
+def test_a_store_giving_one_slot_to_two_agents_refuses_the_copy(disk: dict) -> None:
+    """Without the store's own constraint (a hostile file), one folder would be copied into two agents' folders."""
+    disk["manifest"]["workspaces"][0]["agents"][1]["name"] = "second"
+    path = disk["source"] / ".switch-controller" / "controller.db"
+    path.unlink()
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    db.execute(
+        "CREATE TABLE agent_users (slot INTEGER, agent_id TEXT NOT NULL, claimed_at TEXT NOT NULL)"
+    )
+    db.execute("INSERT INTO meta VALUES ('controller_id', 'ctl-a')")
+    db.executemany("INSERT INTO agent_users VALUES (?, ?, 'then')", [(1, "a1"), (1, "a2")])
+    db.commit()
+    db.close()
+    # No marker either, so only the store's own rows can say the slot is shared.
+    (disk["source"] / "agents" / "01" / ".switch-agent-id").unlink()
+    _refused(disk, "slot_mismatch")
+
+
+def test_a_store_row_whose_slot_folder_is_missing_refuses_the_copy(disk: dict) -> None:
+    path = disk["source"] / ".switch-controller" / "controller.db"
+    path.unlink()
+    _store(path, "ctl-a", [(1, "a1"), (7, "a2")])
+    _refused(disk, "slot_mismatch")
