@@ -82,6 +82,16 @@ async def test_a_repeated_refusal_is_answered_429_without_reaching_the_app() -> 
         assert (await _request(breaker, "/gateway/agents/a1"))[0] == 403
 
 
+async def test_a_removed_transport_asked_for_again_and_again_is_held_back() -> None:
+    app, clock = _App(410), _Clock()
+    breaker = RefusalBreaker(app, clock=clock)
+    for _ in range(REFUSALS_TO_TRIP):
+        assert (await _request(breaker, "/agents/a1/events"))[0] == 410
+
+    assert (await _request(breaker, "/agents/a1/events"))[0] == 429
+    assert app.calls == REFUSALS_TO_TRIP
+
+
 async def test_after_the_wait_one_request_goes_through_and_its_answer_decides() -> None:
     app, clock = _App(404), _Clock()
     breaker = RefusalBreaker(app, clock=clock)
