@@ -249,6 +249,7 @@ class TestResults:
         assert set(services) == {
             "airtable",
             "atlassian",
+            "azure-devops",
             "datadog",
             "github",
             "gitlab",

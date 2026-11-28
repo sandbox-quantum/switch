@@ -15,7 +15,6 @@ const catalogSlugs = readdirSync(CATALOG_DIR, { withFileTypes: true })
 // yet, or none in SVG. Their tiles show initials until one is added.
 const AWAITING_LOGO = [
   'amplitude',
-  'azure-devops',
   'launchdarkly',
   'marketo',
   'monday',

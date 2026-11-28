@@ -830,7 +830,10 @@ class OAuthAdapter:
         }
         access = self._definition.access
         if access is None or not access.unscoped:
-            query["scope"] = " ".join(scopes)
+            requested = list(scopes)
+            if self._oauth.request_offline_access and "offline_access" not in requested:
+                requested.append("offline_access")
+            query["scope"] = " ".join(requested)
         for key, value in self._oauth.authorization_params.items():
             query[key] = value
         if self._oauth.prompt is not None:

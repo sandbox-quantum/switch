@@ -101,6 +101,13 @@ version of their own to them without also giving them a release of their own.
   agent apart from one that does not exist.** Both are refused with the same
   error; another workspace's agent used to fail later, with a different one.
 
+#### Added
+- **The Azure DevOps connection.** An operator registers an Entra app; a
+  connected person can grant agents access to Azure DevOps work items, repos,
+  pipelines and wikis through the remote MCP server. The grant can write.
+  Live tenant sign-in and token renewal still need verification.
+
+
 ### [0.32.2] - 2026-11-25
 
 #### Changed

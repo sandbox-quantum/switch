@@ -39,6 +39,7 @@ const MARK_COLOR: Record<string, string> = {
   sentry: 'text-[#362D59] emdark:text-foreground',
   'new-relic': 'text-foreground emdark:text-[#1CE783]',
   airtable: 'text-foreground emdark:text-[#18BFFF]',
+  'azure-devops': 'text-[#0078D4] emdark:text-foreground',
   pagerduty: 'text-[#06AC38]',
   grafana: 'text-[#F46800]',
   supabase: 'text-[#3FCF8E]',

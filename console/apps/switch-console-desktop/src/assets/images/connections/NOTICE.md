@@ -16,7 +16,8 @@ All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14, and
 `atlassian.svg` and `google-workspace.svg`, fetched 2026-11-10, and
 `sentry.svg`, fetched 2026-11-05, and the Simple Icons files added for the
 coming soon connectors (`pagerduty.svg` through `miro.svg` in the table),
-fetched 2026-11-14, and `shopify.svg`, fetched 2026-11-23.
+fetched 2026-11-14, `shopify.svg`, fetched 2026-11-23, and
+`azure-devops.svg`, fetched 2026-11-03.
 
 | File | Brand | Source | License / terms | Colour |
 |---|---|---|---|---|
@@ -51,9 +52,10 @@ fetched 2026-11-14, and `shopify.svg`, fetched 2026-11-23.
 | `zoom.svg` | Zoom | Simple Icons 16.33.0, `zoom` | CC0-1.0; guidelines https://brand.zoom.us/usage-legal/ | `#0B5CFF`, white in dark theme |
 | `miro.svg` | Miro | Simple Icons 16.33.0, `miro` | CC0-1.0 | `#050038`, white in dark theme |
 | `shopify.svg` | Shopify | Simple Icons 16.33.0, `shopify` | CC0-1.0; guidelines https://www.shopify.com/brand-assets | `#7AB55C` |
+| `azure-devops.svg` | Azure DevOps | [Devicon](https://devicon.dev) 2.18.0, `azuredevops-plain` | MIT (https://github.com/devicons/devicon/blob/v2.18.0/LICENSE); Microsoft trademark, https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks | `#0078D4`, white in dark theme |
 
-Simple Icons' CC0 dedication covers the drawings; it does not grant any
-trademark rights, which remain with the owners.
+Simple Icons' CC0 dedication and Devicon's MIT licence cover the drawings;
+neither grants any trademark rights, which remain with the owners.
 
 ## Vendor-supplied logos
 

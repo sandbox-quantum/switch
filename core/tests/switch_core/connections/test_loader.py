@@ -18,7 +18,6 @@ from switch_core.connections.loader import (
 PLACEHOLDERS = {
     "asana",
     "amplitude",
-    "azure-devops",
     "bigquery",
     "bitbucket",
     "box",
@@ -56,6 +55,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "github",
         "airtable",
         "atlassian",
+        "azure-devops",
         "datadog",
         "google-workspace",
         "gitlab",
@@ -66,6 +66,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "azure-devops",
         "datadog",
         "github",
         "gitlab",
@@ -78,6 +79,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["azure-devops"].skill_files
     assert "SKILL.md" in CATALOG["datadog"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
@@ -567,6 +569,56 @@ def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity.url == "https://gitlab.com/api/v4/user"
     assert definition.auth.identity.account_id == "id"
     assert definition.auth.identity.label == "username"
+
+
+def test_the_shipped_azure_devops_entry_signs_in_as_microsoft_documents_it():
+    definition = CATALOG["azure-devops"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "AZURE_DEVOPS"
+    assert oauth.loopback_ports is None
+    assert (oauth.authorization_url, oauth.token_url) == (
+        "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize",
+        "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+    )
+    assert oauth.prompt == "select_account"
+    assert oauth.request_offline_access
+    assert oauth.authorization_params == {}
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
+    assert oauth.remove_access is not None and "Revoke sessions" in oauth.remove_access
+    assert definition.auth.refresh == "reusable"
+    identity = definition.auth.identity
+    assert identity is not None
+    assert identity.url == (
+        "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1"
+    )
+    assert (identity.account_id, identity.label) == ("id", "emailAddress")
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        90 * 60,
+    )
+    assert definition.mcp is not None and definition.cli is None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("azure-devops", "https://mcp.dev.azure.com/")
+    ]
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+
+
+def test_the_shipped_azure_devops_entry_asks_for_one_documented_scope():
+    access = CATALOG["azure-devops"].definition.access
+    assert access is not None and access.write is not None
+    scopes = [
+        "api://2a72489c-aab2-4b65-b93a-a91edccf33b8/Ado.Mcp.Tools",
+    ]
+    assert access.read.scopes == scopes
+    assert access.write.scopes == scopes
+    assert not access.unscoped
 
 
 @pytest.fixture

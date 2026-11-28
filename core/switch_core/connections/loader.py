@@ -215,6 +215,9 @@ class OAuthClient(BaseModel):
     (`access_type: offline`, for a vendor that hands out a refresh token only
     when asked), never one Core sets itself.
 
+    `request_offline_access`: request a refresh token from a vendor that
+    does not include this OIDC scope in the access token's permissions.
+
     `choices`: what the person picks from a fixed list before signing in (a
     vendor's site or region), each a field that is never secret. The entry's
     URLs (its MCP servers', which endpoints are discovered from, its
@@ -238,6 +241,7 @@ class OAuthClient(BaseModel):
     authorization_params: dict[
         AuthorizationParam, Annotated[str, Field(pattern=r"^[A-Za-z0-9._~-]{1,64}$")]
     ] = Field(default_factory=dict)
+    request_offline_access: bool = False
     authorization_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
@@ -1119,6 +1123,14 @@ class ConnectionDefinition(BaseModel):
             for level in (self.access.read, self.access.write)
         ):
             raise ValueError("an oauth entry's levels name OAuth scopes")
+        if oauth is not None and oauth.request_offline_access:
+            if self.access is None or self.access.unscoped:
+                raise ValueError("offline access needs scoped OAuth access")
+            accesses = [self.access, *(p.access for p in self.access_profiles.values())]
+            for access in accesses:
+                for level in (access.read, access.write):
+                    if level is not None and "offline_access" in (level.scopes or []):
+                        raise ValueError("offline_access is not an API permission")
         self._check_oauth_templates()
         self._check_paste()
 
