@@ -48,7 +48,9 @@ class TestGetOrCreateOidcUser:
             await session.commit()
 
         async with session_factory() as session:
-            with pytest.raises(OidcIdentityConflictError, match="administrator"):
+            with pytest.raises(
+                OidcIdentityConflictError, match="not connected to your new login"
+            ):
                 await store.get_or_create_oidc_user(
                     session,
                     iss=_ISS,

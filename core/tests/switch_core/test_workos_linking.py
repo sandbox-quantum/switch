@@ -4,6 +4,8 @@ applies to; `owner` only arranges fixtures and reads results."""
 
 from __future__ import annotations
 
+import csv
+import io
 import uuid
 
 import pytest
@@ -17,7 +19,15 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.stores.user_store import UserStore
-from switch_core.workos_linking import LinkingError, link_accounts, link_organization
+from switch_core.workos_linking import (
+    AccountCategory,
+    AccountLink,
+    LinkingError,
+    account_counts,
+    link_accounts,
+    link_organization,
+    write_accounts_csv,
+)
 from tests.conftest import RLSHarness
 
 pytestmark = pytest.mark.no_ambient_tenant
@@ -197,6 +207,7 @@ class TestLinkingAccounts:
             apply=False,
         )
         [mine] = [link for link in reported if link.user_id == ada.id]
+        assert mine.category is AccountCategory.LINKABLE
         assert mine.outcome == "would link WorkOS user user_ADA"
         assert await _identities(owner, ada.id) == []
 
@@ -208,7 +219,7 @@ class TestLinkingAccounts:
             apply=True,
         )
         [mine] = [link for link in applied if link.user_id == ada.id]
-        assert mine.linked
+        assert mine.category is AccountCategory.LINKED
         assert await _identities(owner, ada.id) == [(issuer, "user_ADA")]
 
         again = await link_accounts(
@@ -218,27 +229,45 @@ class TestLinkingAccounts:
             issuer,
             apply=True,
         )
-        assert ada.id not in {link.user_id for link in again}
+        [mine] = [link for link in again if link.user_id == ada.id]
+        assert mine.category is AccountCategory.LINKED
+        assert mine.outcome == "already linked to WorkOS user user_ADA"
 
     @pytest.mark.parametrize(
-        ("workos_users", "outcome"),
+        ("workos_users", "category", "outcome"),
         [
-            ([], "no WorkOS user has this address"),
+            ([], AccountCategory.NO_WORKOS_USER, "no WorkOS user has this address"),
             (
                 [
                     {"id": "user_A", "email_verified": True},
                     {"id": "user_B", "email_verified": True},
                 ],
+                AccountCategory.SEVERAL_WORKOS_USERS,
                 "2 WorkOS users have this address",
             ),
             (
                 [{"id": "user_A", "email_verified": False}],
+                AccountCategory.UNVERIFIED_ADDRESS,
                 "WorkOS user user_A has not verified this address",
+            ),
+            (
+                [{"email_verified": True}],
+                AccountCategory.NO_ID,
+                "the WorkOS user has no id Switch can read",
+            ),
+            (
+                [{"id": "", "email_verified": True}],
+                AccountCategory.NO_ID,
+                "the WorkOS user has no id Switch can read",
             ),
         ],
     )
     async def test_an_account_without_one_verified_match_is_left(
-        self, rls_harness: RLSHarness, workos_users: list[dict], outcome: str
+        self,
+        rls_harness: RLSHarness,
+        workos_users: list[dict],
+        category: AccountCategory,
+        outcome: str,
     ) -> None:
         owner = rls_harness.owner
         issuer = f"https://{_id('auth')}.example.test"
@@ -256,8 +285,8 @@ class TestLinkingAccounts:
         )
 
         [mine] = [link for link in links if link.user_id == ada.id]
+        assert mine.category is category
         assert mine.outcome == outcome
-        assert not mine.linked
         assert await _identities(owner, ada.id) == []
 
     async def test_a_workos_user_linked_to_another_account_is_left(
@@ -286,5 +315,45 @@ class TestLinkingAccounts:
         )
 
         [mine] = [link for link in links if link.user_id == ada.id]
+        assert mine.category is AccountCategory.WORKOS_USER_TAKEN
         assert mine.outcome == f"WorkOS user user_ADA is linked to account {bea.id}"
         assert await _identities(owner, ada.id) == []
+
+
+def _link(category: AccountCategory) -> AccountLink:
+    user_id = _id("user")
+    return AccountLink(user_id, f"{user_id}@example.test", category, "outcome")
+
+
+class TestTheReport:
+    def test_counts_every_category_including_empty_ones(self) -> None:
+        links = [
+            _link(AccountCategory.LINKABLE),
+            _link(AccountCategory.LINKABLE),
+            _link(AccountCategory.NO_WORKOS_USER),
+        ]
+
+        counts = account_counts(links, applied=False).splitlines()
+
+        expected = {AccountCategory.LINKABLE: 2, AccountCategory.NO_WORKOS_USER: 1}
+        assert counts[: len(AccountCategory)] == [
+            f"{category}: {expected.get(category, 0)}" for category in AccountCategory
+        ]
+        assert counts[-1] == "3 accounts (report only: pass --apply to link)"
+        assert account_counts(links, applied=True).splitlines()[-1] == "3 accounts"
+
+    def test_csv_gives_the_id_address_and_category_of_each_account(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        links = [
+            _link(AccountCategory.NO_WORKOS_USER),
+            _link(AccountCategory.LINKED),
+        ]
+
+        write_accounts_csv(links)
+
+        rows = list(csv.reader(io.StringIO(capsys.readouterr().out)))
+        assert rows == [
+            ["user_id", "email", "category"],
+            *([link.user_id, link.email, str(link.category)] for link in links),
+        ]

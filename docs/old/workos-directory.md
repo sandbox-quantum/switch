@@ -56,9 +56,43 @@ switch-link-workos accounts --apply    # write the links
   account by email address; someone whose address already has an account is
   refused until it is linked. `accounts` links an account when exactly one
   WorkOS user has its address, verified, and that user is linked to no other
-  account, and reports every account it could not link and why. Accounts it
-  cannot link can be handled by hand or left to sign in as new people once
-  their old account is removed.
+  account. It lists every account with a category, and a count of each at
+  the end; `--format csv` gives the user id, address and category instead
+  (counts on stderr), to hand to whoever contacts the people concerned. The
+  addresses go to the operator's terminal only.
+
+  | Category | Means | What changes it |
+  | --- | --- | --- |
+  | `linkable` | would be linked by `--apply` | `--apply` |
+  | `linked` | has a WorkOS identity, from this run or earlier | — |
+  | `no_workos_user` | no WorkOS user has the address | the person signs up through WorkOS |
+  | `unverified_address` | the one WorkOS user has not verified it | the person verifies it in WorkOS |
+  | `several_workos_users` | more than one WorkOS user has it | sorted out by hand |
+  | `workos_user_taken` | that WorkOS user is linked to another account | sorted out by hand |
+  | `no_id` | WorkOS gave the user no id Switch can read | a WorkOS problem to report |
+
+  A person refused for this reason is told that an account with their address
+  exists and is not connected to their new login yet. The refusal is a 409.
+
+### Moving existing accounts over
+
+Do this in each environment before organizations are linked at sign-in, and
+before password sign-in is turned off: an account left unlinked loses its way
+in. Link the platform admin account (the one made at the server's first start)
+first, or the engineers lose their own access.
+
+1. Run `switch-link-workos accounts` without `--apply` and keep the counts.
+2. Check that each platform admin account is `linkable`. If one is
+   `no_workos_user`, that engineer signs in to Switch through WorkOS once. The
+   sign-in is refused, as expected, and makes the WorkOS user.
+3. Run it with `--apply`.
+4. For each `no_workos_user` account still in use (by default: a sign-in or a
+   membership change in the last 90 days), the person signs up through "Sign
+   in with WorkOS" with the same address. The first attempt is refused with
+   the text above. Run `--apply` again after each batch of sign-ups, until no
+   account in use is left unlinked.
+5. Record the accounts left unlinked because nobody uses them; they are
+   removed when stored passwords are deleted.
 
 ## At sign-in
 
