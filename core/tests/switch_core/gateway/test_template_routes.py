@@ -10,10 +10,12 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import yaml
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
+from switch_core.db.models import Template
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.schemas import (
@@ -28,6 +30,7 @@ from switch_core.gateway.templates import (
     list_templates,
     patch_template,
 )
+from switch_core.rooms_yaml import ParamSpec, resolve_params
 from tests.switch_core.gateway.agent_route_harness import add_user
 
 _TEMPLATE_STORE = TemplateStore()
@@ -730,3 +733,98 @@ class TestVisibility:
                 config=_config(),
             )
             assert (own.can_edit, own.can_manage) == (True, True)
+
+
+def _long_pattern_document() -> str:
+    pattern = "(?:" + "a" * 600 + ")|b+"
+    return (
+        "params:\n"
+        "  team:\n"
+        "    type: string\n"
+        f"    pattern: '{pattern}'\n"
+        'room:\n  name: "{team}"\n'
+    )
+
+
+class TestPatternBounds:
+    """The pattern length cap is held when a template is created or updated,
+    and a template stored before the cap still loads and lists."""
+
+    async def test_a_template_stored_with_a_long_pattern_still_loads_and_lists(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            alice = await add_user(session, name="alice")
+            await session.commit()
+            # Straight into the store, as one saved before the cap would be.
+            stored = await _TEMPLATE_STORE.create(
+                session,
+                Template(
+                    owner_id=alice.id,
+                    name="old",
+                    description="d",
+                    kind="room",
+                    content=_long_pattern_document(),
+                    read_visibility="public",
+                    write_visibility="private",
+                ),
+            )
+            await session.commit()
+
+            (row,) = await _listed(
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                alice,
+                await _is_admin(session, alice),
+                config=_config(),
+            )
+            assert row.name == "old"
+            assert row.room_count == 1
+            fetched = await get_template(
+                stored.id,
+                session,
+                _TEMPLATE_STORE,
+                _USER_STORE,
+                alice,
+                await _is_admin(session, alice),
+                config=_config(),
+            )
+            assert fetched.content == _long_pattern_document()
+        params = yaml.safe_load(_long_pattern_document())["params"]
+        declared = {k: ParamSpec.model_validate(v) for k, v in params.items()}
+        assert resolve_params(declared, {"team": "bbb"}) == {"team": "bbb"}
+
+    async def test_creating_one_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            alice = await add_user(session, name="alice")
+            await session.commit()
+            with pytest.raises(HTTPException) as exc:
+                await _create(
+                    session, alice, name="new", content=_long_pattern_document()
+                )
+            assert exc.value.status_code == 422
+            assert "at most 500 are allowed" in exc.value.detail
+
+    async def test_updating_one_to_it_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            alice = await add_user(session, name="alice")
+            await session.commit()
+            created = await _create(session, alice, name="t")
+            with pytest.raises(HTTPException) as exc:
+                await patch_template(
+                    created.id,  # type: ignore[attr-defined]
+                    TemplateUpdateRequest(content=_long_pattern_document()),
+                    session,
+                    _TEMPLATE_STORE,
+                    _USER_STORE,
+                    _config(),
+                    alice,
+                    await _is_admin(session, alice),
+                )
+            assert exc.value.status_code == 422
+            assert "at most 500 are allowed" in exc.value.detail

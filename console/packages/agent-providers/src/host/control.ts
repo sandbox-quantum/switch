@@ -9,6 +9,7 @@ import {
   type AttachmentTransfers,
   attachmentChunkSchema,
   ControlError,
+  transferIdSchema,
 } from './attachment-transfers';
 import { readJournalSnapshot } from './journal-snapshot';
 import {
@@ -100,7 +101,7 @@ export const controlMessageSchema = z.union([
   /** A session read from its journal, whether or not its host is running. */
   z.object({ journal: z.string().min(1) }),
   z.object({ attachment: attachmentChunkSchema }),
-  z.object({ attachmentCancel: z.string().min(1) }),
+  z.object({ attachmentCancel: transferIdSchema }),
 ]);
 export type ControlMessage = z.infer<typeof controlMessageSchema>;
 
@@ -241,7 +242,33 @@ export async function handleControlMessage(
   if ('journal' in message) return readJournalSnapshot(message.journal);
   if ('attachment' in message) return context.transfers.receive(message.attachment);
   if ('attachmentCancel' in message) return context.transfers.cancel(message.attachmentCancel);
+  await assertOwnEnsure(context.agentId, message.ensure.config);
   return context.ensure(message.ensure);
+}
+
+const ensureTargetSchema = z.object({
+  session: z.object({ sessionId: z.string().min(1), agentId: z.string().min(1) }),
+});
+
+/**
+ * An `ensure` names its session inside the configuration it carries, so the
+ * ownership check above does not see it. It may start or reattach only a
+ * session of this host's agent: its configuration must name the agent, and a
+ * session already saved must be the agent's. (Launching then refuses a saved
+ * configuration naming a different agent from the one asked for, which covers
+ * a config being written while this reads it.)
+ */
+async function assertOwnEnsure(agentId: string, config: unknown): Promise<void> {
+  const target = ensureTargetSchema.safeParse(config);
+  if (!target.success)
+    throw new ControlError(
+      'invalid_config',
+      'The configuration to start names no session and agent; nothing was started.'
+    );
+  const { sessionId } = target.data.session;
+  if (target.data.session.agentId !== agentId) throw notOwnSession(agentId, sessionId);
+  const owner = await sessionOwner(sessionId);
+  if (owner !== null && owner !== agentId) throw notOwnSession(agentId, sessionId);
 }
 
 export type EnsureSession = (input: {

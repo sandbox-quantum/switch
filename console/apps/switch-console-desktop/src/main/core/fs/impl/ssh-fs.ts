@@ -169,14 +169,6 @@ export class SshFileSystem implements FileSystemProvider {
             continue;
           }
 
-          // Apply filter if provided
-          if (options?.filter) {
-            const filterRegex = new RegExp(options.filter);
-            if (!filterRegex.test(item.filename)) {
-              continue;
-            }
-          }
-
           const entryPath = this.relativePath(`${fullPath}/${item.filename}`);
           if (seen.has(entryPath)) {
             continue;
@@ -627,19 +619,6 @@ export class SshFileSystem implements FileSystemProvider {
     return result.stdout.trim();
   }
 
-  async glob(pattern: string, options?: { cwd?: string; dot?: boolean }): Promise<string[]> {
-    const cwd = options?.cwd ? this.resolveRemotePath(options.cwd) : this.remotePath;
-    const dotSetup = options?.dot ? 'shopt -s dotglob;' : '';
-    const command = `${dotSetup} shopt -s nullglob; cd ${quoteShellArg(cwd)} && printf '%s\\n' ${pattern}`;
-    try {
-      const result = await this.exec(command);
-      if (result.exitCode !== 0) return [];
-      return result.stdout.trim().split('\n').filter(Boolean);
-    } catch {
-      return [];
-    }
-  }
-
   async copyLocalFile(localAbsPath: string, destRelPath: string): Promise<void> {
     const sftp = await this.getSftp();
     const remoteFull = this.resolveRemotePath(destRelPath);
@@ -747,14 +726,6 @@ export class SshFileSystem implements FileSystemProvider {
         if (isNaN(lineNum)) continue;
 
         const relPath = this.relativePath(filePath);
-
-        // Apply file pattern filter if provided
-        if (options?.filePattern) {
-          const patternRegex = new RegExp(options.filePattern);
-          if (!patternRegex.test(relPath)) {
-            continue;
-          }
-        }
 
         seenFiles.add(filePath);
 

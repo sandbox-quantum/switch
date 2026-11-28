@@ -97,6 +97,7 @@ from switch_core.bridges.collaboration.webex.text import (
     read_message,
     render_mentions,
 )
+from switch_core.outbound import OutboundPolicy
 from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
@@ -318,7 +319,12 @@ class WebexAdapter(PlatformAdapter):
         return None
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         config = WebexConnectionConfig.model_validate(connection_config)
         async with httpx.AsyncClient(timeout=15.0) as http:
             me = await cls._identify(WebexClient(config.bot_token, http))

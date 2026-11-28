@@ -57,11 +57,49 @@ version of their own to them without also giving them a release of their own.
   the machine runs.** Cloud machines have every provider installed, so a login
   nobody had given for a provider no agent used kept the "AI provider logins
   missing or expired on cloud machines" monitor alerting for good.
+- **Splitting a long message no longer hangs on crafted text.** A long run of
+  `~` or backticks with no safe place to cut it (Mattermost, Rocket.Chat,
+  Discord and Slack), or a code block whose language tag is longer than a
+  Google Chat message, put the splitter in a loop that never returned. Such a
+  run is now cut at the limit, and a piece that would start with a fence is
+  indented four spaces so it neither opens nor closes a code block. A reopened
+  Google Chat code block drops a language tag longer than 32 characters. A
+  block opened by a fence longer than a quarter of the limit is split like
+  plain text, with its fences indented, where before every part came out over
+  the limit and the platform refused the message.
 - **An agent's unread count no longer depends on how Postgres plans the
   query when several messages share a timestamp.** The message the count
   starts from is now picked by its timestamp and then its position in the
   room, so messages sent at the same instant can no longer be counted twice
   or skipped.
+
+#### Security
+- **A Google Chat service account's `token_uri` must be Google's:
+  `https://oauth2.googleapis.com/token`, or
+  `https://accounts.google.com/o/oauth2/token` in older keys.** Any other value in the uploaded
+  JSON is refused when the bridge is saved, instead of Switch posting a signed
+  assertion to it. The token request goes through the outbound address guard
+  under the deployment's `OUTBOUND_ALLOWED_PRIVATE_HOSTS`, and a refusal names
+  only the status and Google's error code, not the response body.
+- **A Zulip bridge reaches its server only through the outbound address
+  guard**, when its credentials are checked as well as while it runs, as its
+  file downloads already did, so the server's name cannot be pointed at an
+  internal or metadata address after it was checked.
+  A message's file link is fetched only when it has the shape of a Zulip
+  upload (`/user_uploads/<realm>/…/<name>`); any other is reported as a file
+  that could not be relayed.
+- **A template param's `pattern` is checked in bounded time.** A match that
+  takes longer than 0.1 s is refused as a validation error naming the param,
+  so a backtracking pattern cannot hold the server. Saving or updating a
+  template refuses a pattern longer than 500 characters, or a default longer
+  than 10,000 checked against one; a template saved before then still loads.
+  A value given when a template is used is refused past 10,000 characters if
+  it has to match a pattern.
+  Patterns are matched with the `regex` package, which switch-core now
+  depends on; its default syntax is the same as Python's `re`.
+- **Adding or removing an agent by id no longer tells another workspace's
+  agent apart from one that does not exist.** Both are refused with the same
+  error; another workspace's agent used to fail later, with a different one.
 
 ### [0.32.2] - 2026-11-25
 
@@ -5235,6 +5273,30 @@ version of their own to them without also giving them a release of their own.
 
 #### Security
 
+- **"Open in" fills a folder's name into the app's command once.** A folder
+  whose name contained placeholder text such as `{{path_raw}}` had its path
+  substituted a second time, unquoted, into the shell command that opens it.
+
+- **A location's files stay inside it, links included.** Reading, writing
+  and listing files in a location checked only the path as written, so a
+  symbolic link inside the folder to a place outside it was followed; links
+  are now resolved first, a dangling one included, and one leading out of the
+  location is refused. Such a link can still be deleted: that removes the
+  link and leaves what it points to alone.
+
+- **The app window can call only the app's own requests into the main
+  process.** Its bridge passed any channel name through; it now refuses every
+  channel but those the app registers for its requests.
+
+- **On Windows, a command for a `.cmd` or `.bat` CLI with a line break in an
+  argument is refused.** Such a CLI runs through cmd.exe, which treats a line
+  break as the end of one command and the start of the next whatever the
+  quoting, so the rest of the argument would have run as a command of its own.
+
+- **Cancelling an attachment upload checks the id.** The session host deleted
+  `<id>.part` for whatever id it was sent, so an id such as `../x` could delete
+  a file outside its upload folder.
+
 - **A new OpenCode agent asks before it acts.** OpenCode's auto mode has no
   review of its own: it answers every permission request itself, so with it
   on, anyone who can post in the agent's rooms could have commands run on its
@@ -8181,6 +8243,20 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Security
+- **An agent id must be a plain file name before it names a directory.**
+  Running agents as users of their own, the controller set aside and gave back
+  agent directories under `released/` by agent id, and by whatever id the
+  directory's marker file held, without checking either; an id with `..` or a
+  separator is now refused, and a marker that holds one, or cannot be read
+  (a link, a folder, too large), is set aside as an unknown agent's.
+- **Cancelling an attachment upload checks the id**, and **an agent host's
+  control port starts only its own agent's sessions**, as on the sidecar.
+- **Reads what an agent can write without following links, and never repeats
+  it.** An agent's health, failure and taken-over records, its configuration
+  and its control file are opened only as small regular files, not through a
+  link at their name or in a folder above them inside the agent's directory.
+  One that cannot be read is reported by why, not by its content, which
+  could otherwise have shown another file's text in the agent's status.
 - **A managed Codex agent keeps the host's own Codex sandbox.** The
   controller used to give every Codex session a sandbox of its own,
   `danger-full-access` under Bypass permissions and `workspace-write`
@@ -8442,6 +8518,11 @@ The Switch protocol client and MCP runtime
 - **Requires the MCP TypeScript SDK 1.32.2 or later**, past its advisories for
   the Streamable HTTP server transport the session's Switch tools are served
   over.
+- **`download_attachment` takes only a media handle Switch issued**
+  (`switch-media://<id>`, or `mxc://<server>/<id>` from older history) and
+  refuses anything else before asking the server. The room id is escaped in
+  the request path, the file is always written directly inside the media
+  directory, and a download stops at 100 MiB.
 
 ### [0.8.0] - 2026-09-25
 
@@ -8650,6 +8731,15 @@ published on its own.
 - **An agent's sessions move with its folder**, as in Switch Console.
 
 #### Security
+- **An id that names a file is checked before it is used.** Cancelling an
+  attachment upload with an id such as `../x` could delete a file outside the
+  upload folder; such ids, and conversation ids that are not file names, are
+  now refused.
+- **An agent's control port starts only that agent's sessions.** Asking an
+  agent host to start or reattach a session checked nothing about whose it
+  was, so a connection to one agent's port could restart, reconfigure or
+  start a session of another agent on the same machine. It now refuses a
+  session made out to, or already saved for, another agent.
 - **The control socket compares its secret in constant time.**
 - **Shell setup can no longer add environment variables beyond the inherited
   allowlist**, as in Switch Console.

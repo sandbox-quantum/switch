@@ -1153,7 +1153,12 @@ class PlatformAdapter(ABC):
         )
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         """Prove the credentials work, before the bridge is persisted.
 
         Raise :class:`BridgeCredentialError` with a message fit for an operator

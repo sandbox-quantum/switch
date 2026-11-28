@@ -30,6 +30,12 @@ The preload bridge in `src/preload/index.ts` is intentionally tiny. It exposes o
 `getPathForFile` on `window.electronAPI`. Add direct `window.electronAPI` surface only
 when a browser/Electron primitive cannot fit the RPC/event path.
 
+`invoke` reaches only the channels `registerRPCRouter` registered: the preload asks main
+for them once over `RPC_CHANNELS_CHANNEL` (`rpcChannels`, the same walk that registers
+them) and refuses anything else (`src/preload/rpc-invoke.ts`). A handler added with a
+bare `ipcMain.handle` is therefore unreachable from the renderer — register it through
+a controller.
+
 ## Event System
 
 Typed events use `createEventEmitter` from `src/shared/lib/ipc/events.ts`. Event type

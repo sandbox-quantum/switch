@@ -128,7 +128,9 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeRocketChat:
 
 
 async def test_good_credentials_are_accepted(fake: FakeRocketChat) -> None:
-    await RocketChatAdapter.verify_credentials(_raw())
+    await RocketChatAdapter.verify_credentials(
+        _raw(), outbound_policy=OutboundPolicy.parse("")
+    )
     [call] = fake.called("me")
     assert call.headers["X-User-Id"] == BOT_ID
     assert call.headers["X-Auth-Token"] == "test-placeholder-token"
@@ -141,13 +143,17 @@ async def test_a_rejected_token_says_which_fields_to_check(
 ) -> None:
     fake.on("me", lambda _: refused(401, "You must be logged in to do this."))
     with pytest.raises(BridgeCredentialError, match="did not accept the bot user ID"):
-        await RocketChatAdapter.verify_credentials(_raw())
+        await RocketChatAdapter.verify_credentials(
+            _raw(), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_an_account_without_the_bot_role_is_refused(fake: FakeRocketChat) -> None:
     fake.on("me", lambda _: {"_id": BOT_ID, "username": "ada", "roles": ["user"]})
     with pytest.raises(BridgeCredentialError, match="ada is not a bot user"):
-        await RocketChatAdapter.verify_credentials(_raw())
+        await RocketChatAdapter.verify_credentials(
+            _raw(), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_a_deactivated_bot_is_refused(fake: FakeRocketChat) -> None:
@@ -156,13 +162,17 @@ async def test_a_deactivated_bot_is_refused(fake: FakeRocketChat) -> None:
         lambda _: {"_id": BOT_ID, "username": "b", "roles": ["bot"], "active": False},
     )
     with pytest.raises(BridgeCredentialError, match="deactivated"):
-        await RocketChatAdapter.verify_credentials(_raw())
+        await RocketChatAdapter.verify_credentials(
+            _raw(), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_something_that_is_not_rocket_chat_is_named(fake: FakeRocketChat) -> None:
     fake.on("me", lambda _: httpx.Response(502, text="<html>bad gateway</html>"))
     with pytest.raises(BridgeCredentialError, match="Check the server URL"):
-        await RocketChatAdapter.verify_credentials(_raw())
+        await RocketChatAdapter.verify_credentials(
+            _raw(), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_an_unreachable_server_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -178,7 +188,9 @@ async def test_an_unreachable_server_is_named(monkeypatch: pytest.MonkeyPatch) -
         ),
     )
     with pytest.raises(BridgeCredentialError, match="Could not reach Rocket.Chat"):
-        await RocketChatAdapter.verify_credentials(_raw())
+        await RocketChatAdapter.verify_credentials(
+            _raw(), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_start_refuses_an_account_that_lost_the_bot_role_and_closes_its_client(

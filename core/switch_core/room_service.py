@@ -1425,7 +1425,7 @@ class RoomService:
                 room.id, transport_room_id, [user_external_id]
             )
 
-        agent_clients = self._resolve_agent_clients(agent_ids)
+        agent_clients = self._resolve_agent_clients(agent_ids, room.tenant_id)
         system_clients = self._resolve_system_clients(room.tenant_id)
         all_clients = {**agent_clients, **system_clients}
 
@@ -1674,7 +1674,7 @@ class RoomService:
             )
             return 0
 
-        agent_clients = self._resolve_agent_clients(new_agent_ids)
+        agent_clients = self._resolve_agent_clients(new_agent_ids, room.tenant_id)
 
         # One binding for the whole membership change: the two writes below
         # and the invite between them (which itself writes a membership row
@@ -1744,7 +1744,7 @@ class RoomService:
             if room is None:
                 raise ValueError(f"Room not found: {room_id}")
 
-        agent_clients = self._resolve_agent_clients(agent_ids)
+        agent_clients = self._resolve_agent_clients(agent_ids, room.tenant_id)
         removed = await take_agents_out_of_room(
             session_factory=self._session_factory,
             provisioning=self._provisioning,
@@ -2721,11 +2721,19 @@ class RoomService:
         if creator_left_out:
             raise self._creator_left_out(new_bridge)
 
-    def _resolve_agent_clients(self, agent_ids: list[str]) -> dict[str, str]:
-        """Returns {client_id: transport_user_id} for the given agent IDs."""
+    def _resolve_agent_clients(
+        self, agent_ids: list[str], tenant_id: str
+    ) -> dict[str, str]:
+        """`{client_id: transport_user_id}` for `tenant_id`'s agents among `agent_ids`.
+
+        The running registry holds every tenant's clients, so it is asked for
+        the room's tenant: an agent id from another tenant is refused with the
+        same error as an unknown one, rather than getting as far as the
+        membership write and failing differently there.
+        """
         result: dict[str, str] = {}
         for agent_id in agent_ids:
-            client = self._client_lifecycle.get_by_agent_id(agent_id)
+            client = self._client_lifecycle.get_tenant_agent(agent_id, tenant_id)
             if client is None:
                 raise ValueError(f"No running client for agent: {agent_id}")
             result[client.client_id] = client.transport_user_id

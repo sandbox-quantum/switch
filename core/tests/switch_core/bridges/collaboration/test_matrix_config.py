@@ -13,6 +13,7 @@ from switch_core.bridges.collaboration.matrix.adapter import (
 from switch_core.bridges.collaboration.matrix.client import MatrixApiError
 from switch_core.bridges.collaboration.models import BridgeCredentialError
 from switch_core.bridges.collaboration.platforms import PLATFORMS
+from switch_core.outbound import OutboundPolicy
 from tests.switch_core.bridges.collaboration.matrix_fakes import (
     BOT,
     HOMESERVER,
@@ -154,7 +155,9 @@ class TestVerifyCredentials:
     ) -> None:
         homeserver = FakeHomeserver()
         serve(monkeypatch, homeserver)
-        await MatrixAdapter.verify_credentials(dict(VALID))
+        await MatrixAdapter.verify_credentials(
+            dict(VALID), outbound_policy=OutboundPolicy.parse("")
+        )
         assert [r.url.path for r in homeserver.requests] == [
             "/_matrix/client/v3/account/whoami"
         ]
@@ -169,14 +172,18 @@ class TestVerifyCredentials:
             BridgeCredentialError,
             match="belongs to @someone-else:example.org, not @switch-bot:example.org",
         ):
-            await MatrixAdapter.verify_credentials(dict(VALID))
+            await MatrixAdapter.verify_credentials(
+                dict(VALID), outbound_policy=OutboundPolicy.parse("")
+            )
 
     async def test_a_refused_token_says_so_without_quoting_it(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         serve(monkeypatch, FakeHomeserver(token="syt_another_placeholder"))
         with pytest.raises(BridgeCredentialError, match="does not accept") as caught:
-            await MatrixAdapter.verify_credentials(dict(VALID))
+            await MatrixAdapter.verify_credentials(
+                dict(VALID), outbound_policy=OutboundPolicy.parse("")
+            )
         assert "M_UNKNOWN_TOKEN" in str(caught.value)
         assert TOKEN not in str(caught.value)
 
@@ -185,14 +192,18 @@ class TestVerifyCredentials:
     ) -> None:
         serve(monkeypatch, FakeHomeserver(unreachable=True))
         with pytest.raises(BridgeCredentialError, match="Could not reach"):
-            await MatrixAdapter.verify_credentials(dict(VALID))
+            await MatrixAdapter.verify_credentials(
+                dict(VALID), outbound_policy=OutboundPolicy.parse("")
+            )
 
     async def test_a_server_error_is_not_read_as_a_bad_token(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         serve(monkeypatch, FakeHomeserver(whoami=(502, {})))
         with pytest.raises(BridgeCredentialError, match="answered 502"):
-            await MatrixAdapter.verify_credentials(dict(VALID))
+            await MatrixAdapter.verify_credentials(
+                dict(VALID), outbound_policy=OutboundPolicy.parse("")
+            )
 
     @pytest.mark.parametrize(
         ("answer", "says"),
@@ -219,7 +230,9 @@ class TestVerifyCredentials:
         """Usually the server name, entered where the client address belongs."""
         serve(monkeypatch, FakeHomeserver(raw={("GET", "whoami"): lambda: answer}))
         with pytest.raises(BridgeCredentialError) as caught:
-            await MatrixAdapter.verify_credentials(dict(VALID))
+            await MatrixAdapter.verify_credentials(
+                dict(VALID), outbound_policy=OutboundPolicy.parse("")
+            )
         message = str(caught.value)
         assert "is not a Matrix homeserver's client API" in message
         assert says in message
@@ -230,7 +243,9 @@ class TestVerifyCredentials:
     ) -> None:
         serve(monkeypatch, FakeHomeserver(whoami=(200, {})))
         with pytest.raises(BridgeCredentialError, match="not a Matrix homeserver"):
-            await MatrixAdapter.verify_credentials(dict(VALID))
+            await MatrixAdapter.verify_credentials(
+                dict(VALID), outbound_policy=OutboundPolicy.parse("")
+            )
 
     async def test_a_guest_account_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
@@ -240,7 +255,9 @@ class TestVerifyCredentials:
             FakeHomeserver(whoami=(200, {"user_id": BOT, "is_guest": True})),
         )
         with pytest.raises(BridgeCredentialError, match="guest"):
-            await MatrixAdapter.verify_credentials(dict(VALID))
+            await MatrixAdapter.verify_credentials(
+                dict(VALID), outbound_policy=OutboundPolicy.parse("")
+            )
 
 
 class TestFailures:
@@ -302,5 +319,7 @@ class TestOutboundPolicy:
         before there is a bridge to hold one."""
         homeserver = FakeHomeserver()
         serve(monkeypatch, homeserver)
-        await MatrixAdapter.verify_credentials(dict(VALID))
+        await MatrixAdapter.verify_credentials(
+            dict(VALID), outbound_policy=OutboundPolicy.parse("")
+        )
         assert homeserver.clients == [("unguarded", None)]

@@ -41,6 +41,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.outbound import OutboundPolicy
 from switch_core.tenant_context import tenant_scope
 from tests.ownership import SoleOwner
 
@@ -329,18 +330,25 @@ def _auth_test(**response: Any) -> Any:
 class TestSlackWorkspaceIdIsTheTokens:
     async def test_the_tokens_workspace_is_accepted(self) -> None:
         with _auth_test(ok=True, team_id="T1"):
-            await SlackAdapter.verify_credentials(dict(_SLACK))
+            await SlackAdapter.verify_credentials(
+                dict(_SLACK), outbound_policy=OutboundPolicy.parse("")
+            )
 
     async def test_an_enterprise_grid_org_id_is_accepted(self) -> None:
         with _auth_test(ok=True, team_id="T9", enterprise_id="E1"):
-            await SlackAdapter.verify_credentials({**_SLACK, "workspace_id": "E1"})
+            await SlackAdapter.verify_credentials(
+                {**_SLACK, "workspace_id": "E1"},
+                outbound_policy=OutboundPolicy.parse(""),
+            )
 
     async def test_another_workspace_is_refused(self) -> None:
         # Otherwise a tenant could claim a workspace by typing its id, and
         # keep the real holder from connecting it.
         with _auth_test(ok=True, team_id="T2"):
             with pytest.raises(BridgeCredentialError, match="T2, not T1"):
-                await SlackAdapter.verify_credentials(dict(_SLACK))
+                await SlackAdapter.verify_credentials(
+                    dict(_SLACK), outbound_policy=OutboundPolicy.parse("")
+                )
 
     async def test_a_token_slack_refuses_is_a_credential_error(self) -> None:
         refusal = SlackApiError("invalid_auth", MagicMock())
@@ -350,7 +358,9 @@ class TestSlackWorkspaceIdIsTheTokens:
             AsyncMock(side_effect=refusal),
         ):
             with pytest.raises(BridgeCredentialError, match="invalid_auth"):
-                await SlackAdapter.verify_credentials(dict(_SLACK))
+                await SlackAdapter.verify_credentials(
+                    dict(_SLACK), outbound_policy=OutboundPolicy.parse("")
+                )
 
     @pytest.mark.parametrize(
         "failure",
@@ -366,7 +376,9 @@ class TestSlackWorkspaceIdIsTheTokens:
             AsyncMock(side_effect=failure),
         ):
             with pytest.raises(BridgeCredentialError, match="Could not reach Slack"):
-                await SlackAdapter.verify_credentials(dict(_SLACK))
+                await SlackAdapter.verify_credentials(
+                    dict(_SLACK), outbound_policy=OutboundPolicy.parse("")
+                )
 
 
 class TestMattermostUrlIsCheckedUpFront:

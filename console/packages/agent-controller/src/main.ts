@@ -18,6 +18,7 @@ import {
   isDevicePolicyChangedMessage,
   readDevicePolicy,
   isProviderRecheckRequest,
+  isSafeId,
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
@@ -77,7 +78,6 @@ import {
   dataLayout,
   ensureDataDir,
   expandHome,
-  isSafeSegment,
   resolveDataDir,
   serverWorkspacesDir,
 } from './paths';
@@ -422,8 +422,7 @@ async function devicePolicyCommand(change: 'allow' | 'disallow', args: string[])
   if (positionals.length !== (everyAgent ? 0 : 1))
     throw new UsageError(`${change} takes one agent id, or --every-agent.`);
   const agentId = everyAgent ? EVERY_AGENT : positionals[0]!;
-  if (!everyAgent && !isSafeSegment(agentId))
-    throw new UsageError(`'${agentId}' is not an agent id.`);
+  if (!everyAgent && !isSafeId(agentId)) throw new UsageError(`'${agentId}' is not an agent id.`);
   const directory = values.directory === undefined ? null : resolve(expandHome(values.directory));
   const bypass = values.bypass === true;
   if (change === 'allow' && !bypass && directory === null)

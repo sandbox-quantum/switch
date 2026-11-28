@@ -63,6 +63,24 @@ function registerHandlers(
   }
 }
 
+/**
+ * Where the preload asks which channels it may invoke. Not itself an RPC
+ * channel, so the renderer cannot reach it through `invoke`.
+ */
+export const RPC_CHANNELS_CHANNEL = 'switch-console:rpc-channels';
+
+/** Every channel `registerRPCRouter` registers for `router`, by the same walk. */
+export function rpcChannels(router: RouterMap): string[] {
+  const channels: string[] = [];
+  const walk = (prefix: string, value: unknown) => {
+    if (typeof value === 'function') channels.push(prefix);
+    else if (value !== null && typeof value === 'object')
+      for (const [key, child] of Object.entries(value)) walk(`${prefix}.${key}`, child);
+  };
+  for (const [ns, handlers] of Object.entries(router)) walk(ns, handlers);
+  return channels;
+}
+
 export function registerRPCRouter(
   router: RouterMap,
   ipcMain: IpcMain,
@@ -72,6 +90,11 @@ export function registerRPCRouter(
   for (const [ns, handlers] of Object.entries(router)) {
     registerHandlers(ipcMain, ns, handlers, trusted, wrap);
   }
+  const channels = rpcChannels(router);
+  ipcMain.handle(RPC_CHANNELS_CHANNEL, (event) => {
+    if (!trusted(event)) throw new Error('IPC request is not from the trusted app frame.');
+    return channels;
+  });
 }
 
 // Recursively maps every leaf function to its async client equivalent.

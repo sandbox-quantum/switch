@@ -6,11 +6,12 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { silentLogger } from './log';
 import type { SeparateUsersConfig } from './separate-users';
 import { ControllerStore } from './store';
@@ -271,6 +272,32 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     expect(await runtime.observe('agent-never-started')).toMatchObject({ alive: false });
   });
 
+  it('reads the agent’s records through no link and never repeats one it cannot read', async () => {
+    await start('agent-1');
+    const watcher = join(config.agentsDir, '01', 'watcher');
+    const secret = join(dir, 'controller-secret.json');
+    writeFileSync(secret, JSON.stringify({ message: 'SECRET' }));
+
+    symlinkSync(secret, join(watcher, 'health.json'));
+    rmSync(join(watcher, 'supervisor'), { recursive: true, force: true });
+    symlinkSync(dir, join(watcher, 'supervisor'));
+    writeFileSync(join(dir, 'failure.json'), JSON.stringify({ message: 'SECRET' }));
+    const linked = await runtime.observe('agent-1');
+    expect(linked.health).toBeNull();
+    expect(linked.failure).toContain('could not be read');
+    expect(linked.failure).not.toContain('SECRET');
+
+    rmSync(join(watcher, 'supervisor'));
+    mkdirSync(join(watcher, 'supervisor'));
+    writeFileSync(join(watcher, 'supervisor', 'failure.json'), 'SECRET is not JSON');
+    const garbled = await runtime.observe('agent-1');
+    expect(garbled.failure).toContain('is not JSON');
+    expect(garbled.failure).not.toContain('SECRET');
+
+    writeFileSync(join(watcher, 'supervisor', 'failure.json'), JSON.stringify({ message: 'boom' }));
+    expect((await runtime.observe('agent-1')).failure).toBe('boom');
+  });
+
   it('sets a removed agent’s directory aside, frees its user, and gives it back later', async () => {
     await start('agent-1');
     writeFileSync(join(config.agentsDir, '01', 'workspace', 'notes.md'), 'kept');
@@ -305,6 +332,55 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     await start('agent-1');
     expect(existsSync(join(config.agentsDir, 'released', 'agent-old', 'workspace'))).toBe(true);
     expect(readFileSync(join(stale, '.switch-agent-id'), 'utf8').trim()).toBe('agent-1');
+  });
+
+  it('sets aside a directory whose marker names a path as an unknown agent’s, inside released/', async () => {
+    const stale = join(config.agentsDir, '01');
+    mkdirSync(join(stale, 'workspace'), { recursive: true });
+    writeFileSync(join(stale, '.switch-agent-id'), '../../escaped\n');
+    await start('agent-1');
+    expect(existsSync(join(config.agentsDir, 'released', 'unknown-1000', 'workspace'))).toBe(true);
+    expect(existsSync(join(dir, 'escaped'))).toBe(false);
+  });
+
+  it('sets aside a directory whose marker cannot be read, rather than refusing to start', async () => {
+    const warn = vi.spyOn(silentLogger, 'warn');
+    const root = join(config.agentsDir, '01');
+    const marker = join(root, '.switch-agent-id');
+    const secret = join(dir, 'secret');
+    writeFileSync(secret, 'SECRET\n');
+    const unreadable: Array<[string, () => void]> = [
+      ['a link', () => symlinkSync(secret, marker)],
+      ['a directory', () => mkdirSync(marker)],
+      ['too large', () => writeFileSync(marker, 'x'.repeat(2048))],
+    ];
+    for (const [kind, make] of unreadable) {
+      mkdirSync(join(root, 'workspace'), { recursive: true });
+      rmSync(marker, { recursive: true, force: true });
+      make();
+      warn.mockClear();
+      await start('agent-1');
+      expect(
+        existsSync(join(config.agentsDir, 'released', 'unknown-1000', 'workspace')),
+        kind
+      ).toBe(true);
+      expect(readFileSync(marker, 'utf8').trim(), kind).toBe('agent-1');
+      expect(warn, kind).toHaveBeenCalledWith(
+        'An agent directory’s marker cannot be read; setting it aside',
+        expect.objectContaining({ directory: root })
+      );
+      expect(JSON.stringify(warn.mock.calls), kind).not.toContain('SECRET');
+      rmSync(join(config.agentsDir, 'released'), { recursive: true, force: true });
+    }
+    warn.mockRestore();
+  });
+
+  it('refuses an agent id that could name a path', async () => {
+    for (const agentId of ['../x', 'a/b', '..', '.hidden'])
+      await expect(runtime.workingDirectory(agentId, 'x', null)).rejects.toThrow(
+        'cannot be used in a file name'
+      );
+    expect(store.agentUser('../x')).toBeNull();
   });
 
   it('stops through the watch flags and the unit', async () => {

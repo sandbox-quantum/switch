@@ -115,7 +115,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
-from switch_core.outbound import guarded_async_client
+from switch_core.outbound import OutboundPolicy, guarded_async_client
 from switch_core.sessions.contract import TURN_ENDED
 from switch_core.ui_spec import (
     ActionsProps,
@@ -512,7 +512,12 @@ class MattermostAdapter(PlatformAdapter):
     listens_through_agent_identities: ClassVar[bool] = True
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls,
+        connection_config: dict[str, object],
+        *,
+        outbound_policy: OutboundPolicy,
+    ) -> None:
         """Sign in as the admin user and find the team, as `start` will.
 
         `url` has been through the outbound policy before this is called, so

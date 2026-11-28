@@ -16,6 +16,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { isProcessAlive } from '../process-alive';
+import { safeId } from '../safe-id';
 
 /** The Claude Code conversations started in a folder outside Switch, newest first. */
 export const cliConversationListSchema = z.object({
@@ -313,6 +314,7 @@ export async function savedConversationPath(
   configDir: string,
   sessionId: string
 ): Promise<string | null> {
+  const file = `${safeId(sessionId, 'conversation id')}.jsonl`;
   const projects = join(configDir, 'projects');
   let names: string[];
   try {
@@ -322,7 +324,7 @@ export async function savedConversationPath(
     throw error;
   }
   for (const name of names) {
-    const path = join(projects, name, `${sessionId}.jsonl`);
+    const path = join(projects, name, file);
     try {
       await access(path);
       return path;

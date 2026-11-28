@@ -16,10 +16,12 @@ import {
   killProcessTree,
   materializeHostedProvider,
   type OpenAgentStream,
+  parseUntrustedJson,
   type ProviderReadiness,
   processCommandLine,
   providerReadinessSchema,
   readTakenOver,
+  readUntrusted,
   readWatchFlags,
   recordWatcherHealth,
   replaceFile,
@@ -38,6 +40,7 @@ import {
   watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
+import { z } from 'zod';
 import { ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { agentWorkspace, type DataLayout, expandHome, insideDataDir } from './paths';
@@ -554,11 +557,8 @@ export async function observeOnDisk(
   const running =
     pid !== null &&
     (box ? await box.recordedOwnerAlive(lock, pid) : isProcessAlive(pid, 'recorded'));
-  const healthText = await readOptional(join(root, WATCHER_HEALTH_FILE));
-  const health =
-    healthText === null
-      ? null
-      : { ...watcherHealthFileSchema.parse(JSON.parse(healthText)), current: running };
+  const record = await readHealth(root);
+  const health = record === null ? null : { ...record, current: running };
   return { ...(await readRoot(root)), alive: running, health, outdated: false };
 }
 
@@ -566,10 +566,11 @@ export async function observeOnDisk(
 export async function readRoot(
   root: string
 ): Promise<Omit<AgentObservation, 'alive' | 'outdated'>> {
-  const config = await readOptional(join(root, 'config.json'));
+  const configPath = join(root, 'config.json');
+  const config = await readUntrusted(configPath, { maxBytes: MAX_CONFIG_BYTES, within: root });
   let configured: AgentObservation['configured'] = null;
   if (config !== null) {
-    const parsed = JSON.parse(config) as SharedHostConfig;
+    const parsed = parseUntrustedJson(config, sharedConfigSchema, configPath);
     configured = {
       provider: parsed.start.provider,
       cwd: parsed.start.input.cwd,
@@ -583,12 +584,41 @@ export async function readRoot(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  const failureText = await readOptional(join(root, 'supervisor', 'failure.json'));
-  const failure =
-    failureText === null
-      ? null
-      : String((JSON.parse(failureText) as { message?: unknown }).message ?? failureText);
-  return { configured, flags, health: null, failure, takenOver: await readTakenOver(root) };
+  return {
+    configured,
+    flags,
+    health: null,
+    failure: await readFailure(root),
+    takenOver: await readTakenOver(root),
+  };
+}
+
+const MAX_CONFIG_BYTES = 1024 * 1024;
+const MAX_RECORD_BYTES = 64 * 1024;
+const failureRecordSchema = z.object({ message: z.string() });
+
+/**
+ * The failure the agent host's supervisor recorded: its message, or, for a
+ * record that cannot be read, why not, never the record's own text.
+ */
+async function readFailure(root: string): Promise<string | null> {
+  const path = join(root, 'supervisor', 'failure.json');
+  try {
+    const text = await readUntrusted(path, { maxBytes: MAX_RECORD_BYTES, within: root });
+    return text === null ? null : parseUntrustedJson(text, failureRecordSchema, path).message;
+  } catch (error) {
+    return `The agent host recorded a failure that could not be read: ${errorMessage(error)}`;
+  }
+}
+
+/**
+ * The agent host's health record under `root`, null when it wrote none. A
+ * record that cannot be read rejects with why, never with its text.
+ */
+export async function readHealth(root: string): Promise<WatcherHealthFile | null> {
+  const path = join(root, WATCHER_HEALTH_FILE);
+  const text = await readUntrusted(path, { maxBytes: MAX_RECORD_BYTES, within: root });
+  return text === null ? null : parseUntrustedJson(text, watcherHealthFileSchema, path);
 }
 
 type RunningAgentHost = {

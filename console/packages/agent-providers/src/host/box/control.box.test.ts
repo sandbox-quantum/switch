@@ -63,6 +63,8 @@ async function saved(base: string, sessionId: string, agentId: string): Promise<
   );
 }
 
+// An `ensure` may start only a session of the host's own agent, named in its config.
+const OWN_CONFIG = { session: { sessionId: 'fresh', agentId: 'agent' } };
 async function started() {
   const base = await mkdtemp(join(tmpdir(), 'control-'));
   roots.push(base);
@@ -125,12 +127,17 @@ it('relays requests to a session host and its events back', async () => {
   unsubscribe();
 
   expect(
-    await console.ensure({ config: {}, resuming: false, restart: false, startSource: 'room' })
+    await console.ensure({
+      config: OWN_CONFIG,
+      resuming: false,
+      restart: false,
+      startSource: 'room',
+    })
   ).toEqual({
     created: true,
   });
   expect(ensure).toHaveBeenCalledWith({
-    config: {},
+    config: OWN_CONFIG,
     resuming: false,
     restart: false,
     startSource: 'room',
@@ -459,13 +466,13 @@ it('still starts a session for a Console that sends no start source', async () =
   });
   socket.write(`${JSON.stringify({ token: control.token })}\n`);
   socket.write(
-    `${JSON.stringify({ id: 1, ensure: { config: {}, resuming: false, restart: false } })}\n`
+    `${JSON.stringify({ id: 1, ensure: { config: OWN_CONFIG, resuming: false, restart: false } })}\n`
   );
 
   await vi.waitFor(() =>
     expect(replies).toContainEqual({ id: 1, ok: true, value: { created: true } })
   );
-  expect(ensure).toHaveBeenCalledWith({ config: {}, resuming: false, restart: false });
+  expect(ensure).toHaveBeenCalledWith({ config: OWN_CONFIG, resuming: false, restart: false });
 
   socket.destroy();
   stop.abort();
@@ -544,10 +551,10 @@ it('carries a start source Console could not name as null, which a resume always
   const console = client();
   await console.ready;
 
-  await console.ensure({ config: {}, resuming: true, restart: false, startSource: null });
+  await console.ensure({ config: OWN_CONFIG, resuming: true, restart: false, startSource: null });
 
   expect(ensure).toHaveBeenCalledWith({
-    config: {},
+    config: OWN_CONFIG,
     resuming: true,
     restart: false,
     startSource: null,
@@ -574,7 +581,7 @@ it('starts a session whose start source is newer than this sidecar, as not known
   socket.write(
     `${JSON.stringify({
       id: 1,
-      ensure: { config: {}, resuming: false, restart: false, startSource: 'scheduled' },
+      ensure: { config: OWN_CONFIG, resuming: false, restart: false, startSource: 'scheduled' },
     })}\n`
   );
 
@@ -582,7 +589,7 @@ it('starts a session whose start source is newer than this sidecar, as not known
     expect(replies).toContainEqual({ id: 1, ok: true, value: { created: true } })
   );
   expect(ensure).toHaveBeenCalledWith({
-    config: {},
+    config: OWN_CONFIG,
     resuming: false,
     restart: false,
     startSource: null,

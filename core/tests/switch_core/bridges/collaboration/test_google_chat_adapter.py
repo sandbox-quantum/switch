@@ -21,6 +21,10 @@ from switch_core.bridges.collaboration.google_chat.adapter import (
     GoogleChatAdapter,
     GoogleChatConnectionConfig,
 )
+from switch_core.bridges.collaboration.google_chat.auth import (
+    GoogleAuthManager,
+    validate_token_uri,
+)
 from switch_core.bridges.collaboration.google_chat.formatting import (
     markdown_to_google_chat,
     split_message_chunks,
@@ -35,6 +39,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     OutboundAttachment,
 )
+from switch_core.outbound import GuardedAsyncClient, OutboundPolicy
 from switch_core.sessions.contract import (
     ApprovalContent,
     ApprovalOption,
@@ -103,6 +108,204 @@ class TestGoogleChatConfigurationAndCredentials:
             bad_sa = json.dumps({"type": "service_account", "client_email": "a@b.com"})
             _make_config(service_account_json=bad_sa)
 
+    def test_invalid_service_account_token_uri_rejected(self) -> None:
+        for bad_uri in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://localhost:8080/token",
+            "https://127.0.0.1/token",
+            "https://evil.example/token",
+            "https://oauth2.googleapis.com.evil.example/token",
+            "https://user:pass@oauth2.googleapis.com/token",
+            "https://oauth2.googleapis.com:8080/token",
+            "https://oauth2.googleapis.com:443/token",
+            "https://oauth2.googleapis.com/token?query=1",
+            "http://oauth2.googleapis.com/token",
+            "http://accounts.google.com/o/oauth2/token",
+            "https://accounts.google.com/o/oauth2/token?x=1",
+            "https://accounts.google.com/token",
+            "not-a-url",
+            "",
+            42,
+        ]:
+            bad_sa = json.dumps(
+                {
+                    "type": "service_account",
+                    "client_email": TEST_CLIENT_EMAIL,
+                    "private_key": _TEST_PEM_KEY,
+                    "token_uri": bad_uri,
+                }
+            )
+            with pytest.raises(
+                ValueError, match="service_account_json 'token_uri' is invalid"
+            ):
+                _make_config(service_account_json=bad_sa)
+
+    @pytest.mark.parametrize(
+        "token_uri",
+        [
+            "https://oauth2.googleapis.com/token",
+            # Older keys name Google's previous endpoint.
+            "https://accounts.google.com/o/oauth2/token",
+        ],
+    )
+    def test_google_token_uri_accepted(self, token_uri: str) -> None:
+        sa = json.dumps(
+            {
+                "type": "service_account",
+                "client_email": TEST_CLIENT_EMAIL,
+                "private_key": _TEST_PEM_KEY,
+                "token_uri": token_uri,
+            }
+        )
+        _make_config(service_account_json=sa)
+        validate_token_uri(token_uri)
+
+    def test_auth_manager_validates_token_uri(self) -> None:
+        for bad_uri in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://localhost/token",
+            "https://evil.example/token",
+            "https://oauth2.googleapis.com:8080/token",
+        ]:
+            sa_info = {
+                "client_email": TEST_CLIENT_EMAIL,
+                "private_key": _TEST_PEM_KEY,
+                "token_uri": bad_uri,
+            }
+            auth = GoogleAuthManager(sa_info)
+            with pytest.raises(BridgeCredentialError, match="token_uri"):
+                auth.validate_service_account_structure()
+
+    @pytest.mark.asyncio
+    async def test_get_service_account_token_blocks_ssrf(self) -> None:
+        client = AsyncMock(spec=httpx.AsyncClient)
+        sa_info = {
+            "client_email": TEST_CLIENT_EMAIL,
+            "private_key": _TEST_PEM_KEY,
+            "token_uri": "http://169.254.169.254/latest/meta-data/",
+        }
+        auth = GoogleAuthManager(sa_info, http_client=client)
+        with pytest.raises(BridgeCredentialError, match="token_uri"):
+            await auth.get_service_account_token()
+        client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_token_request_goes_through_the_guarded_client(self) -> None:
+        sa_info = {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
+        auth = GoogleAuthManager(sa_info)
+        policy = OutboundPolicy.parse("10.0.0.0/8")
+        auth.set_outbound_policy(policy)
+        seen: list[httpx.AsyncClient] = []
+
+        async def fake_post(
+            self: httpx.AsyncClient, url: str, **_: Any
+        ) -> httpx.Response:
+            seen.append(self)
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 3600})
+
+        with patch.object(GuardedAsyncClient, "post", fake_post):
+            assert await auth.get_service_account_token() == "tok"
+        assert len(seen) == 1
+        assert isinstance(seen[0], GuardedAsyncClient)
+        assert seen[0].policy is policy
+
+    @pytest.mark.asyncio
+    async def test_no_token_is_requested_before_the_policy_is_set(self) -> None:
+        sa_info = {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
+        auth = GoogleAuthManager(sa_info)
+        with pytest.raises(RuntimeError, match="outbound policy"):
+            await auth.get_service_account_token()
+
+    def test_the_adapter_hands_its_policy_to_the_auth_manager(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        policy = OutboundPolicy.parse("10.0.0.0/8")
+        adapter.set_outbound_policy(policy)
+        assert adapter.outbound_policy is policy
+        client = adapter.auth_manager._token_http_client()
+        assert client.policy is policy
+
+    @pytest.mark.asyncio
+    async def test_verification_requests_its_token_under_the_policy_given(
+        self,
+    ) -> None:
+        policy = OutboundPolicy.parse("10.0.0.0/8")
+        seen: list[httpx.AsyncClient] = []
+
+        async def fake_post(
+            self: httpx.AsyncClient, url: str, **_: Any
+        ) -> httpx.Response:
+            seen.append(self)
+            return httpx.Response(401, json={"error": "invalid_grant"})
+
+        with (
+            patch.object(GuardedAsyncClient, "post", fake_post),
+            pytest.raises(BridgeCredentialError, match="invalid_grant"),
+        ):
+            await GoogleChatAdapter.verify_credentials(
+                _make_config().model_dump(), outbound_policy=policy
+            )
+        assert [client.policy for client in seen] == [policy]  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_oauth_rejection_does_not_echo_the_body(self) -> None:
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = httpx.Response(
+            400,
+            json={
+                "error": "invalid_grant",
+                "error_description": "secret-looking-internal-detail",
+            },
+        )
+        sa_info = {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
+        auth = GoogleAuthManager(sa_info, http_client=client)
+        with pytest.raises(BridgeCredentialError) as exc_info:
+            await auth.get_service_account_token()
+        message = str(exc_info.value)
+        assert "status 400" in message
+        assert "invalid_grant" in message
+        assert "secret-looking-internal-detail" not in message
+
+    @pytest.mark.asyncio
+    async def test_oauth_rejection_with_non_json_body_names_only_the_status(
+        self,
+    ) -> None:
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = httpx.Response(502, text="<html>internal</html>")
+        sa_info = {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
+        auth = GoogleAuthManager(sa_info, http_client=client)
+        with pytest.raises(BridgeCredentialError) as exc_info:
+            await auth.get_service_account_token()
+        assert str(exc_info.value) == (
+            "Google OAuth rejected service account assertion (status 502)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_connection_failure_does_not_echo_the_exception(self) -> None:
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.side_effect = httpx.ConnectError("detail from the far side")
+        sa_info = {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
+        auth = GoogleAuthManager(sa_info, http_client=client)
+        with pytest.raises(BridgeCredentialError) as exc_info:
+            await auth.get_service_account_token()
+        assert "detail from the far side" not in str(exc_info.value)
+        assert "ConnectError" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_user_oauth_rejection_does_not_echo_the_body(self) -> None:
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = httpx.Response(401, text="body-detail")
+        sa_info = {"client_email": TEST_CLIENT_EMAIL, "private_key": _TEST_PEM_KEY}
+        auth = GoogleAuthManager(
+            sa_info,
+            http_client=client,
+            user_client_id="cid",
+            user_client_secret="csecret",
+            user_refresh_token="rt",
+        )
+        with pytest.raises(BridgeCredentialError) as exc_info:
+            await auth.get_user_token()
+        assert "body-detail" not in str(exc_info.value)
+
     @pytest.mark.asyncio
     async def test_verify_credentials_success(self) -> None:
         cfg = _make_config()
@@ -125,7 +328,9 @@ class TestGoogleChatConfigurationAndCredentials:
             ),
         ):
             # Should succeed with no exception
-            await GoogleChatAdapter.verify_credentials(cfg.model_dump())
+            await GoogleChatAdapter.verify_credentials(
+                cfg.model_dump(), outbound_policy=OutboundPolicy.parse("")
+            )
 
     @pytest.mark.asyncio
     async def test_verify_credentials_fails_on_missing_subscription(self) -> None:
@@ -147,7 +352,9 @@ class TestGoogleChatConfigurationAndCredentials:
             with pytest.raises(
                 BridgeCredentialError, match="Pub/Sub subscription not found"
             ):
-                await GoogleChatAdapter.verify_credentials(cfg.model_dump())
+                await GoogleChatAdapter.verify_credentials(
+                    cfg.model_dump(), outbound_policy=OutboundPolicy.parse("")
+                )
 
     @pytest.mark.asyncio
     async def test_verify_credentials_fails_on_disabled_chat_api(self) -> None:
@@ -173,7 +380,9 @@ class TestGoogleChatConfigurationAndCredentials:
             with pytest.raises(
                 BridgeCredentialError, match="Google Chat API check failed"
             ):
-                await GoogleChatAdapter.verify_credentials(cfg.model_dump())
+                await GoogleChatAdapter.verify_credentials(
+                    cfg.model_dump(), outbound_policy=OutboundPolicy.parse("")
+                )
 
     def test_classify_failure(self) -> None:
         assert (
@@ -787,6 +996,31 @@ class TestGoogleChatFormattingAndThreading:
             assert len(chunk.encode("utf-8")) <= 1200
             # Ensure balanced ``` fences
             assert chunk.count("```") % 2 == 0
+
+    @pytest.mark.timeout(10)
+    def test_a_language_tag_longer_than_a_chunk_is_not_reopened(self) -> None:
+        # Reopening the fence with the whole tag left no room for the code, and
+        # the splitter never returned.
+        text = "```" + "a" * 5000 + "\nbody\n```"
+
+        chunks = split_message_chunks(text, max_bytes=4096)
+
+        assert all(len(c.encode("utf-8")) <= 4096 for c in chunks)
+        assert all(c.startswith("```\n") for c in chunks[1:])
+        assert "".join(chunks).count("a") == 5000
+        assert chunks[-1].endswith("body\n```")
+
+    @pytest.mark.timeout(10)
+    @pytest.mark.parametrize("max_bytes", [8, 30, 1000])
+    def test_multibyte_text_is_split_within_the_limit(self, max_bytes: int) -> None:
+        # Every pass takes at least one character, however small the budget.
+        text = "\U0001f600" * 3000
+
+        chunks = split_message_chunks(text, max_bytes=max_bytes)
+
+        assert "".join(chunks) == text
+        if max_bytes > 10:
+            assert all(len(c.encode("utf-8")) <= max_bytes for c in chunks)
 
     @pytest.mark.asyncio
     async def test_thread_reply_threading_parameters(self) -> None:

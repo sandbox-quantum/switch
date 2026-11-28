@@ -1,8 +1,15 @@
-import { createReadStream, promises as fs, statSync, type Stats } from 'node:fs';
-import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
+import {
+  createReadStream,
+  lstatSync,
+  promises as fs,
+  readlinkSync,
+  realpathSync,
+  statSync,
+  type Stats,
+} from 'node:fs';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import parcelWatcher from '@parcel/watcher';
-import { glob } from 'glob';
 import ignore from 'ignore';
 import { log } from '@main/lib/logger';
 import type { FileWatchEvent } from '@shared/core/fs/fs';
@@ -140,6 +147,62 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
   '.ico': 'image/x-icon',
 };
 
+/** How many symbolic links `realTarget` follows before calling it a loop, as the OS does. */
+const MAX_LINK_HOPS = 40;
+
+/** `target` is `base` or inside it, ignoring case on Windows. */
+function isWithinOrSame(base: string, target: string): boolean {
+  const fold = (value: string) => (process.platform === 'win32' ? value.toLowerCase() : value);
+  const rest = relative(fold(base), fold(target));
+  return rest === '' || (rest !== '..' && !rest.startsWith(`..${sep}`) && !isAbsolute(rest));
+}
+
+/**
+ * Where `path` really is: the real path of its deepest existing ancestor with
+ * the names below it appended, which do not exist and so cannot be links. A
+ * dangling link on the way is followed by hand (realpath stops at it), from
+ * the real directory holding it, so whatever a write through it would create
+ * is what gets judged.
+ */
+function realTarget(path: string, relPath: string, hops = 0): string {
+  const below: string[] = [];
+  let ancestor = path;
+  for (;;) {
+    try {
+      return join(realpathSync(ancestor), ...below);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ELOOP')
+        throw new FileSystemError(
+          `Path traversal detected: symbolic link loop in ${relPath}`,
+          FileSystemErrorCodes.PATH_ESCAPE,
+          relPath
+        );
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+    }
+    let entry: Stats | null = null;
+    try {
+      entry = lstatSync(ancestor);
+    } catch {
+      // Not there: look one level up.
+    }
+    if (entry?.isSymbolicLink()) {
+      if (hops >= MAX_LINK_HOPS)
+        throw new FileSystemError(
+          `Path traversal detected: symbolic link loop in ${relPath}`,
+          FileSystemErrorCodes.PATH_ESCAPE,
+          relPath
+        );
+      const pointsTo = resolve(realpathSync(dirname(ancestor)), readlinkSync(ancestor));
+      return realTarget(join(pointsTo, ...below), relPath, hops + 1);
+    }
+    const parent = dirname(ancestor);
+    if (parent === ancestor) return join(ancestor, ...below);
+    below.unshift(basename(ancestor));
+    ancestor = parent;
+  }
+}
+
 export class LocalFileSystem implements FileSystemProvider {
   private listAbort: AbortController | null = null;
 
@@ -162,25 +225,52 @@ export class LocalFileSystem implements FileSystemProvider {
   }
 
   /**
-   * Resolve and validate a relative path, ensuring it doesn't escape the location root
+   * Resolve a path relative to the location root for an operation that goes
+   * through it (read, write, stat, list, copy), refusing one that leaves the
+   * location: by `..` as written, or through a symbolic link anywhere on the
+   * way, the last name included. Containment is judged on real paths, the
+   * root's and the target's (see `realTarget`), so a link inside the location
+   * to a place outside it is refused even when the target does not exist yet.
    */
   private resolvePath(relPath: string): string {
-    // Normalize the path and resolve it against location root
+    return this.contained(relPath, (fullPath) => realTarget(fullPath, relPath));
+  }
+
+  /**
+   * Resolve a path for an operation on the name itself, which never follows a
+   * link there (remove): only the directory holding it must really be inside
+   * the location, so a link in the location to a place outside it can still
+   * be deleted, and its target is left alone.
+   */
+  private resolveEntryPath(relPath: string): string {
+    return this.contained(relPath, (fullPath) =>
+      fullPath === this.rootPath
+        ? realTarget(fullPath, relPath)
+        : join(realTarget(dirname(fullPath), relPath), basename(fullPath))
+    );
+  }
+
+  private contained(relPath: string, real: (fullPath: string) => string): string {
     const normalizedRelPath = relPath.replace(/\\/g, '/').replace(/^\//, '');
     const fullPath = resolve(join(this.rootPath, normalizedRelPath));
-
-    // Security: ensure path is within rootPath (handle trailing separator edge cases)
-    const locationPathWithSep = this.rootPath.endsWith(sep) ? this.rootPath : this.rootPath + sep;
-    const fullPathWithSep = fullPath.endsWith(sep) ? fullPath : fullPath + sep;
-
-    if (!fullPathWithSep.startsWith(locationPathWithSep) && fullPath !== this.rootPath) {
-      throw new FileSystemError(
+    const escape = () =>
+      new FileSystemError(
         `Path traversal detected: ${relPath}`,
         FileSystemErrorCodes.PATH_ESCAPE,
         relPath
       );
-    }
 
+    if (!isWithinOrSame(this.rootPath, fullPath)) throw escape();
+
+    let realRoot: string;
+    try {
+      realRoot = realpathSync(this.rootPath);
+    } catch (error) {
+      // A root that is not there holds no links to follow.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return fullPath;
+      throw error;
+    }
+    if (!isWithinOrSame(realRoot, real(fullPath))) throw escape();
     return fullPath;
   }
 
@@ -285,13 +375,6 @@ export class LocalFileSystem implements FileSystemProvider {
             ctime: stat.ctime,
             mode: stat.mode,
           };
-
-          if (options.filter) {
-            const filterRegex = new RegExp(options.filter);
-            if (!filterRegex.test(item.name)) {
-              continue;
-            }
-          }
 
           entries.push(entry);
 
@@ -482,14 +565,6 @@ export class LocalFileSystem implements FileSystemProvider {
             }
           }
 
-          // Check file pattern if specified
-          if (options.filePattern) {
-            const filePatternRegex = new RegExp(options.filePattern.replace(/\*/g, '.*'));
-            if (!filePatternRegex.test(item.name)) {
-              continue;
-            }
-          }
-
           filesSearched++;
 
           try {
@@ -555,11 +630,13 @@ export class LocalFileSystem implements FileSystemProvider {
     path: string,
     options?: { recursive?: boolean }
   ): Promise<{ success: boolean; error?: string }> {
-    const fullPath = this.resolvePath(path);
+    const fullPath = this.resolveEntryPath(path);
 
+    // The entry itself, never what a link there points to: a link is removed
+    // as a file, and its target is left alone.
     let stat;
     try {
-      stat = await fs.stat(fullPath);
+      stat = await fs.lstat(fullPath);
     } catch {
       return { success: false, error: `File not found: ${path}` };
     }
@@ -581,8 +658,9 @@ export class LocalFileSystem implements FileSystemProvider {
       return { success: true };
     } catch (err: unknown) {
       const code = (err as NodeJS.ErrnoException).code;
-      // Attempt chmod retry on permission error
-      if (code === 'EACCES' || code === 'EPERM') {
+      // Attempt chmod retry on permission error; chmod follows a link, so never
+      // for one, whose target may be outside the location.
+      if ((code === 'EACCES' || code === 'EPERM') && !stat.isSymbolicLink()) {
         try {
           await fs.chmod(fullPath, 0o666);
           await fs.unlink(fullPath);
@@ -591,68 +669,6 @@ export class LocalFileSystem implements FileSystemProvider {
           return { success: false, error: `Permission denied: ${path}` };
         }
       }
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  }
-
-  async saveAttachment(
-    srcPath: string,
-    subdir?: string
-  ): Promise<{
-    success: boolean;
-    absPath?: string;
-    relPath?: string;
-    fileName?: string;
-    error?: string;
-  }> {
-    const ALLOWED_ATTACHMENT_EXTENSIONS = new Set([
-      '.png',
-      '.jpg',
-      '.jpeg',
-      '.gif',
-      '.webp',
-      '.bmp',
-      '.svg',
-    ]);
-
-    try {
-      try {
-        await fs.access(srcPath);
-      } catch {
-        return { success: false, error: 'Source file not found' };
-      }
-
-      const ext = extname(srcPath).toLowerCase();
-      if (!ALLOWED_ATTACHMENT_EXTENSIONS.has(ext)) {
-        return { success: false, error: 'Unsupported attachment type' };
-      }
-
-      const destDir = join(this.rootPath, '.switchdash', subdir ?? 'attachments');
-      await fs.mkdir(destDir, { recursive: true });
-
-      const baseName = basename(srcPath);
-      let destName = baseName;
-      let counter = 1;
-      let destAbs = join(destDir, destName);
-
-      while (true) {
-        try {
-          await fs.access(destAbs);
-          // File exists — try next name
-          const nameWithoutExt = basename(baseName, ext);
-          destName = `${nameWithoutExt}-${counter}${ext}`;
-          destAbs = join(destDir, destName);
-          counter++;
-        } catch {
-          // File does not exist — safe to write here
-          break;
-        }
-      }
-
-      await fs.copyFile(srcPath, destAbs);
-      const relPath = relative(this.rootPath, destAbs);
-      return { success: true, absPath: destAbs, relPath, fileName: destName };
-    } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
@@ -718,11 +734,6 @@ export class LocalFileSystem implements FileSystemProvider {
 
   async realPath(path: string): Promise<string> {
     return fs.realpath(this.resolvePath(path));
-  }
-
-  async glob(pattern: string, options?: { cwd?: string; dot?: boolean }): Promise<string[]> {
-    const cwd = options?.cwd ? this.resolvePath(options.cwd) : this.rootPath;
-    return glob(pattern, { cwd, dot: options?.dot ?? false, absolute: false });
   }
 
   async copyFile(src: string, dest: string): Promise<void> {

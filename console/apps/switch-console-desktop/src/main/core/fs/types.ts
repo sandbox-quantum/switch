@@ -40,8 +40,6 @@ export interface ListOptions {
   recursive?: boolean;
   /** Include hidden files (starting with .) */
   includeHidden?: boolean;
-  /** Filter pattern (glob or regex, implementation-dependent) */
-  filter?: string;
   /** Maximum number of entries to return */
   maxEntries?: number;
   /** Time budget in milliseconds */
@@ -96,8 +94,6 @@ export interface SearchOptions {
    * Optional override pattern. If omitted, the `query` argument to `IFileSystem.search()` is used.
    */
   pattern?: string;
-  /** Optional file pattern filter (e.g., "*.ts") */
-  filePattern?: string;
   /** Maximum number of results to return */
   maxResults?: number;
   /** Case-sensitive search */
@@ -206,14 +202,6 @@ export interface FileSystemProvider {
   realPath(path: string): Promise<string>;
 
   /**
-   * Find files matching a glob pattern.
-   * @param pattern - Glob pattern (e.g., ".env", ".env.*.local")
-   * @param options - cwd: directory to search in; dot: include dotfiles (default false)
-   * @returns Relative paths of matching entries
-   */
-  glob(pattern: string, options?: { cwd?: string; dot?: boolean }): Promise<string[]>;
-
-  /**
    * Copy a file from src to dest (both paths relative to location root).
    * Does not create parent directories — caller must ensure they exist.
    * @param src - Source path
@@ -231,24 +219,6 @@ export interface FileSystemProvider {
     dataUrl?: string;
     mimeType?: string;
     size?: number;
-    error?: string;
-  }>;
-
-  /**
-   * Copy a local file into the location's .switchdash attachments directory.
-   * Only supported on local filesystems (srcPath is an absolute local path).
-   * @param srcPath - Absolute local path of the source file
-   * @param subdir - Subdirectory inside .switchdash/ (defaults to "attachments")
-   * @returns Promise resolving to the saved file paths
-   */
-  saveAttachment?(
-    srcPath: string,
-    subdir?: string
-  ): Promise<{
-    success: boolean;
-    absPath?: string;
-    relPath?: string;
-    fileName?: string;
     error?: string;
   }>;
 

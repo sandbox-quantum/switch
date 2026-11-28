@@ -26,7 +26,12 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from switch_core.rooms_yaml import PLACEHOLDER_RE, ParamSpec
+from switch_core.rooms_yaml import (
+    PARAM_PATTERN_MAX_LENGTH,
+    PARAM_PATTERN_VALUE_MAX_LENGTH,
+    PLACEHOLDER_RE,
+    ParamSpec,
+)
 from switch_core.template_v2 import RESOURCE_TYPES, condition_params, is_v2
 from switch_core.template_yaml import load_template_yaml
 
@@ -76,7 +81,17 @@ _BUILTIN_RE = re.compile(r"\{(\$[A-Za-z_][A-Za-z0-9_]*)\}")
 # parser and this server also disagree today about a bare param with no spec —
 # Console reads it as a string, the server refuses it — so a block on that
 # would refuse a document the Console wizard renders happily.
-_BLOCKING_CODES = frozenset({"empty", "invalid_yaml", "not_a_mapping"})
+_BLOCKING_CODES = frozenset(
+    {
+        "empty",
+        "invalid_yaml",
+        "not_a_mapping",
+        # Bounds on what a param's pattern is matched with, held at save so
+        # a template stored before them still loads (see `rooms_yaml`).
+        "pattern_too_long",
+        "pattern_default_too_long",
+    }
+)
 
 # What runs an agent, where, and in which folder. Switch Console supplies none
 # of these itself, so a template that creates an agent must say all three.
@@ -218,6 +233,9 @@ def _check_params(raw: Any, errors: list[Finding], warnings: list[Finding]) -> s
             except ValidationError:
                 continue
 
+        if parsed.pattern is not None:
+            _check_pattern_lengths(name, parsed, errors)
+
         # Two things a well-formed ParamSpec can still say that provisioning
         # will refuse. They surface here because they only bite at the moment
         # somebody tries to use the template, which is far from the mistake.
@@ -240,6 +258,31 @@ def _check_params(raw: Any, errors: list[Finding], warnings: list[Finding]) -> s
                     )
                 )
     return declared
+
+
+def _check_pattern_lengths(name: str, spec: ParamSpec, errors: list[Finding]) -> None:
+    assert spec.pattern is not None
+    if len(spec.pattern) > PARAM_PATTERN_MAX_LENGTH:
+        errors.append(
+            Finding(
+                "pattern_too_long",
+                f"Parameter '{name}' has a pattern {len(spec.pattern)} characters "
+                f"long; at most {PARAM_PATTERN_MAX_LENGTH} are allowed.",
+                name,
+            )
+        )
+    defaults = spec.default if isinstance(spec.default, list) else [spec.default]
+    for default in defaults:
+        if isinstance(default, str) and len(default) > PARAM_PATTERN_VALUE_MAX_LENGTH:
+            errors.append(
+                Finding(
+                    "pattern_default_too_long",
+                    f"Parameter '{name}' has a default {len(default)} characters "
+                    f"long; at most {PARAM_PATTERN_VALUE_MAX_LENGTH} can be checked "
+                    "against its pattern.",
+                    name,
+                )
+            )
 
 
 def _check_agent_runtime(document: dict[str, Any], warnings: list[Finding]) -> None:

@@ -32,6 +32,7 @@ from switch_core.bridges.collaboration.signal.adapter import (
     split_message,
     to_signal_text,
 )
+from switch_core.outbound import OutboundPolicy
 
 from .session_fixtures import open_request
 
@@ -251,7 +252,9 @@ def test_outbound_urls_name_the_daemon() -> None:
 async def test_verify_credentials_accepts_a_daemon_serving_the_account(
     daemon: Daemon,
 ) -> None:
-    await SignalAdapter.verify_credentials(_config().model_dump())
+    await SignalAdapter.verify_credentials(
+        _config().model_dump(), outbound_policy=OutboundPolicy.parse("")
+    )
     assert daemon.calls[0]["method"] == "listAccounts"
 
 
@@ -260,7 +263,9 @@ async def test_verify_credentials_refuses_an_account_the_daemon_lacks(
 ) -> None:
     daemon.accounts = [{"number": "+15559999999"}]
     with pytest.raises(BridgeCredentialError, match="not registered or linked"):
-        await SignalAdapter.verify_credentials(_config().model_dump())
+        await SignalAdapter.verify_credentials(
+            _config().model_dump(), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_verify_credentials_refuses_something_else_on_the_port(
@@ -268,7 +273,9 @@ async def test_verify_credentials_refuses_something_else_on_the_port(
 ) -> None:
     daemon.check_status = 404
     with pytest.raises(BridgeCredentialError, match="--http"):
-        await SignalAdapter.verify_credentials(_config().model_dump())
+        await SignalAdapter.verify_credentials(
+            _config().model_dump(), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_verify_credentials_explains_a_single_account_daemon(
@@ -276,7 +283,9 @@ async def test_verify_credentials_explains_a_single_account_daemon(
 ) -> None:
     daemon.error = {"code": -32601, "message": "Method not implemented"}
     with pytest.raises(BridgeCredentialError, match="without -a"):
-        await SignalAdapter.verify_credentials(_config().model_dump())
+        await SignalAdapter.verify_credentials(
+            _config().model_dump(), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_verify_credentials_explains_no_daemon(
@@ -287,7 +296,9 @@ async def test_verify_credentials_explains_no_daemon(
 
     monkeypatch.setattr(SignalAdapter, "_transport", httpx.MockTransport(refuse))
     with pytest.raises(BridgeCredentialError, match="No signal-cli daemon"):
-        await SignalAdapter.verify_credentials(_config().model_dump())
+        await SignalAdapter.verify_credentials(
+            _config().model_dump(), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_verify_credentials_explains_a_daemon_refusing_the_call(
@@ -295,7 +306,9 @@ async def test_verify_credentials_explains_a_daemon_refusing_the_call(
 ) -> None:
     daemon.status = 500
     with pytest.raises(BridgeCredentialError, match="refused to list its accounts"):
-        await SignalAdapter.verify_credentials(_config().model_dump())
+        await SignalAdapter.verify_credentials(
+            _config().model_dump(), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 async def test_verify_credentials_explains_a_daemon_that_stops_answering(
@@ -310,7 +323,9 @@ async def test_verify_credentials_explains_a_daemon_that_stops_answering(
         SignalAdapter, "_transport", httpx.MockTransport(check_then_drop)
     )
     with pytest.raises(BridgeCredentialError, match="stopped answering"):
-        await SignalAdapter.verify_credentials(_config().model_dump())
+        await SignalAdapter.verify_credentials(
+            _config().model_dump(), outbound_policy=OutboundPolicy.parse("")
+        )
 
 
 def test_classify_failure() -> None:

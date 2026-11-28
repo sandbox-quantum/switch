@@ -156,6 +156,7 @@ export {
   openHubStream,
 } from './host/hub-stream';
 export { clearTakenOver, readTakenOver, type TakenOver } from './host/taken-over';
+export { parseUntrustedJson, readUntrusted } from './host/untrusted-file';
 export {
   bundleIdentity,
   recordWatcherHealth,
@@ -224,6 +225,7 @@ export { readSharedCredentials, sharedConfigSchema } from './host/shared-config'
 export type { SharedHostConfig } from './host/shared-config';
 
 export { loginCommandOf, providerReadinessSchema } from './readiness';
+export { isSafeId, safeId } from './safe-id';
 export {
   cliConversationListSchema,
   deletedCliConversationCopiesSchema,
