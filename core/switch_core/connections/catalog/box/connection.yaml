@@ -1,7 +1,79 @@
 slug: box
 name: Box
 category: File storage
-description: Read and manage files stored in Box.
-enabled: false
+description: Search, read and organize the files and folders you can reach in Box, as you.
+enabled: true
+publisher: Box
+links:
+  documentation: https://developer.box.com/guides/box-mcp/remote/
+  support: https://support.box.com
+  privacy: https://www.box.com/legal/privacypolicy
+adapter: oauth
 auth:
   type: oauth
+  # Box documents its refresh tokens as single-use: each refresh returns a
+  # new one and spends the old, and one left unused for 60 days lapses.
+  refresh: rotating
+  oauth:
+    # Box offers no dynamic client registration: its authorization-server
+    # metadata names no registration endpoint. A Box admin enables the Box
+    # MCP server under Integrations in the Box Admin Console and adds
+    # Integration Credentials to it, which hold the client id and secret;
+    # each server's operator saves them under Connector apps, or names them
+    # in BOX_CLIENT_CONFIG_PATH. The credentials' Access Scopes are the most
+    # a sign-in can be granted; the levels below narrow it. A Custom App
+    # with User Authentication (OAuth 2.0) from the Developer Console works
+    # the same way.
+    registration: static
+    client_settings: BOX
+    # Back to Core's own https callback, as Airtable's and Google's: the
+    # server needs GATEWAY_PUBLIC_URL, and the Integration Credentials take
+    # one Redirect URI, entered in the Box Admin Console.
+    redirect: [core]
+    # The app check proves the client id and secret together, but not the
+    # redirect URI, the credentials' scopes, or that the integration is
+    # enabled for the person connecting.
+    unchecked: >-
+      Switch can't check the redirect URI, the integration's scopes, or that
+      the Box MCP server is enabled for everyone who connects. Connect once
+      to confirm.
+    # Discovered: mcp.box.com's 401 names its protected-resource metadata,
+    # which names api.box.com as the authorization server. Its metadata
+    # offers PKCE S256 and a revocation endpoint, so a disconnect revokes
+    # the sign-in.
+    revocation_discovered: true
+  # GET /2.0/users/me takes the token issued for mcp.box.com and names the
+  # account by its id and its email.
+  identity:
+    url: https://api.box.com/2.0/users/me
+    account_id: id
+    label: login
+# Box documents hour-long access tokens but issues longer ones: a sign-in
+# run reported in the project's PR #1390 measured expires_in at 3,686 to
+# 4,068 s across sign-ins and refreshes. The cap leaves room above that, so
+# a fresh token is handed out at once rather than refused until it has run
+# down to the documented hour.
+token: { kind: pass_through, max_lifetime: 4500 }
+mcp:
+  # A Box admin must enable the Box MCP server for the enterprise under
+  # Integrations in the Box Admin Console, or every sign-in and call is
+  # refused.
+  servers:
+    - { name: box, url: "https://mcp.box.com" }
+access:
+  # Box narrows a sign-in to the scopes the authorization request asks for
+  # (its scopes guide documents requesting root_readonly from an app that
+  # also has root_readwrite), and checks every call against the person's own
+  # folder and file permissions too. Not asked for: ai.readwrite, whose Box
+  # AI tools are listed by default and spend the enterprise's AI units on
+  # every call (the Enhanced Extract Agent costs more), and
+  # docgen.readwrite, which needs an Enterprise Advanced licence. The tools
+  # pass through unclassified; the skill keeps the agent off the Box AI and
+  # Doc Gen ones. The server lists no tool that deletes a file or folder.
+  read:
+    scopes:
+      - root_readonly
+  write:
+    scopes:
+      - root_readwrite
+tools: { mode: pass_through }

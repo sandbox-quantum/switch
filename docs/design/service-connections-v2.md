@@ -1007,6 +1007,65 @@ back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
 
+## Box
+
+Built from Box's published metadata and documentation (checked 2026-11-25),
+with its live behavior as reported from a sign-in run in the project's PR
+#1390; the operator's setup is in
+[`docs/old/box-setup.md`](../old/box-setup.md).
+
+- Box offers no dynamic registration: `api.box.com`'s authorization-server
+  metadata names no registration endpoint. A Box admin enables the Box MCP
+  server under Integrations in the Box Admin Console and adds Integration
+  Credentials to it, entering the redirect URI and the most scopes a sign-in
+  may be granted; each server's operator saves the client under Connector
+  apps, or names it in `BOX_CLIENT_CONFIG_PATH`. A Custom App with User
+  Authentication (OAuth 2.0) from the Developer Console works too. The
+  browser comes back to Core's own callback, as Airtable's and Google's do,
+  so the server needs `GATEWAY_PUBLIC_URL`.
+- The endpoints are discovered: `mcp.box.com`'s 401 names its protected
+  resource metadata, which names `api.box.com` as the authorization server.
+  Its metadata offers PKCE S256, `client_secret_basic` and
+  `client_secret_post`, and a revocation endpoint, so a disconnect revokes
+  the sign-in (`revocation_discovered`). Box accepts the `resource`
+  parameter Core sends with the authorization and token requests (PR #1390's
+  run).
+- The levels are `root_readonly` (read) and `root_readwrite` (write). Box
+  narrows a sign-in to the scopes the authorization request asks for: its
+  scopes guide documents asking for `root_readonly` from an app that also
+  has `root_readwrite`. Box checks every call against the person's own
+  folder and file permissions too. Not asked for: `ai.readwrite`, whose Box
+  AI tools are listed by default and spend the enterprise's AI units on
+  every call (the Enhanced Extract Agent costs more), and
+  `docgen.readwrite`, which needs an Enterprise Advanced licence. The tools
+  pass through unclassified, so the skill keeps the agent off them. Box's
+  server lists no tool that deletes a file or folder; moves, renames,
+  property and metadata changes, new versions, shared links, collaborations
+  and upload and download links are not listed until a Box admin turns them
+  on.
+- Box documents hour-long access tokens but issues longer ones: PR #1390's
+  run measured `expires_in` at 3,686 to 4,068 s across sign-ins and
+  refreshes. `max_lifetime` is 4,500, so a fresh token is handed out at
+  once rather than refused until it has run down to the documented hour.
+  Box documents refresh tokens as single-use with a 60-day life, so
+  `refresh: rotating`.
+- `GET https://api.box.com/2.0/users/me` names the account: `id`, and
+  `login`, its email. It takes the token issued for `mcp.box.com` (PR
+  #1390's run).
+- Still to run end to end from this entry: connect from Switch Console,
+  grant to an agent, use the tools in a session, grant off, renewal inside a
+  running session, disconnect revoking at Box, and no credential in the
+  transcript, the room or the logs. PR #1390's run covered each against a
+  Box developer account.
+
+To connect: once a workspace admin has turned Box on under Admin, Connectors,
+open Connectors in Switch Console and connect Box. To roll back, add `box`
+to `DISABLED_SERVICES` and restart switch-core, remove its client under
+Connector apps, or unset `BOX_CLIENT_CONFIG_PATH` and restart (and remove
+any client saved under Connector apps, which then takes over), or set the
+entry's `enabled: false` and remove its `skill/`, which the loader refuses
+on a placeholder.
+
 ## Google Workspace
 
 Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP

@@ -52,6 +52,17 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **The Box connection.** A person connects Box from Switch Console, and an
+  agent they grant searches, reads and organizes the files and folders they
+  can reach in Box, as them, through Box's MCP server
+  (`https://mcp.box.com`). A Box admin enables the Box MCP server and adds
+  Integration Credentials in the Box Admin Console; each server's operator
+  saves them under Connector apps, or names them in
+  `BOX_CLIENT_CONFIG_PATH`; see `docs/old/box-setup.md`. Like Airtable and
+  Google Workspace it needs `GATEWAY_PUBLIC_URL`. Box AI and Doc Gen scopes
+  are not asked for, and disconnecting revokes the sign-in at Box (#832).
+
 #### Fixed
 - **`switch.hosted.provider_login_problems` counts only providers an agent on
   the machine runs.** Cloud machines have every provider installed, so a login
@@ -100,6 +111,7 @@ version of their own to them without also giving them a release of their own.
 - **Adding or removing an agent by id no longer tells another workspace's
   agent apart from one that does not exist.** Both are refused with the same
   error; another workspace's agent used to fail later, with a different one.
+
 
 ### [0.32.2] - 2026-11-25
 
