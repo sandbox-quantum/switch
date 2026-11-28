@@ -71,7 +71,7 @@ def test_an_agent_is_found_without_looking_at_any_other_actor() -> None:
     service = _running(1000)
     _Agent.asked = 0
 
-    found = service.get_by_agent_id("agent-500")
+    found = service.get_tenant_agent("agent-500", _TENANT)
 
     assert found is service._clients["client-500"]
     assert _Agent.asked == 1
@@ -85,7 +85,7 @@ def test_an_agent_not_running_here_is_answered_without_looking() -> None:
     service = _running(1000)
     _Agent.asked = 0
 
-    assert service.get_by_agent_id("agent-elsewhere") is None
+    assert service.get_tenant_agent("agent-elsewhere", _TENANT) is None
     assert _Agent.asked == 0
 
 
@@ -96,32 +96,32 @@ def test_an_agent_whose_row_comes_later_is_found_and_kept() -> None:
     service._track("client-late", late, "agent", _TENANT)
     late._agent = SimpleNamespace(id="agent-late")  # type: ignore[assignment]
 
-    assert service.get_by_agent_id("agent-late") is late
+    assert service.get_tenant_agent("agent-late", _TENANT) is late
     _Agent.asked = 0
-    assert service.get_by_agent_id("agent-late") is late
+    assert service.get_tenant_agent("agent-late", _TENANT) is late
     assert _Agent.asked == 1
 
 
 def test_a_replaced_actor_is_the_one_found() -> None:
     service = _running(1)
-    assert service.get_by_agent_id("agent-0") is service._clients["client-0"]
+    assert service.get_tenant_agent("agent-0", _TENANT) is service._clients["client-0"]
 
     replacement = _actor("agent-0")
     service._track("client-0", replacement, "agent", _TENANT)
 
-    assert service.get_by_agent_id("agent-0") is replacement
+    assert service.get_tenant_agent("agent-0", _TENANT) is replacement
 
 
 def test_a_stopped_actor_is_not_found_and_a_moved_one_is() -> None:
     service = _running(1)
-    assert service.get_by_agent_id("agent-0") is not None
+    assert service.get_tenant_agent("agent-0", _TENANT) is not None
 
     service._forget("client-0")
-    assert service.get_by_agent_id("agent-0") is None
+    assert service.get_tenant_agent("agent-0", _TENANT) is None
 
     moved = _actor("agent-0")
     service._track("client-1", moved, "agent", _TENANT)
-    assert service.get_by_agent_id("agent-0") is moved
+    assert service.get_tenant_agent("agent-0", _TENANT) is moved
 
 
 def test_a_type_is_found_without_looking_at_every_client() -> None:

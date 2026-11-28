@@ -112,10 +112,20 @@ export function missingParams(params: ParamSpec[], values: Values): ParamSpec[] 
   return params.filter((p) => isRequired(p) && isEmpty(values[p.name]));
 }
 
+// switch-core refuses, when a template is used, a value longer than this before
+// matching it against the param's pattern (PARAM_PATTERN_VALUE_MAX_LENGTH in
+// rooms_yaml.py), so the Console does the same rather than run the template's
+// regex unbounded on what the user types. A pattern's own length is held only
+// when a template is saved, and one stored before that still loads and is
+// still matched, so the Console does not refuse a long pattern.
+export const PARAM_PATTERN_VALUE_MAX_LENGTH = 10_000;
+
 /** What is wrong with a value, by the template's own rules, or null. */
 export function valueProblem(param: ParamSpec, value: string | number | boolean): string | null {
   if (isEmpty(value)) return null;
   if (param.type === 'string' && param.pattern !== null) {
+    if (String(value).length > PARAM_PATTERN_VALUE_MAX_LENGTH)
+      return `Must be at most ${PARAM_PATTERN_VALUE_MAX_LENGTH} characters to check against its pattern`;
     let re: RegExp;
     try {
       re = new RegExp(`^(?:${param.pattern})$`);

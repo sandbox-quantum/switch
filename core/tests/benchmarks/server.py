@@ -283,7 +283,7 @@ class BenchServer:
 
     async def _await_client(self, agent_id: str, deadline: float) -> AgentActor:
         while asyncio.get_event_loop().time() < deadline:
-            client = self.client_lifecycle.get_by_agent_id(agent_id)
+            client = self.client_lifecycle.get_tenant_agent(agent_id, TENANT_ZERO_ID)
             if client is not None:
                 return client  # type: ignore[return-value]
             await asyncio.sleep(0.05)

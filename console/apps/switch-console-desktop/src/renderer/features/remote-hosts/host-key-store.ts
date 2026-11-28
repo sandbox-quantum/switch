@@ -1,6 +1,7 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { events, rpc } from '@renderer/lib/ipc';
-import { type HostKeyProblem, hostKeyProblemsChannel } from '@shared/core/ssh/host-keys';
+import type { HostKeyProblem } from '@shared/core/ssh/host-keys';
+import { hostKeyProblemsChannel } from '@shared/core/ssh/hostKeyEvents';
 
 /**
  * Renderer mirror of the SSH host keys Switch Console refused and is waiting

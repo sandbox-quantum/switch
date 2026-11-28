@@ -6,12 +6,21 @@ post before Trust, so it is neither judged nor alerted on a second time."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.tenant_context import tenant_scope
+
+
+@pytest.fixture(autouse=True)
+def _tenant() -> Iterator[None]:
+    # `send_message` looks the agent's client up in the request's tenant.
+    with tenant_scope("tenant-a"):
+        yield
 
 
 def _core(already: str | None) -> tuple[Any, list[str]]:
@@ -44,7 +53,9 @@ def _core(already: str | None) -> tuple[Any, list[str]]:
     )
     core = SimpleNamespace(
         require_room_poster=room_poster,
-        client_lifecycle=SimpleNamespace(get_by_agent_id=lambda _agent: client),
+        client_lifecycle=SimpleNamespace(
+            get_tenant_agent=lambda _agent, _tenant: client
+        ),
         _enforce_trust=trust,
         _set_typing=typing,
     )

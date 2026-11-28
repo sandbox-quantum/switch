@@ -11,7 +11,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { events, rpc } from '@renderer/lib/ipc';
 import { log } from '@renderer/utils/logger';
-import { hostSetupPlanEventChannel, type HostSetupPlan } from '@shared/core/remote-hosts/setup';
+import { hostSetupPlanEventChannel } from '@shared/core/remote-hosts/remoteHostEvents';
+import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';
 
 export function setupPlanQueryKey(sshHost: string) {
   return ['remote-host-setup-plan', sshHost];

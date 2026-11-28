@@ -458,6 +458,42 @@ async def test_it_lists_only_the_persons_own_agents(
     }
 
 
+async def test_an_agent_that_may_manage_agents_sees_machines(
+    harness: Harness, client: httpx.AsyncClient
+) -> None:
+    buddy_id, key, _ = await _setup(harness)
+
+    context = await _context(client, buddy_id, key)
+
+    assert context["machines"] == []
+    assert {agent["name"]: agent["managed"] for agent in context["agents"]} == {
+        "switch-buddy-ada": None,
+        "reviewer": None,
+    }
+
+
+async def test_an_agent_that_may_not_manage_agents_sees_no_machines(
+    harness: Harness, client: httpx.AsyncClient
+) -> None:
+    buddy_id, key, _ = await _setup(harness)
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(Agent).where(Agent.id == buddy_id).values(can_manage_agents=False)
+        )
+        await session.commit()
+
+    context = await _context(client, buddy_id, key)
+
+    assert context["you"] == {"name": "switch-buddy-ada", "can_manage_agents": False}
+    assert "machines" not in context
+    assert all("managed" not in agent for agent in context["agents"])
+    assert {agent["name"] for agent in context["agents"]} == {
+        "switch-buddy-ada",
+        "reviewer",
+    }
+    assert context["person"]["name"] == "ada"
+
+
 async def test_an_admin_is_told_so(harness: Harness, client: httpx.AsyncClient) -> None:
     buddy_id, key, ada_id = await _setup(harness)
     async with harness.session_factory() as session:

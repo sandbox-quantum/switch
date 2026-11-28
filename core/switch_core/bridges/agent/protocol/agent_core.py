@@ -2007,11 +2007,11 @@ class AgentCore:
         return None
 
     async def _post_role_change_notice(
-        self, agent_id: str, transport_room_id: str, action: str
+        self, agent_id: str, tenant_id: str, transport_room_id: str, action: str
     ) -> None:
         """Announce a role assume/release from the acting agent's own client
         identity, so the notice reaches collaboration bridges (Slack/Mattermost)."""
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
+        client = self.client_lifecycle.get_tenant_agent(agent_id, tenant_id)
         if client is None:
             return
         await self._post_agent_notice(client, transport_room_id, f"🎭 {action}.")
@@ -2071,7 +2071,7 @@ class AgentCore:
             "[AGENT-MSG] agent=%s room=%s content=%s", agent_id, room_id, content[:80]
         )
         room = await self.require_room_poster(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
+        client = self.client_lifecycle.get_tenant_agent(agent_id, require_tenant_id())
         if client is None:
             raise AgentClientNotRunning("Agent client not running")
         if client_txn_id is not None:
@@ -2191,7 +2191,7 @@ class AgentCore:
                     f"{max_bytes}-byte limit (AGENT_MEDIA_MAX_BYTES)"
                 )
         room = await self.require_room_poster(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
+        client = self.client_lifecycle.get_tenant_agent(agent_id, require_tenant_id())
         if client is None:
             raise ValueError("Agent client not running")
         client.admit_message(caption)
@@ -2659,7 +2659,7 @@ class AgentCore:
         Raises GuardrailBlockedError if Switch Trust blocks it.
         """
         room = await self.require_room_member(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
+        client = self.client_lifecycle.get_tenant_agent(agent_id, require_tenant_id())
         if client is None:
             raise ValueError("Agent client not running")
         client.admit_message(detail)
@@ -2760,6 +2760,7 @@ class AgentCore:
 
         await self._emit_runtime_state(
             agent_id=agent_id,
+            tenant_id=agent.tenant_id,
             agent_name=agent.name,
             transport_room_id=room.transport_room_id,
             room_id=room.id,
@@ -2777,6 +2778,7 @@ class AgentCore:
         self,
         *,
         agent_id: str,
+        tenant_id: str,
         agent_name: str,
         transport_room_id: str,
         room_id: str,
@@ -2787,7 +2789,7 @@ class AgentCore:
         detail: str | None = None,
         anchor_event_id: str | None = None,
     ) -> None:
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
+        client = self.client_lifecycle.get_tenant_agent(agent_id, tenant_id)
         if client is None or client.transport is None:
             logger.debug(
                 "No live client for agent %s; skipping runtime-state emit", agent_id
@@ -2891,6 +2893,7 @@ class AgentCore:
             await session.commit()
         await self._emit_runtime_state(
             agent_id=agent.id,
+            tenant_id=agent.tenant_id,
             agent_name=agent.name,
             transport_room_id=room.transport_room_id,
             room_id=room.id,
@@ -3130,7 +3133,7 @@ class AgentCore:
         (bytes, content_type, filename).
         """
         await self.require_room_member(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
+        client = self.client_lifecycle.get_tenant_agent(agent_id, require_tenant_id())
         if client is None:
             raise ValueError("Agent client not running")
         if client.transport is None:
@@ -3250,7 +3253,7 @@ class AgentCore:
     ) -> None:
         """Report tool call and LLM call events to a room."""
         room = await self.require_room_member(agent_id, room_id)
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
+        client = self.client_lifecycle.get_tenant_agent(agent_id, require_tenant_id())
         if client is None:
             raise ValueError("Agent client not running")
         if client.transport is None:
@@ -4192,7 +4195,10 @@ class AgentCore:
             resolved_name = role.name
         if not already_held:
             await self._post_role_change_notice(
-                agent_id, room.transport_room_id, f"assumed the `{resolved_name}` role"
+                agent_id,
+                require_tenant_id(),
+                room.transport_room_id,
+                f"assumed the `{resolved_name}` role",
             )
         return result
 
@@ -4207,18 +4213,20 @@ class AgentCore:
                 session, agent_id, live_connection_ids
             )
             released_role: str | None = None
-            transport_room_id: str | None = None
+            room: Room | None = None
             if live is not None:
                 released_role = await self.room_role_store.agent_room_role(
                     session, live.room_id, agent_id, live_connection_ids
                 )
                 room = await self.room_store.get(session, live.room_id)
-                transport_room_id = room.transport_room_id if room is not None else None
             await self.room_role_store.release_lease(session, agent_id)
             await session.commit()
-        if released_role is not None and transport_room_id is not None:
+        if released_role is not None and room is not None:
             await self._post_role_change_notice(
-                agent_id, transport_room_id, f"released the `{released_role}` role"
+                agent_id,
+                room.tenant_id,
+                room.transport_room_id,
+                f"released the `{released_role}` role",
             )
 
     async def touch_role_lease(self, agent_id: str, holder: str | None) -> bool:
@@ -5362,6 +5370,7 @@ class AgentCore:
 
         await self._announce_document(
             agent_id,
+            require_tenant_id(),
             room.transport_room_id,
             f"\U0001f4c4 created room document \u201c{document_name}\u201d.",
         )
@@ -5398,6 +5407,7 @@ class AgentCore:
 
         await self._announce_document(
             agent_id,
+            require_tenant_id(),
             room.transport_room_id,
             f"\U0001f4c4 updated room document \u201c{document_name}\u201d.",
         )
@@ -5430,12 +5440,13 @@ class AgentCore:
 
         await self._announce_document(
             agent_id,
+            require_tenant_id(),
             room.transport_room_id,
             f"\U0001f5d1 deleted room document \u201c{document_name}\u201d.",
         )
 
     async def _announce_document(
-        self, agent_id: str, transport_room_id: str, body: str
+        self, agent_id: str, tenant_id: str, transport_room_id: str, body: str
     ) -> None:
         """Say in the room what the agent just did to a document.
 
@@ -5444,7 +5455,7 @@ class AgentCore:
         call that made it. A missing client is worth a line in the log — the
         room is now out of step with the database and nobody in it was told.
         """
-        client = self.client_lifecycle.get_by_agent_id(agent_id)
+        client = self.client_lifecycle.get_tenant_agent(agent_id, tenant_id)
         if client is None or client.transport is None:
             logger.warning(
                 "Agent %s has no connected client, so its document change in "

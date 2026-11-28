@@ -83,6 +83,20 @@ def _segment(value: str) -> str:
     return quote(value, safe=":@")
 
 
+def _search_term(value: str) -> str:
+    """`value` for inside a double-quoted `$search` clause.
+
+    A backslash escapes the next character there, so it is escaped as well as
+    the quote: a term ending in `\\` would otherwise escape the closing quote and
+    run on into the next clause."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def odata_string(value: str) -> str:
+    """`value` as an OData string literal, single-quoted with `'` doubled."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 @dataclass(frozen=True)
 class AppInstallation:
     installation_id: str
@@ -326,7 +340,7 @@ class GraphClient:
         Uses `$search` over the `users` collection, which needs the
         ConsistencyLevel header. Returns the raw Graph user objects.
         """
-        escaped = query.replace('"', '\\"')
+        escaped = _search_term(query)
         resp = await self._send(
             "GET",
             f"{GRAPH_BASE}/users",
@@ -468,7 +482,7 @@ class GraphClient:
             f"{GRAPH_BASE}/teams/{_segment(team_id)}/installedApps",
             params={
                 "$expand": "teamsApp",
-                "$filter": f"teamsApp/externalId eq '{external_id}'",
+                "$filter": f"teamsApp/externalId eq {odata_string(external_id)}",
             },
         )
         if resp.status_code >= 300:

@@ -6,6 +6,7 @@ import {
   unsaidMessage,
   paramLabel,
   holds,
+  PARAM_PATTERN_VALUE_MAX_LENGTH,
   resolveChain,
   roomOnlyParams,
   serverInputs,
@@ -89,6 +90,20 @@ describe('valueProblem', () => {
     expect(valueProblem(p, 'alpha')).toBeNull();
     expect(valueProblem(p, 'Alpha1')).toMatch(/Must match/);
     expect(valueProblem(p, '')).toBeNull();
+  });
+
+  it('refuses a value too long to check against its pattern, as core does at use', () => {
+    const p = param({ pattern: '(a+)+' });
+    expect(valueProblem(p, 'a'.repeat(PARAM_PATTERN_VALUE_MAX_LENGTH))).toBeNull();
+    expect(valueProblem(p, 'a'.repeat(PARAM_PATTERN_VALUE_MAX_LENGTH + 1))).toMatch(
+      /at most 10000 characters/
+    );
+  });
+
+  it('still checks a long pattern, which core holds only when a template is saved', () => {
+    const p = param({ pattern: 'a'.repeat(501) });
+    expect(valueProblem(p, 'a'.repeat(501))).toBeNull();
+    expect(valueProblem(p, 'a')).toMatch(/Must match/);
   });
 
   it('checks a number against its bounds', () => {

@@ -36,11 +36,21 @@ them) and refuses anything else (`src/preload/rpc-invoke.ts`). A handler added w
 bare `ipcMain.handle` is therefore unreachable from the renderer — register it through
 a controller.
 
+`eventSend` and `eventOn` reach only the channels of events the app defines — an event's
+name, or the name with a topic (`name.topic`) — and throw on anything else
+(`src/preload/event-bridge.ts`). The preload builds that set itself, at load, from the
+event modules (`src/shared/lib/ipc/event-channels.ts`), so an `ipcMain.on` listener on a
+channel that is not an app event is unreachable from the renderer.
+
 ## Event System
 
 Typed events use `createEventEmitter` from `src/shared/lib/ipc/events.ts`. Event type
 definitions live in `src/shared/events/`, with domain events colocated under
-`src/shared/core/<domain>/`.
+`src/shared/core/<domain>/`. Define an event with `defineEvent` and a string literal name,
+in a module named `*Events.ts` or `*-events.ts` under `src/shared/`: those are the modules
+the preload loads to learn the app's event channels, and `event-channels.test.ts` fails on
+an event defined anywhere else. A channel the renderer passes to `eventSend` directly
+(the renderer log) is an event's `.name` too.
 
 ## Rules
 

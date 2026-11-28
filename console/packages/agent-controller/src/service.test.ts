@@ -43,6 +43,19 @@ describe('systemdUnit', () => {
     );
   });
 
+  it('escapes systemd specifiers and variables and refuses a newline', () => {
+    const unit = systemdUnit({
+      ...SPEC,
+      dataDir: '/srv/100%h $HOME',
+      path: '/opt/50%u/bin:/usr/bin',
+    });
+    expect(unit).toContain('"--data-dir" "/srv/100%%h $$HOME"');
+    expect(unit).toContain('Environment="PATH=/opt/50%%u/bin:/usr/bin"');
+    expect(() => systemdUnit({ ...SPEC, path: '/usr/bin\nExecStartPre=/bin/sh' })).toThrow(
+      /control characters/
+    );
+  });
+
   it('restarts on 7, restarting into an update', () => {
     const prevented = systemdUnit(SPEC)
       .split('\n')

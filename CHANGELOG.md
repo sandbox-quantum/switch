@@ -52,7 +52,26 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **Request bodies have a size limit.** switch-core answers 413 to a request
+  body over `REQUEST_BODY_MAX_BYTES` (default 32 MiB). The routes that take
+  attachments, where an agent can post several files at once, are held to
+  `ATTACHMENT_UPLOAD_MAX_BYTES` instead (default 256 MiB), which has to leave
+  room for one file of `AGENT_MEDIA_MAX_BYTES` or the server will not start.
+
+#### Changed
+- **`get_my_context` shows machines only to an agent that may manage
+  agents.** An agent without "can manage agents" now gets the rest of its
+  owner's context without `machines` or each agent's `managed` entry, the same
+  machine and managed-agent data `list_machines` and `list_managed_agents`
+  already refuse it.
+
 #### Fixed
+- **A markdown message's rendered HTML keeps only safe markup.** Raw HTML in
+  the body is shown as text, a link keeps its target only when it points at
+  the web, mail or Matrix (a `javascript:` link becomes its text), and an
+  image becomes its description rather than loading from wherever the writer
+  chose. A mentioned id is escaped inside its link.
 - **`switch.hosted.provider_login_problems` counts only providers an agent on
   the machine runs.** Cloud machines have every provider installed, so a login
   nobody had given for a provider no agent used kept the "AI provider logins
@@ -88,6 +107,15 @@ version of their own to them without also giving them a release of their own.
   A message's file link is fetched only when it has the shape of a Zulip
   upload (`/user_uploads/<realm>/…/<name>`); any other is reported as a file
   that could not be relayed.
+- **A Google Chat bridge calls only Google's APIs, through the outbound
+  address guard.** The connection config no longer takes `api_base_url` or
+  `pubsub_base_url`; a stored value is ignored, so the service account's token
+  cannot be sent to another host.
+- **Matrix, Mattermost and Rocket.Chat credentials are checked through the
+  outbound address guard**, as the running bridges already connect, so the
+  server's name cannot resolve to an internal or metadata address between the
+  URL check and the token or password being sent. A Mattermost check now signs
+  in over the REST API rather than through the driver.
 - **A template param's `pattern` is checked in bounded time.** A match that
   takes longer than 0.1 s is refused as a validation error naming the param,
   so a backtracking pattern cannot hold the server. Saving or updating a
@@ -5287,6 +5315,10 @@ version of their own to them without also giving them a release of their own.
 - **The app window can call only the app's own requests into the main
   process.** Its bridge passed any channel name through; it now refuses every
   channel but those the app registers for its requests.
+
+- **The app window can send and listen to only the app's own events.** Its
+  bridge passed any channel name through for events too; it now refuses every
+  channel but those of the events the app defines.
 
 - **On Windows, a command for a `.cmd` or `.bat` CLI with a line break in an
   argument is refused.** Such a CLI runs through cmd.exe, which treats a line

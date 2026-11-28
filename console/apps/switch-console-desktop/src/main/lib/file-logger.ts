@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, rename, stat, unlink } from 'node:fs/promi
 import { join } from 'node:path';
 import { app } from 'electron';
 import { APP_SCHEME } from '@main/app/protocol';
+import { rendererLogChannel } from '@shared/events/rendererLogEvents';
 import {
   serializeLogValue,
   stringifyLogValue,
@@ -356,7 +357,7 @@ function flushAndExit() {
 }
 
 export function registerRendererLogHandler(ipcMain: Electron.IpcMain) {
-  ipcMain.on('switch-console:renderer-log', (event, payload: unknown) => {
+  ipcMain.on(rendererLogChannel.name, (event, payload: unknown) => {
     if (!isTrustedRendererSender(event.senderFrame)) return;
     const parsed = parseRendererLog(payload);
     if (!parsed) return;

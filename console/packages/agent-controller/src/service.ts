@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
+import { systemdEnvironment, systemdExecCommand } from '@switch-console/agent-providers';
 import { ConfigurationError } from './errors';
 import { defaultDataDir } from './paths';
 import { CommandFailure, type CommandRunner } from './secrets';
@@ -66,7 +67,6 @@ function runArguments(spec: ServiceSpec, launchd: boolean): string[] {
  * into an update), not on 2 to 6, which would fail the same way again.
  */
 export function systemdUnit(spec: ServiceSpec): string {
-  const quote = (value: string) => `"${value.replace(/(["\\])/g, '\\$1')}"`;
   return [
     '[Unit]',
     'Description=Switch agent controller',
@@ -74,8 +74,8 @@ export function systemdUnit(spec: ServiceSpec): string {
     'Wants=network-online.target',
     '',
     '[Service]',
-    `ExecStart=${runArguments(spec, false).map(quote).join(' ')}`,
-    `Environment=${quote(`PATH=${spec.path}`)}`,
+    `ExecStart=${systemdExecCommand(runArguments(spec, false))}`,
+    `Environment=${systemdEnvironment(`PATH=${spec.path}`)}`,
     'Restart=on-failure',
     'RestartSec=5',
     'RestartPreventExitStatus=2 3 4 5 6',

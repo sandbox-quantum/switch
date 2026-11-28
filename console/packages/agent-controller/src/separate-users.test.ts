@@ -151,6 +151,27 @@ describe.skipIf(process.platform === 'win32')('separate users', () => {
     expect(exec).toContain('"--env-file" "/etc/switch/agents.env"');
   });
 
+  it('escapes systemd specifiers and variables in the controller unit and refuses a newline', () => {
+    const unit = lines(
+      controllerSystemUnit(config, {
+        cli: '/opt/100%i/$X/cli.mjs',
+        envFile: null,
+        path: '/opt/50%u/bin:/usr/bin',
+      })
+    );
+    expect(unit.find((line) => line.startsWith('ExecStart='))).toContain(
+      '"/opt/100%%i/$$X/cli.mjs"'
+    );
+    expect(unit).toContain('Environment="PATH=/opt/50%%u/bin:/usr/bin"');
+    expect(() =>
+      controllerSystemUnit(config, {
+        cli: '/usr/lib/cli.mjs',
+        envFile: '/etc/agents.env\nExecStartPre=/bin/sh',
+        path: '/usr/bin',
+      })
+    ).toThrow(/control characters/);
+  });
+
   it('keeps the controller from the cloud instance metadata and new privileges, as its agents are', () => {
     const unit = lines(
       controllerSystemUnit(config, {

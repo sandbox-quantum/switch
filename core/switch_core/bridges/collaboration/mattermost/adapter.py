@@ -22,7 +22,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, ClassVar
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import SplitResult, quote, urlsplit
 
 import httpx
 import requests as sync_requests
@@ -115,7 +115,11 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
-from switch_core.outbound import OutboundPolicy, guarded_async_client
+from switch_core.outbound import (
+    OutboundPolicy,
+    OutboundURLRefused,
+    guarded_async_client,
+)
 from switch_core.sessions.contract import TURN_ENDED
 from switch_core.ui_spec import (
     ActionsProps,
@@ -372,6 +376,27 @@ def _server_url(value: str) -> SplitResult:
 _DRIVER_DEFAULT_PORTS = {"http": 8065, "https": 443}
 
 
+def _api_base_url(value: str) -> str:
+    """The REST API under `url`, on the port the driver would connect to."""
+    url = _server_url(value)
+    scheme = url.scheme.lower()
+    host = url.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    port = url.port or _DRIVER_DEFAULT_PORTS[scheme]
+    return f"{scheme}://{host}:{port}/api/v4"
+
+
+def _mattermost_error(response: httpx.Response) -> str:
+    """Mattermost's own message for a refused request, or its status."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    message = body.get("message") if isinstance(body, dict) else None
+    return str(message) if message else f"HTTP {response.status_code}"
+
+
 class MattermostConnectionConfig(BridgeConnectionConfig):
     url: str
     admin_user: str
@@ -520,46 +545,73 @@ class MattermostAdapter(PlatformAdapter):
     ) -> None:
         """Sign in as the admin user and find the team, as `start` will.
 
-        `url` has been through the outbound policy before this is called, so
-        the credentials are only sent where Switch may connect.
+        Through the guarded client, so the admin password is sent only to an
+        address the outbound policy allows, checked as the connection is made.
         """
         config = MattermostConnectionConfig.model_validate(connection_config)
-        driver = cls(config=config)._create_driver(
-            login_id=config.admin_user, password=config.admin_password
-        )
-        try:
-            await asyncio.to_thread(driver.login)
-        except NoAccessTokenProvided as exc:
-            raise BridgeCredentialError(
-                f"Mattermost refused the sign-in for {config.admin_user}: {exc}. "
-                "Check admin_user and admin_password."
-            ) from exc
-        except sync_requests.RequestException as exc:
-            raise BridgeCredentialError(
-                f"Could not sign in to Mattermost at {config.url} to check the "
-                f"credentials: {exc}"
-            ) from exc
-        try:
-            await asyncio.to_thread(driver.teams.get_team_by_name, config.team_name)
-        except (ResourceNotFound, NotEnoughPermissions) as exc:
-            raise BridgeCredentialError(
-                f"{config.admin_user} signed in, but Mattermost has no team "
-                f"named {config.team_name!r} it can see: {exc}"
-            ) from exc
-        except sync_requests.RequestException as exc:
-            raise BridgeCredentialError(
-                f"Could not look up the Mattermost team {config.team_name!r}: {exc}"
-            ) from exc
-        finally:
+        async with guarded_async_client(
+            outbound_policy,
+            verify=config.verify_tls,
+            base_url=_api_base_url(config.url),
+            timeout=_MM_REQUEST_TIMEOUT_SECONDS,
+        ) as http:
             try:
-                await asyncio.to_thread(driver.logout)
-            except sync_requests.RequestException:
-                logger.warning(
-                    "Could not sign out the Mattermost session opened to check "
-                    "%s's credentials; it lasts until the server expires it",
-                    config.admin_user,
-                    exc_info=True,
+                login = await http.post(
+                    "/users/login",
+                    json={
+                        "login_id": config.admin_user,
+                        "password": config.admin_password,
+                    },
                 )
+            except OutboundURLRefused as exc:
+                raise BridgeCredentialError(
+                    f"Switch may not connect to Mattermost at {config.url}: {exc}"
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise BridgeCredentialError(
+                    f"Could not sign in to Mattermost at {config.url} to check the "
+                    f"credentials: {exc}"
+                ) from exc
+            token = login.headers.get("Token")
+            if not login.is_success or not token:
+                raise BridgeCredentialError(
+                    f"Mattermost refused the sign-in for {config.admin_user}: "
+                    f"{_mattermost_error(login)}. Check admin_user and admin_password."
+                )
+            auth = {"Authorization": f"Bearer {token}"}
+            try:
+                team = await http.get(
+                    f"/teams/name/{quote(config.team_name, safe='')}", headers=auth
+                )
+                if team.status_code in (403, 404):
+                    raise BridgeCredentialError(
+                        f"{config.admin_user} signed in, but Mattermost has no team "
+                        f"named {config.team_name!r} it can see: "
+                        f"{_mattermost_error(team)}"
+                    )
+                if team.status_code != 200:
+                    raise BridgeCredentialError(
+                        f"Could not look up the Mattermost team "
+                        f"{config.team_name!r}: {_mattermost_error(team)}"
+                    )
+            except OutboundURLRefused as exc:
+                raise BridgeCredentialError(
+                    f"Switch may not connect to Mattermost at {config.url}: {exc}"
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise BridgeCredentialError(
+                    f"Could not look up the Mattermost team {config.team_name!r}: {exc}"
+                ) from exc
+            finally:
+                try:
+                    await http.post("/users/logout", headers=auth)
+                except (httpx.HTTPError, OutboundURLRefused):
+                    logger.warning(
+                        "Could not sign out the Mattermost session opened to check "
+                        "%s's credentials; it lasts until the server expires it",
+                        config.admin_user,
+                        exc_info=True,
+                    )
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:

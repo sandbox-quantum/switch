@@ -13,9 +13,14 @@ change, and it is not this module's to make.
 
 from __future__ import annotations
 
-import markdown
+import re
+from xml.etree.ElementTree import Element
+
+from markdown import Markdown
+from markdown.treeprocessors import Treeprocessor
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
+from switch_core.markdown_html import safe_markdown
 from switch_core.transport.types import MessageFormat
 
 
@@ -126,7 +131,8 @@ def edited_content(
 
 
 def _rendered(body: str, mentions: list[str] | None) -> str:
-    """Markdown as HTML, with each mentioned id turned into a link.
+    """Markdown as HTML, made safe as `markdown_html` makes it, with each
+    mentioned id turned into a link.
 
     The link target is a matrix.to URL because that is what a Matrix client
     renders as a mention pill, and it is the one addressing signal with no
@@ -135,10 +141,62 @@ def _rendered(body: str, mentions: list[str] | None) -> str:
     still wants the id there for exactly that reason, so the form is shared
     rather than being made Matrix-only.
     """
-    html: str = markdown.markdown(body)
-    for user_id in mentions or ():
-        local = user_id.split(":")[0].lstrip("@")
-        html = html.replace(
-            f"@{local}", f'<a href="https://matrix.to/#/{user_id}">{local}</a>'
+    renderer = safe_markdown([], keep_mxc_images=False)
+    if mentions:
+        renderer.treeprocessors.register(
+            _MentionLinks(renderer, mentions), "mention-links", 4
         )
-    return html
+    rendered: str = renderer.convert(body)
+    return rendered
+
+
+class _MentionLinks(Treeprocessor):
+    """Each `@localpart` of a mentioned id, in the text, as a link to the id.
+
+    One pass over the text nodes outside links, never over markup, so a link
+    one mention made is not rewritten by the next. The longest localpart is tried first,
+    so `@alice` is not taken for a mention of `@al`. Two ids with the same
+    localpart link to the first of them."""
+
+    def __init__(self, md: Markdown, mentions: list[str]) -> None:
+        super().__init__(md)
+        self._targets: dict[str, str] = {}
+        for user_id in mentions:
+            local = user_id.split(":")[0].lstrip("@")
+            if local:
+                self._targets.setdefault(local, user_id)
+        alternatives = sorted(self._targets, key=len, reverse=True)
+        self._pattern = re.compile(
+            "@(" + "|".join(re.escape(local) for local in alternatives) + ")"
+        )
+
+    def run(self, root: Element) -> None:
+        if self._targets:
+            self._link_within(root)
+
+    def _link_within(self, element: Element) -> None:
+        children = list(element)
+        if element.text:
+            element.text, links = self._split(element.text)
+            for index, link in enumerate(links):
+                element.insert(index, link)
+        for child in children:
+            if child.tag != "a":
+                self._link_within(child)
+            if child.tail:
+                child.tail, links = self._split(child.tail)
+                position = list(element).index(child) + 1
+                for offset, link in enumerate(links):
+                    element.insert(position + offset, link)
+
+    def _split(self, text: str) -> tuple[str, list[Element]]:
+        """`text` up to its first mention, and a link for each mention, each
+        carrying the text after it up to the next."""
+        pieces = self._pattern.split(text)
+        links = []
+        for local, after in zip(pieces[1::2], pieces[2::2], strict=True):
+            link = Element("a", {"href": f"https://matrix.to/#/{self._targets[local]}"})
+            link.text = local
+            link.tail = after
+            links.append(link)
+        return pieces[0], links

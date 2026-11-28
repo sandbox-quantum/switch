@@ -42,7 +42,7 @@ def _service_with_transport(transport: FakeTransport) -> AgentCore:
 
     svc.require_room_member = _require_room_member  # type: ignore[assignment]
     svc.client_lifecycle = SimpleNamespace(  # type: ignore[assignment]
-        get_by_agent_id=lambda agent_id: client
+        get_tenant_agent=lambda agent_id, tenant_id: client
     )
     return svc
 
@@ -62,7 +62,7 @@ def _transport(
 class TestResolveThreadRoot:
     async def test_passthrough_for_root(self) -> None:
         svc = _service_with_transport(_transport(events={"e1": _ev("e1", "root", 100)}))
-        client = svc.client_lifecycle.get_by_agent_id("a")
+        client = svc.client_lifecycle.get_tenant_agent("a", "t")
 
         root = await svc._resolve_thread_root(client, "!m:s", "e1")
 
@@ -72,7 +72,7 @@ class TestResolveThreadRoot:
         svc = _service_with_transport(
             _transport(events={"e2": _ev("e2", "reply", 200, thread_root="e1")})
         )
-        client = svc.client_lifecycle.get_by_agent_id("a")
+        client = svc.client_lifecycle.get_tenant_agent("a", "t")
 
         root = await svc._resolve_thread_root(client, "!m:s", "e2")
 
@@ -80,7 +80,7 @@ class TestResolveThreadRoot:
 
     async def test_raises_when_event_missing(self) -> None:
         svc = _service_with_transport(_transport(events={}))
-        client = svc.client_lifecycle.get_by_agent_id("a")
+        client = svc.client_lifecycle.get_tenant_agent("a", "t")
 
         with pytest.raises(ValueError, match="thread_id not found"):
             await svc._resolve_thread_root(client, "!m:s", "nope")

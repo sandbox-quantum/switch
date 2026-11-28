@@ -6,7 +6,7 @@ import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-co
 import { SshAuthError } from '@main/core/ssh/lifecycle/ssh-connection-manager';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { hostReachabilityEventChannel } from '@shared/core/remote-hosts/reachability';
+import { hostReachabilityEventChannel } from '@shared/core/remote-hosts/remoteHostEvents';
 import { HostReachabilityService } from './host-reachability-service';
 import { listSshHostsInUse } from './reachability-store';
 

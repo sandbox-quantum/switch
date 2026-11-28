@@ -94,12 +94,93 @@ describe('buildProxyJumpArgs', () => {
     expect(buildProxyJumpArgs(jumpSpec, 'dest.internal', 22)).toEqual(expectedArgs);
   });
 
-  it.each(['-oProxyCommand=evil', 'alice@-bad-host', 'good,-bad', 'bastion:-22'])(
-    'rejects option-like or invalid jump specs: %s',
-    (jumpSpec) => {
-      expect(() => buildProxyJumpArgs(jumpSpec, 'dest.internal', 22)).toThrow('Invalid ProxyJump');
-    }
-  );
+  it.each([
+    '-oProxyCommand=evil',
+    'alice@-bad-host',
+    'good,-bad',
+    'bastion:-22',
+    'ok.example.com,-oProxyCommand=x',
+    'ok.example.com,alice@-oProxyCommand=x',
+    'ok.example.com,-oProxyCommand=x@hop.example.com',
+    'ok.example.com,hop.example.com:0',
+    'ok.example.com,hop.example.com:65536',
+    'ok.example.com,hop.example.com:22x',
+    'ok.example.com:22 -oProxyCommand=x,hop.example.com',
+    'ok.example.com,hop example.com',
+    'ok.example.com,hop.example.com\n-oProxyCommand=x',
+    'ok.example.com,hop.example.com\u0000',
+    'ok.example.com,,hop.example.com',
+    'ok.example.com,',
+    'ok.example.com,@hop.example.com',
+    'ok.example.com,hop.example.com:',
+    'ok.example.com,hop.example.com:abc',
+    'ok.example.com,[::1',
+    'ok.example.com,[::1]x',
+    'ok.example.com,hop;id.example.com',
+  ])('rejects option-like or invalid jump specs: %j', (jumpSpec) => {
+    expect(() => buildProxyJumpArgs(jumpSpec, 'dest.internal', 22)).toThrow('Invalid ProxyJump');
+  });
+
+  it.each([
+    ['ssh://bastion.example.com:2222', undefined, ['-p', '2222'], 'bastion.example.com'],
+    [
+      'ssh://admin@bastion.example.com:2222',
+      undefined,
+      ['-p', '2222'],
+      'admin@bastion.example.com',
+    ],
+    ['ssh://admin@[::1]:2222', undefined, ['-p', '2222'], 'admin@[::1]'],
+    [
+      'ssh://alice@one.example.com:2201,ssh://two.example.com',
+      'alice@one.example.com:2201',
+      [],
+      'two.example.com',
+    ],
+  ])('accepts a hop written as an ssh:// URI: %s', (jumpSpec, jump, portArgs, target) => {
+    const args = buildProxyJumpArgs(jumpSpec, 'dest.internal', 22);
+    expect(args.includes('-J') ? args[args.indexOf('-J') + 1] : undefined).toBe(jump);
+    expect(args.slice(args.indexOf('-W') - portArgs.length, args.indexOf('-W'))).toEqual(portArgs);
+    expect(args.at(-1)).toBe(target);
+  });
+
+  it.each([
+    'ssh://-oProxyCommand=x',
+    'ssh://bastion.example.com:22x',
+    'ok.example.com,ssh://hop.example.com:2222 -oProxyCommand=x',
+    'ssh://',
+  ])('rejects a malformed ssh:// hop: %j', (jumpSpec) => {
+    expect(() => buildProxyJumpArgs(jumpSpec, 'dest.internal', 22)).toThrow('Invalid ProxyJump');
+  });
+
+  it.each([
+    ['dest.internal', 'dest.internal:22'],
+    ['2001:db8::1', '[2001:db8::1]:22'],
+    ['[2001:db8::1]', '[2001:db8::1]:22'],
+    ['fe80::1%en0', '[fe80::1%en0]:22'],
+  ])('brackets an IPv6 destination for -W: %s', (destHost, forward) => {
+    const args = buildProxyJumpArgs('bastion', destHost, 22);
+    expect(args[args.indexOf('-W') + 1]).toBe(forward);
+  });
+
+  it('passes the preceding hops on to ssh rebuilt from their checked parts', () => {
+    const args = buildProxyJumpArgs(
+      ' alice@one.example.com:0022 , two.example.com ,three.example.com',
+      'dest.internal',
+      22
+    );
+    expect(args[args.indexOf('-J') + 1]).toBe('alice@one.example.com:22,two.example.com');
+  });
+
+  it.each([
+    ['-oProxyCommand=x', 22],
+    ['dest internal', 22],
+    ['dest.internal', 0],
+    ['dest.internal', 70_000],
+  ])('rejects an unsafe destination %s:%s', (destHost, destPort) => {
+    expect(() => buildProxyJumpArgs('bastion', destHost, destPort)).toThrow(
+      'Invalid ProxyJump destination'
+    );
+  });
 });
 
 describe('spawnProxyJump', () => {

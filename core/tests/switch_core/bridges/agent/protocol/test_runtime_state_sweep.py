@@ -87,7 +87,12 @@ def _service(
 
 async def _an_agent(*_a: Any, **_kw: Any) -> Any:
     return SimpleNamespace(
-        id=AGENT, name="agent", integration_profile={}, metadata_={}, owner_id=None
+        id=AGENT,
+        tenant_id=TENANT_ZERO_ID,
+        name="agent",
+        integration_profile={},
+        metadata_={},
+        owner_id=None,
     )
 
 

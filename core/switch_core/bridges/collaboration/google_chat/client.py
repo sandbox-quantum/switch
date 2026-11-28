@@ -10,6 +10,11 @@ from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeOperationError,
 )
+from switch_core.outbound import (
+    GuardedAsyncClient,
+    OutboundPolicy,
+    guarded_async_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,21 +47,37 @@ class GoogleChatClient:
         self,
         auth_manager: GoogleAuthManager,
         *,
-        http_client: httpx.AsyncClient | None = None,
+        http_client: GuardedAsyncClient | None = None,
         chat_api_base: str = CHAT_API_BASE,
         pubsub_api_base: str = PUBSUB_API_BASE,
         workspace_events_api_base: str = WORKSPACE_EVENTS_API_BASE,
     ) -> None:
         self.auth_manager = auth_manager
-        self._http_client = http_client or httpx.AsyncClient(timeout=30.0)
-        self._owns_http_client = http_client is None
+        self._given_http_client = http_client
+        self._owned_http_client: GuardedAsyncClient | None = None
         self.chat_api_base = chat_api_base.rstrip("/")
         self.pubsub_api_base = pubsub_api_base.rstrip("/")
         self.workspace_events_api_base = workspace_events_api_base.rstrip("/")
 
+    def set_outbound_policy(self, policy: OutboundPolicy) -> None:
+        """The deployment's outbound policy, which every API call is held to.
+        Set before the first call."""
+        if self._owned_http_client is not None:
+            raise RuntimeError(
+                "The Google Chat client's outbound policy is already set"
+            )
+        self._owned_http_client = guarded_async_client(policy, timeout=30.0)
+
+    @property
+    def _http_client(self) -> GuardedAsyncClient:
+        client = self._given_http_client or self._owned_http_client
+        if client is None:
+            raise RuntimeError("Google API called before the outbound policy was set")
+        return client
+
     async def aclose(self) -> None:
-        if self._owns_http_client:
-            await self._http_client.aclose()
+        if self._owned_http_client is not None:
+            await self._owned_http_client.aclose()
 
     async def _request(
         self,

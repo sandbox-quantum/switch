@@ -159,11 +159,8 @@ class FakeLifecycle:
     def get_by_type(self, client_type: str, tenant_id: str) -> list[Any]:
         return [self.admin] if client_type == "admin" else []
 
-    def get_by_agent_id(self, agent_id: str) -> None:
-        return None
-
     def get_tenant_agent(self, agent_id: str, tenant_id: str) -> None:
-        return self.get_by_agent_id(agent_id)
+        return None
 
 
 @pytest_asyncio.fixture

@@ -111,11 +111,8 @@ class _RunningClients:
         self._by_agent = by_agent
         self._by_id = {c.client_id: c for c in by_agent.values()}
 
-    def get_by_agent_id(self, agent_id: str) -> Any:
-        return self._by_agent.get(agent_id)
-
     def get_tenant_agent(self, agent_id: str, tenant_id: str) -> Any:
-        return self.get_by_agent_id(agent_id)
+        return self._by_agent.get(agent_id)
 
     def get(self, client_id: str) -> Any:
         return self._by_id.get(client_id)

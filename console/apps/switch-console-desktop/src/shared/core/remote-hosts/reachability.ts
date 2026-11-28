@@ -11,8 +11,6 @@
  * host-dependent path consults up front.
  */
 
-import { defineEvent } from '@shared/lib/ipc/events';
-
 /**
  * Where a host sits in the reachability state machine.
  *
@@ -116,8 +114,3 @@ export function unknownHostReachability(sshHost: string): HostReachability {
     probing: false,
   };
 }
-
-/** Pushed to the renderer whenever a host's reachability record changes. */
-export const hostReachabilityEventChannel = defineEvent<HostReachability>(
-  'remote-hosts:reachability-changed'
-);

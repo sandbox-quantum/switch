@@ -49,6 +49,10 @@ INITIAL_COOLDOWN_S = 60.0
 MAX_COOLDOWN_S = 900.0
 # Bounds the memory a caller sending a fresh token per request can take.
 MAX_TRACKED = 10_000
+# A token exchange carries one credential, so its body is read into memory to
+# name the caller. Anything longer is no credential and is answered 413 before
+# more of it is read.
+MAX_EXCHANGE_BODY_BYTES = 16 * 1024
 
 _COVERED_PREFIXES = ("/agents/", "/agent-sessions/", "/v1/")
 _TOKEN_EXCHANGE = re.compile(r"^/v1/management/controllers/[^/]+/token$")
@@ -56,6 +60,7 @@ _TOKEN_EXCHANGE = re.compile(r"^/v1/management/controllers/[^/]+/token$")
 # else on this app reads FastAPI's `detail`.
 _MANAGEMENT_PREFIX = "/v1/management/"
 _RATE_LIMITED = "rate_limited"
+_TOO_LARGE = "request_too_large"
 _CALLER_PREFIX = 12
 
 
@@ -83,7 +88,10 @@ class RefusalBreaker:
         method = scope.get("method", "GET")
         caller = bearer_caller(scope)
         if caller is None and method == "POST" and _TOKEN_EXCHANGE.match(path):
-            body = await _read_body(receive)
+            body = await _read_body(receive, MAX_EXCHANGE_BODY_BYTES)
+            if body is None:
+                await _too_large(send)
+                return
             caller = hashlib.sha256(body).hexdigest()
             receive = _replay(body)
         if caller is None:
@@ -187,13 +195,19 @@ def bearer_caller(scope: Scope) -> str | None:
     return None
 
 
-async def _read_body(receive: Receive) -> bytes:
+async def _read_body(receive: Receive, limit: int) -> bytes | None:
+    """The whole body, or None as soon as it runs past `limit` bytes."""
     chunks: list[bytes] = []
+    size = 0
     while True:
         message = await receive()
         if message["type"] != "http.request":
             return b"".join(chunks)
-        chunks.append(message.get("body", b""))
+        chunk = message.get("body", b"")
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
         if not message.get("more_body", False):
             return b"".join(chunks)
 
@@ -209,6 +223,34 @@ def _replay(body: bytes) -> Receive:
         return {"type": "http.request", "body": body, "more_body": False}
 
     return receive
+
+
+async def _too_large(send: Send) -> None:
+    """413 for a token exchange whose body is too long to be one, in the
+    management error envelope the controller reads."""
+    payload = json.dumps(
+        {
+            "error": {
+                "code": _TOO_LARGE,
+                "message": (
+                    "A token exchange body may be at most "
+                    f"{MAX_EXCHANGE_BODY_BYTES} bytes."
+                ),
+                "retryable": False,
+            }
+        }
+    ).encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(payload)).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": payload})
 
 
 async def _too_many(send: Send, path: str, retry_after_s: int) -> None:

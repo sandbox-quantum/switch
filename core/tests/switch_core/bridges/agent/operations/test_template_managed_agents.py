@@ -1031,10 +1031,10 @@ async def test_the_rooms_wait_until_the_new_agents_are_listening(managed):
     managed["protocol"].room_service.create_room = create_room
     lifecycle = managed["protocol"].client_lifecycle
 
-    def get_by_agent_id(agent_id: str) -> Any:
+    def get_tenant_agent(agent_id: str, tenant_id: str) -> Any:
         return ListeningActor(order, names.setdefault(agent_id, agent_id))
 
-    lifecycle.get_by_agent_id = get_by_agent_id
+    lifecycle.get_tenant_agent = get_tenant_agent
     template_id = await _stored(managed, TEAM)
 
     result = await _as(

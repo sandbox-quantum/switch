@@ -78,11 +78,8 @@ class _FakeLifecycle:
     def __init__(self) -> None:
         self.agents: dict[str, SimpleNamespace] = {}
 
-    def get_by_agent_id(self, agent_id: str) -> SimpleNamespace | None:
-        return self.agents.get(agent_id)
-
     def get_tenant_agent(self, agent_id: str, tenant_id: str) -> SimpleNamespace | None:
-        return self.get_by_agent_id(agent_id)
+        return self.agents.get(agent_id)
 
     def get_by_type(self, client_type: str, tenant_id: str) -> list[Any]:
         return []

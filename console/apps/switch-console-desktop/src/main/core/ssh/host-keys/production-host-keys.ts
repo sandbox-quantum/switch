@@ -4,7 +4,7 @@ import { app } from 'electron';
 import { writeSecretFile } from '@main/core/providers/plugin-fs';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { hostKeyProblemsChannel } from '@shared/core/ssh/host-keys';
+import { hostKeyProblemsChannel } from '@shared/core/ssh/hostKeyEvents';
 import { createConsoleKnownHosts } from './console-known-hosts';
 import {
   prepareHostKeyCheck,

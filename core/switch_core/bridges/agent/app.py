@@ -42,6 +42,7 @@ from switch_core.logging_context import log_context
 from switch_core.observability.http import MetricsMiddleware, route_label
 from switch_core.open_gate import OpenGate
 from switch_core.refusal_breaker import RefusalBreaker
+from switch_core.request_body_limit import RequestBodyLimit
 from switch_core.request_context import RequestContextMiddleware
 from switch_core.request_validation import public_errors
 from switch_core.room_service import RoomService
@@ -209,6 +210,14 @@ def create_agent_bridge_app(
     # a cookie and no agent key; inside the metrics, so page loads are counted.
     if gateway_ui is not None:
         app.add_middleware(GatewayUiMiddleware, ui=gateway_ui, router=app.router)
+    # Outside everything that reads a body, so none of them reads more than the
+    # limit; inside the exception middleware, which would otherwise count the
+    # disconnect an oversized body raises as an unhandled error.
+    app.add_middleware(
+        RequestBodyLimit,
+        max_bytes=config.request_body_max_bytes,
+        upload_max_bytes=config.attachment_upload_max_bytes,
+    )
     # Outside the bearer middleware, so a request rejected for bad credentials
     # is still counted and timed — an authentication failure is traffic, and a
     # spike of it is the thing you most want a dashboard to show.
