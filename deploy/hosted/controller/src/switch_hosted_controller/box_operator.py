@@ -441,7 +441,8 @@ PROBE_NAMESPACE = box_namespace("k1-0000000000000000")
 PROBE_MACHINE = "00000000-0000-4000-8000-000000000000"
 # Bumped with any change to what a box is made of; with the image digest, Core's `template_revision`. Core retires
 # waiting pool boxes made at an older one.
-TEMPLATE_VERSION = "t3"  # t2: the starter container, the code read-only to the pod group, safe-to-evict; t3: memory held whole
+TEMPLATE_VERSION = "t4"  # t2: the starter container, the code read-only to the pod group, safe-to-evict; t3: memory held whole;
+# t4: the agents container's launcher in box mode (`--box`), which the box image requires
 
 
 def template_revision(config: OperatorConfig) -> str:
@@ -776,6 +777,7 @@ def _box_pod_spec(
             "--",
             "switch-agent-controller",
             "launcher",
+            "--box",
             "--data-dir",
             "/data/agents",
             "--workspaces",
