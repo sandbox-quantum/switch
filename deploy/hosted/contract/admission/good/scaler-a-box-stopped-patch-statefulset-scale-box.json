@@ -623,6 +623,7 @@
                     "--",
                     "switch-agent-controller",
                     "launcher",
+                    "--box",
                     "--data-dir",
                     "/data/agents",
                     "--workspaces",
