@@ -794,12 +794,41 @@ def test_the_operator_builds_exactly_the_ticked_template():
     ctl = next(c for c in pod["containers"] if c["name"] == "controller")
     assert ctl["resources"]["requests"]["memory"] == ctl["resources"]["limits"]["memory"] == "768Mi"
     ctl["resources"]["requests"]["memory"] = "256Mi"
+    # And template t4's: the agents container's launcher runs in box mode, where the reviewed render had no `--box`.
+    agents = next(c for c in pod["containers"] if c["name"] == "agents")
+    assert agents["command"][4:6] == ["launcher", "--box"]
+    agents["command"].remove("--box")
     sts["spec"] = _before_starter(sts["spec"])
     ours = {(o["kind"], o["metadata"]["name"]): o for _, o in built}
     theirs = {(o["kind"], o["metadata"]["name"]): o for o in rendered}
     assert set(ours) == set(theirs)
     for key, obj in theirs.items():
         assert ours[key] == obj, key
+
+
+def test_every_controller_command_the_operator_writes_runs_in_box_mode():
+    """The box image refuses any controller command without `--box` (box mode needs the flag and the image's
+    marker). A container that keeps the image's entrypoint gets it there; one that sets its own command must pass it,
+    or the box's agents never start. The agents launcher is the one such command, exactly as below."""
+    built = box_objects(action(), cfg())
+    (sts,) = [o for _, o in built if o["kind"] == "StatefulSet"]
+    pod = sts["spec"]["template"]["spec"]
+    containers = {c["name"]: c for c in pod["containers"] + pod.get("initContainers", [])}
+    assert set(containers) == {"controller", "agents", "starter"}
+    assert "command" not in containers["controller"]  # the entrypoint passes `--box`
+    assert containers["starter"]["command"][:2] == ["sh", "-c"]
+    assert "switch-agent-controller" not in containers["starter"]["command"][2]
+    assert containers["agents"]["command"] == [
+        "/usr/bin/tini", "-g", "--",
+        "switch-agent-controller", "launcher", "--box",
+        "--data-dir", "/data/agents",
+        "--workspaces", "/data/agents/workspaces",
+        "--controller-address", "127.0.0.1:7420",
+    ]  # fmt: skip
+    for name, container in containers.items():
+        command = container.get("command", [])
+        if "switch-agent-controller" in command:
+            assert "--box" in command, name
 
 
 IMAGE_A = RAW_CONFIG["image"]
@@ -1729,7 +1758,7 @@ def test_every_claim_carries_this_builds_template_revision():
     op = BoxOperator(core, ProbeKube([False]), cfg())
     op.run_once()
     revision = core.reports[0]["template_revision"]
-    assert re.fullmatch(r"t3-[0-9a-f]{12}", revision)
+    assert re.fullmatch(r"t4-[0-9a-f]{12}", revision)
     from switch_hosted_controller.box_operator import template_revision
 
     other = cfg(image="registry.example/hosted-agents-box@sha256:" + "b" * 64)
