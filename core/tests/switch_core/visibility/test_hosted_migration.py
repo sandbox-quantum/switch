@@ -416,6 +416,13 @@ async def test_a_move_runs_step_by_step_and_keeps_what_a_rollback_needs(
     assert manifest.snapshot_id == SNAPSHOT
     assert manifest.namespace == "agents-user-" + KEY.keyed_id(KeyedIdKind.USER, ada.id)
     assert manifest.workspaces == [(TENANT_ZERO_ID, [agent_id])]
+    # The seat key on the v1 disk is the workspace row's id, the same row
+    # before and after the flip.
+    assert manifest.seat_keys == {TENANT_ZERO_ID: workspace.id}
+    assert manifest.v1_controller_ids == {TENANT_ZERO_ID: v1_controller}
+    # Each agent's name and own folder, from its definition.
+    assert manifest.agents == {agent_id: ("reviewer", None)}
+    assert (await world.workspace(machine_id)).id == workspace.id
     with pytest.raises(MigrationRefused) as refused:
         await world.step(
             ada,
@@ -580,6 +587,29 @@ async def test_a_failed_copy_leaves_the_box_held_to_run_again(
         machine_id, (TENANT_ZERO_ID,), files=1, bytes=1, symlinks_skipped=0, **COPY
     )
     assert await world.step(ada, op, copied=copied) == "copied"
+
+
+async def test_the_manifest_refuses_an_agent_without_a_definition_in_a_later_workspace(
+    session_factory: async_sessionmaker[AsyncSession],
+    people: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each workspace's agents are checked on their own: one with no definition
+    is refused even when an earlier workspace's agents are already named."""
+    world = World(session_factory)
+    ada, op = people["ada"], people["op"].id
+    machine_id, _controller, agent_id = await world.v1_machine(ada)
+    await world.to_held(ada, machine_id, op)
+    listed = await world.migrations._agents_by_workspace(machine_id, ada.id)
+    assert listed == [(TENANT_ZERO_ID, [agent_id])]
+
+    async def two_workspaces(_machine_id: str, _owner_id: str) -> list:
+        return [*listed, (TENANT_ZERO_ID, ["no-such-agent"])]
+
+    monkeypatch.setattr(world.migrations, "_agents_by_workspace", two_workspaces)
+    with pytest.raises(MigrationRefused) as refused:
+        await world.migrations.copy_manifest(ada.id)
+    assert refused.value.code == "bad_definition"
 
 
 async def test_a_rollback_before_the_flip_just_unfreezes_the_v1_machine(
