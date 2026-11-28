@@ -589,6 +589,29 @@ async def test_a_failed_copy_leaves_the_box_held_to_run_again(
     assert await world.step(ada, op, copied=copied) == "copied"
 
 
+async def test_the_manifest_refuses_an_agent_without_a_definition_in_a_later_workspace(
+    session_factory: async_sessionmaker[AsyncSession],
+    people: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each workspace's agents are checked on their own: one with no definition
+    is refused even when an earlier workspace's agents are already named."""
+    world = World(session_factory)
+    ada, op = people["ada"], people["op"].id
+    machine_id, _controller, agent_id = await world.v1_machine(ada)
+    await world.to_held(ada, machine_id, op)
+    listed = await world.migrations._agents_by_workspace(machine_id, ada.id)
+    assert listed == [(TENANT_ZERO_ID, [agent_id])]
+
+    async def two_workspaces(_machine_id: str, _owner_id: str) -> list:
+        return [*listed, (TENANT_ZERO_ID, ["no-such-agent"])]
+
+    monkeypatch.setattr(world.migrations, "_agents_by_workspace", two_workspaces)
+    with pytest.raises(MigrationRefused) as refused:
+        await world.migrations.copy_manifest(ada.id)
+    assert refused.value.code == "bad_definition"
+
+
 async def test_a_rollback_before_the_flip_just_unfreezes_the_v1_machine(
     session_factory: async_sessionmaker[AsyncSession], people: dict[str, Any]
 ) -> None:

@@ -304,7 +304,7 @@ class HostedMigrations:
                             "bad_definition", "An agent has no usable name or folder."
                         )
                     agents[agent_id] = (name, directory)
-                if set(agents) < set(agent_ids):
+                if not set(agent_ids) <= set(agents):
                     raise MigrationRefused(
                         "bad_definition", "An agent on the box has no definition."
                     )
