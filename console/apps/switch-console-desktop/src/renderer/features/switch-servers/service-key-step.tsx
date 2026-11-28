@@ -87,6 +87,7 @@ export function ServiceKeyFields({
               <Input
                 id={id}
                 type={field.secret ? 'password' : 'text'}
+                pattern={field.pattern ?? undefined}
                 autoComplete="off"
                 spellCheck={false}
                 disabled={busy}

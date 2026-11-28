@@ -454,6 +454,7 @@ def _field(field: ApiKeyField) -> dict[str, Any]:
         "secret": field.secret,
         "help": field.help,
         "choices": field.choices,
+        "pattern": field.pattern,
     }
 
 
